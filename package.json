@@ -5,14 +5,28 @@
   "private": true,
   "author": "",
   "license": "UNLICENSED",
-  "main": "dist/main/index.js",
+  "main": "out/main/index.js",
   "scripts": {
-    "dev": "echo \"chưa cấu hình - sẽ thêm ở MVP\" && exit 0",
-    "build": "echo \"chưa cấu hình - sẽ thêm ở MVP\" && exit 0",
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "start": "electron-vite preview",
+    "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
     "lint": "echo \"chưa cấu hình\" && exit 0",
     "test": "echo \"chưa có test\" && exit 0"
   },
   "engines": {
     "node": ">=20"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5",
+    "@types/react": "^18.3.18",
+    "@types/react-dom": "^18.3.5",
+    "@vitejs/plugin-react": "^4.3.4",
+    "electron": "^33.3.1",
+    "electron-vite": "^2.3.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "typescript": "^5.7.3",
+    "vite": "^5.4.11"
   }
 }
