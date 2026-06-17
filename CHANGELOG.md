@@ -8,11 +8,20 @@ phiên bản theo [Semantic Versioning](https://semver.org/lang/vi/).
 ## [Unreleased]
 
 ### Added
+- N8nConnector hỗ trợ payload Reddit của workflow user:
+  - `type=video` (Reddit DASH split): nhận `videoUrl` + `audioUrls/audioUrl1/audioUrl2`, tải video + audio rồi **ghép bằng ffmpeg** (`-c:v copy -c:a aac -shortest`) ra 1 mp4 duy nhất.
+  - `type=single_image` / `image`: nhận `imageUrl/originalUrl/url`.
+  - Caption ưu tiên `caption/text/content/title` (tương thích Reddit `title`).
+  - Vẫn giữ tương thích payload Aviary native (`assets/media/urls`).
+- ffmpeg: ưu tiên dùng `ffmpeg-static` (binary đi kèm), fallback `ffmpeg` trên PATH.
+- Test webhook hiện thêm "Phát hiện video tách audio - sẽ ghép bằng ffmpeg khi tải".
+- Picker thư mục lưu asset (`dialog.showOpenDialog`), khi để trống thì mặc định lưu trong `userData/downloads`.
+- Nút **Update / Reload** ở sidebar: đóng tất cả profile chromium → `app.relaunch()` → exit, để nạp code mới mà không phải `npm run dev` lại.
 - Cài đặt + tích hợp n8n (Giai đoạn 1):
   - Bảng `settings` (key-value), API `getAllSettings`/`saveSettings`.
-  - `N8nConnector`: gọi webhook (POST kèm `X-Aviary-Secret`), normalize response thành `PostPayload { caption, assets }`, hỗ trợ vài dạng phổ biến (`assets`/`media`/`urls`, item là string hoặc object), hàm `downloadAssets` tải file về `downloadsDir/<accountId>/<jobId>/`.
+  - `N8nConnector`: gọi webhook (POST kèm `X-Aviary-Secret`), normalize response thành `PostPayload { caption, assets }`.
   - IPC `settings:get/save`, `webhook:test`. Preload mở rộng `window.aviary.settings` và `window.aviary.webhook`.
-  - UI **Cài đặt**: nhập Webhook URL/Secret, thư mục tải, concurrency. Nút **Test webhook** hiện kết quả (status, caption, số asset) hoặc lỗi.
+  - UI **Cài đặt**: nhập Webhook URL/Secret, thư mục tải, concurrency. Nút **Test webhook** hiện kết quả.
 - Module quản lý tài khoản + profile chromium (Giai đoạn 1):
   - DB layer bằng `better-sqlite3` (rebuild theo ABI Electron qua `@electron/rebuild`), bảng `accounts` + CRUD.
   - `BrowserManager` dùng Patchright: mở/đóng persistent context theo profile riêng mỗi account, gắn proxy (parse `user:pass@host:port`), tự mở x.com để đăng nhập thủ công lần đầu, đóng sạch khi quit.

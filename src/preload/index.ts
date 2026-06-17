@@ -3,6 +3,8 @@ import { IpcChannels, type AviaryApi, type AccountInput, type AppSettings } from
 
 const api: AviaryApi = {
   getAppInfo: () => ipcRenderer.invoke(IpcChannels.getAppInfo),
+  relaunch: () => ipcRenderer.invoke(IpcChannels.appRelaunch),
+  pickFolder: () => ipcRenderer.invoke(IpcChannels.pickFolder),
   accounts: {
     list: () => ipcRenderer.invoke(IpcChannels.accountsList),
     create: (input: AccountInput) => ipcRenderer.invoke(IpcChannels.accountsCreate, input),

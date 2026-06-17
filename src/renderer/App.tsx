@@ -46,7 +46,20 @@ export default function App(): JSX.Element {
             </button>
           ))}
         </nav>
-        <div className="version">{info ? `v${info.version}` : ''}</div>
+        <div className="sidebar-footer">
+          <button
+            className="btn block"
+            title="Đóng các profile + khởi động lại app để nạp bản mới"
+            onClick={async () => {
+              if (confirm('Khởi động lại Aviary để nạp bản mới? Các profile đang mở sẽ đóng.')) {
+                await window.aviary.relaunch()
+              }
+            }}
+          >
+            ↻ Update / Reload
+          </button>
+          <div className="version">{info ? `v${info.version}` : ''}</div>
+        </div>
       </aside>
 
       <main className="content">

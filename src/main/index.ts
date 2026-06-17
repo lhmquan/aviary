@@ -1,4 +1,4 @@
-import { app, shell, BrowserWindow, ipcMain } from 'electron'
+import { app, shell, BrowserWindow, ipcMain, dialog } from 'electron'
 import { join } from 'path'
 import { IpcChannels, type AppInfo } from '../shared/types'
 import { registerIpc } from './ipc'
@@ -39,6 +39,21 @@ function createWindow(): void {
 function registerAppIpc(): void {
   ipcMain.handle(IpcChannels.getAppInfo, (): AppInfo => {
     return { name: 'Aviary', version: app.getVersion() }
+  })
+
+  ipcMain.handle(IpcChannels.appRelaunch, async () => {
+    await browserManager.closeAll()
+    app.relaunch()
+    app.exit(0)
+  })
+
+  ipcMain.handle(IpcChannels.pickFolder, async (e) => {
+    const win = BrowserWindow.fromWebContents(e.sender)
+    const res = win
+      ? await dialog.showOpenDialog(win, { properties: ['openDirectory', 'createDirectory'] })
+      : await dialog.showOpenDialog({ properties: ['openDirectory', 'createDirectory'] })
+    if (res.canceled || res.filePaths.length === 0) return null
+    return res.filePaths[0]
   })
 }
 

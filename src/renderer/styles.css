@@ -93,6 +93,16 @@ nav {
   padding: 8px 6px 0;
 }
 
+.sidebar-footer {
+  border-top: 1px solid var(--border);
+  padding-top: 10px;
+}
+
+.btn.block {
+  width: 100%;
+  text-align: center;
+}
+
 .content {
   flex: 1;
   padding: 28px 32px;

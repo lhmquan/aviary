@@ -36,6 +36,8 @@ export interface AppSettings {
 export interface PostPayload {
   caption: string
   assets: { url: string; type?: 'image' | 'video' }[]
+  // Cho dạng video Reddit có audio tách rời, mỗi item có url chính + audioUrls[].
+  videoSpecs?: { videoUrl: string; audioUrls: string[] }[]
 }
 
 export interface WebhookTestResult {
@@ -43,12 +45,15 @@ export interface WebhookTestResult {
   status?: number
   caption?: string
   assetCount?: number
+  hasAudioMerge?: boolean
   error?: string
 }
 
 // Kênh IPC - khai báo tập trung để main và preload dùng chung, tránh gõ sai chuỗi.
 export const IpcChannels = {
   getAppInfo: 'app:getInfo',
+  appRelaunch: 'app:relaunch',
+  pickFolder: 'app:pickFolder',
   accountsList: 'accounts:list',
   accountsCreate: 'accounts:create',
   accountsUpdate: 'accounts:update',
@@ -64,6 +69,8 @@ export const IpcChannels = {
 // API mà preload expose ra window.aviary cho renderer.
 export interface AviaryApi {
   getAppInfo: () => Promise<AppInfo>
+  relaunch: () => Promise<void>
+  pickFolder: () => Promise<string | null>
   accounts: {
     list: () => Promise<Account[]>
     create: (input: AccountInput) => Promise<Account>

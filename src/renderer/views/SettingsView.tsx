@@ -80,6 +80,9 @@ export default function SettingsView(): JSX.Element {
                 <strong>OK · HTTP {testResult.status}</strong>
                 <div>Caption: {testResult.caption || <em>(rỗng)</em>}</div>
                 <div>Số asset: {testResult.assetCount ?? 0}</div>
+                {testResult.hasAudioMerge && (
+                  <div>Phát hiện video tách audio - sẽ ghép bằng ffmpeg khi tải.</div>
+                )}
               </>
             ) : (
               <>
@@ -94,12 +97,24 @@ export default function SettingsView(): JSX.Element {
       <section className="card">
         <h2>Tải file</h2>
         <label className="field">
-          <span>Thư mục lưu asset đã tải</span>
-          <input
-            value={settings.downloadsDir}
-            onChange={(e) => update('downloadsDir', e.target.value)}
-            placeholder="E:\\Antigravity\\Aviary\\data\\downloads"
-          />
+          <span>Thư mục lưu asset đã tải (để trống = mặc định trong userData)</span>
+          <div className="row">
+            <input
+              value={settings.downloadsDir}
+              onChange={(e) => update('downloadsDir', e.target.value)}
+              placeholder="E:\\Antigravity\\Aviary\\data\\downloads"
+              style={{ flex: 1 }}
+            />
+            <button
+              className="btn"
+              onClick={async () => {
+                const dir = await window.aviary.pickFolder()
+                if (dir) update('downloadsDir', dir)
+              }}
+            >
+              Chọn…
+            </button>
+          </div>
         </label>
       </section>
 
