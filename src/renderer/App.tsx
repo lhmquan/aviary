@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import type { AppInfo } from '@shared/types'
 import AccountsView from './views/AccountsView'
+import SettingsView from './views/SettingsView'
 
 type Section = 'accounts' | 'schedule' | 'content' | 'logs' | 'settings'
 
@@ -12,11 +13,10 @@ const NAV: { id: Section; label: string; icon: string }[] = [
   { id: 'settings', label: 'Cài đặt', icon: '⚙️' }
 ]
 
-const PLACEHOLDER: Record<Exclude<Section, 'accounts'>, string> = {
+const PLACEHOLDER: Record<'schedule' | 'content' | 'logs', string> = {
   schedule: 'Hẹn giờ đăng bài theo từng tài khoản, có jitter. (Giai đoạn 1)',
   content: 'Hàng đợi nội dung lấy từ n8n. (Giai đoạn 4)',
-  logs: 'Nhật ký mỗi lần chạy, ảnh chụp khi lỗi. (Giai đoạn 1)',
-  settings: 'Webhook n8n, proxy mặc định, thư mục tải, giới hạn concurrency. (Giai đoạn 1)'
+  logs: 'Nhật ký mỗi lần chạy, ảnh chụp khi lỗi. (Giai đoạn 1)'
 }
 
 export default function App(): JSX.Element {
@@ -51,9 +51,9 @@ export default function App(): JSX.Element {
 
       <main className="content">
         <h1>{NAV.find((n) => n.id === active)?.label}</h1>
-        {active === 'accounts' ? (
-          <AccountsView />
-        ) : (
+        {active === 'accounts' && <AccountsView />}
+        {active === 'settings' && <SettingsView />}
+        {(active === 'schedule' || active === 'content' || active === 'logs') && (
           <p className="placeholder">{PLACEHOLDER[active]}</p>
         )}
       </main>

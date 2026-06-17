@@ -1,5 +1,5 @@
 import { ipcMain } from 'electron'
-import { IpcChannels, type AccountInput } from '../shared/types'
+import { IpcChannels, type AccountInput, type AppSettings } from '../shared/types'
 import {
   listAccounts,
   createAccount,
@@ -8,6 +8,8 @@ import {
   getAccount,
   setAccountStatus
 } from './db/accounts'
+import { getAllSettings, saveSettings } from './db/settings'
+import { testWebhook } from './n8n/N8nConnector'
 import { browserManager } from './browser/BrowserManager'
 
 export function registerIpc(): void {
@@ -38,4 +40,10 @@ export function registerIpc(): void {
   ipcMain.handle(IpcChannels.browserStatus, (_e, accountId: string) => ({
     open: browserManager.isOpen(accountId)
   }))
+
+  ipcMain.handle(IpcChannels.settingsGet, () => getAllSettings())
+
+  ipcMain.handle(IpcChannels.settingsSave, (_e, patch: Partial<AppSettings>) => saveSettings(patch))
+
+  ipcMain.handle(IpcChannels.webhookTest, (_e, accountId?: string) => testWebhook(accountId))
 }

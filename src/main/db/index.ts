@@ -30,5 +30,10 @@ function migrate(d: Database.Database): void {
       created_at  INTEGER NOT NULL,
       updated_at  INTEGER NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS settings (
+      key   TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    );
   `)
 }

@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import { IpcChannels, type AviaryApi, type AccountInput } from '../shared/types'
+import { IpcChannels, type AviaryApi, type AccountInput, type AppSettings } from '../shared/types'
 
 const api: AviaryApi = {
   getAppInfo: () => ipcRenderer.invoke(IpcChannels.getAppInfo),
@@ -14,6 +14,13 @@ const api: AviaryApi = {
     open: (accountId: string) => ipcRenderer.invoke(IpcChannels.browserOpen, accountId),
     close: (accountId: string) => ipcRenderer.invoke(IpcChannels.browserClose, accountId),
     status: (accountId: string) => ipcRenderer.invoke(IpcChannels.browserStatus, accountId)
+  },
+  settings: {
+    get: () => ipcRenderer.invoke(IpcChannels.settingsGet),
+    save: (patch: Partial<AppSettings>) => ipcRenderer.invoke(IpcChannels.settingsSave, patch)
+  },
+  webhook: {
+    test: (accountId?: string) => ipcRenderer.invoke(IpcChannels.webhookTest, accountId)
   }
 }
 

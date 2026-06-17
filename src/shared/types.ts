@@ -25,6 +25,27 @@ export interface AccountInput {
   proxy?: string | null
 }
 
+export interface AppSettings {
+  webhookUrl: string
+  webhookSecret: string
+  downloadsDir: string
+  concurrency: number
+}
+
+// Asset n8n trả về để đăng bài.
+export interface PostPayload {
+  caption: string
+  assets: { url: string; type?: 'image' | 'video' }[]
+}
+
+export interface WebhookTestResult {
+  ok: boolean
+  status?: number
+  caption?: string
+  assetCount?: number
+  error?: string
+}
+
 // Kênh IPC - khai báo tập trung để main và preload dùng chung, tránh gõ sai chuỗi.
 export const IpcChannels = {
   getAppInfo: 'app:getInfo',
@@ -34,7 +55,10 @@ export const IpcChannels = {
   accountsDelete: 'accounts:delete',
   browserOpen: 'browser:open',
   browserClose: 'browser:close',
-  browserStatus: 'browser:status'
+  browserStatus: 'browser:status',
+  settingsGet: 'settings:get',
+  settingsSave: 'settings:save',
+  webhookTest: 'webhook:test'
 } as const
 
 // API mà preload expose ra window.aviary cho renderer.
@@ -50,5 +74,12 @@ export interface AviaryApi {
     open: (accountId: string) => Promise<void>
     close: (accountId: string) => Promise<void>
     status: (accountId: string) => Promise<{ open: boolean }>
+  }
+  settings: {
+    get: () => Promise<AppSettings>
+    save: (patch: Partial<AppSettings>) => Promise<AppSettings>
+  }
+  webhook: {
+    test: (accountId?: string) => Promise<WebhookTestResult>
   }
 }
