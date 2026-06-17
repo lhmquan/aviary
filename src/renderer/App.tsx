@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import type { AppInfo } from '@shared/types'
+import AccountsView from './views/AccountsView'
 
 type Section = 'accounts' | 'schedule' | 'content' | 'logs' | 'settings'
 
@@ -11,8 +12,7 @@ const NAV: { id: Section; label: string; icon: string }[] = [
   { id: 'settings', label: 'Cài đặt', icon: '⚙️' }
 ]
 
-const PLACEHOLDER: Record<Section, string> = {
-  accounts: 'Quản lý profile chromium + proxy cho từng tài khoản X. (Giai đoạn 1)',
+const PLACEHOLDER: Record<Exclude<Section, 'accounts'>, string> = {
   schedule: 'Hẹn giờ đăng bài theo từng tài khoản, có jitter. (Giai đoạn 1)',
   content: 'Hàng đợi nội dung lấy từ n8n. (Giai đoạn 4)',
   logs: 'Nhật ký mỗi lần chạy, ảnh chụp khi lỗi. (Giai đoạn 1)',
@@ -51,7 +51,11 @@ export default function App(): JSX.Element {
 
       <main className="content">
         <h1>{NAV.find((n) => n.id === active)?.label}</h1>
-        <p className="placeholder">{PLACEHOLDER[active]}</p>
+        {active === 'accounts' ? (
+          <AccountsView />
+        ) : (
+          <p className="placeholder">{PLACEHOLDER[active]}</p>
+        )}
       </main>
     </div>
   )

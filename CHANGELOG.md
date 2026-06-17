@@ -8,12 +8,21 @@ phiên bản theo [Semantic Versioning](https://semver.org/lang/vi/).
 ## [Unreleased]
 
 ### Added
+- Module quản lý tài khoản + profile chromium (Giai đoạn 1):
+  - DB layer bằng `better-sqlite3` (rebuild theo ABI Electron qua `@electron/rebuild`), bảng `accounts` + CRUD.
+  - `BrowserManager` dùng Patchright: mở/đóng persistent context theo profile riêng mỗi account, gắn proxy (parse `user:pass@host:port`), tự mở x.com để đăng nhập thủ công lần đầu, đóng sạch khi quit.
+  - IPC accounts (list/create/update/delete) + browser (open/close/status), preload expose `window.aviary.accounts` và `window.aviary.browser`.
+  - UI Tài khoản: bảng danh sách, form thêm/sửa (nhãn, handle, proxy), nút Mở/Đóng profile, badge trạng thái.
+- Cài Patchright + chromium (anti-detect, drop-in replacement của Playwright).
 - Scaffold Electron + React + Vite (TypeScript) chạy được: main process tạo BrowserWindow, preload expose IPC `getAppInfo` qua `contextBridge`, renderer dashboard có sidebar 5 mục (Tài khoản / Lịch đăng / Nội dung / Nhật ký / Cài đặt).
-- `electron.vite.config.ts`, `tsconfig.json` (+ `tsconfig.node.json` cho main/preload, `tsconfig.web.json` cho renderer).
+- `electron.vite.config.ts` (externalize native deps), `tsconfig.json` (+ `tsconfig.node.json` cho main/preload, `tsconfig.web.json` cho renderer).
 - Style cơ bản theme tối, alias `@shared/*`.
 - Khởi tạo dự án: cấu trúc thư mục, tài liệu roadmap và kiến trúc.
 - `docs/ROADMAP.md`: lộ trình 6 giai đoạn (MVP đăng bài → vận hành nhiều account → chăm sóc/nuôi account → nội dung → phân tích → bền vững).
 - `docs/ARCHITECTURE.md`: kiến trúc kỹ thuật (Electron + React + Playwright/Patchright + SQLite), luồng đăng bài, mô hình tiến trình.
+
+### Notes
+- Electron 33 dùng Node 20 (chưa có `node:sqlite` built-in) nên chọn `better-sqlite3` + `@electron/rebuild`.
 
 ## [0.0.1] - 2026-06-17
 
