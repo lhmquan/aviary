@@ -1,0 +1,38 @@
+# Dependencies
+node_modules/
+npm-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Build output
+dist/
+build/
+out/
+*.tsbuildinfo
+
+# Dữ liệu nhạy cảm - KHÔNG commit
+data/profiles/
+data/downloads/
+*.sqlite
+*.sqlite3
+*.db
+
+# Secrets
+.env
+.env.*
+!.env.example
+secrets.json
+*.pem
+*.key
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.log
+
+# Playwright
+playwright-report/
+test-results/
+.cache/
