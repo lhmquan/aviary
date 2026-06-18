@@ -49,6 +49,14 @@ export interface WebhookTestResult {
   error?: string
 }
 
+// Kết quả đăng bài thử
+export interface PostResult {
+  ok: boolean
+  url?: string
+  error?: string
+  step?: string
+}
+
 // Kênh IPC - khai báo tập trung để main và preload dùng chung, tránh gõ sai chuỗi.
 export const IpcChannels = {
   getAppInfo: 'app:getInfo',
@@ -63,7 +71,8 @@ export const IpcChannels = {
   browserStatus: 'browser:status',
   settingsGet: 'settings:get',
   settingsSave: 'settings:save',
-  webhookTest: 'webhook:test'
+  webhookTest: 'webhook:test',
+  postRunNow: 'post:runNow'
 } as const
 
 // API mà preload expose ra window.aviary cho renderer.
@@ -88,5 +97,8 @@ export interface AviaryApi {
   }
   webhook: {
     test: (accountId?: string) => Promise<WebhookTestResult>
+  }
+  post: {
+    runNow: (accountId: string) => Promise<PostResult>
   }
 }

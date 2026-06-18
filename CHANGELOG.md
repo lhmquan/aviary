@@ -8,6 +8,20 @@ phiên bản theo [Semantic Versioning](https://semver.org/lang/vi/).
 ## [Unreleased]
 
 ### Added
+- **XActions: post flow trên x.com** (Giai đoạn 1 - MVP):
+  - Module `src/main/actions/XActions.ts` với `postTweet()`: mở compose page, nhập caption, upload media, bấm Post.
+  - Hỗ trợ media ảnh/video (video đã được tải về với audio nếu cần).
+  - Trả về `PostResult { ok, url, error, step }` với URL bài post.
+- **Pipeline đăng thử (run-now)**:
+  - IPC `post:runNow`: gọi webhook → `downloadAssets` → `postTweet`.
+  - Yêu cầu profile chromium phải được mở trước.
+  - Preload expose `window.aviary.post.runNow(accountId)`.
+- **UI Đăng thử**:
+  - Nút "Đăng thử" trên hàng tài khoản.
+  - Hiển thị kết quả trong alert: thành công (URL) hoặc lỗi (error + step).
+- `BrowserManager.getContext(accountId)` để lấy BrowserContext đang mở cho XActions.
+- `PostResult` type trong `src/shared/types.ts`.
+
 - N8nConnector hỗ trợ payload Reddit của workflow user:
   - `type=video` (Reddit DASH split): nhận `videoUrl` + `audioUrls/audioUrl1/audioUrl2`, tải video + audio rồi **ghép bằng ffmpeg** (`-c:v copy -c:a aac -shortest`) ra 1 mp4 duy nhất.
   - `type=single_image` / `image`: nhận `imageUrl/originalUrl/url`.
@@ -21,7 +35,7 @@ phiên bản theo [Semantic Versioning](https://semver.org/lang/vi/).
   - Bảng `settings` (key-value), API `getAllSettings`/`saveSettings`.
   - `N8nConnector`: gọi webhook (POST kèm `X-Aviary-Secret`), normalize response thành `PostPayload { caption, assets }`.
   - IPC `settings:get/save`, `webhook:test`. Preload mở rộng `window.aviary.settings` và `window.aviary.webhook`.
-  - UI **Cài đặt**: nhập Webhook URL/Secret, thư mục tải, concurrency. Nút **Test webhook** hiện kết quả.
+  - UI **Cài đặt**: nhập Webhook URL/Secret, thư mục tải, concurrency. Nút **Test webhook` hiện kết quả.
 - Module quản lý tài khoản + profile chromium (Giai đoạn 1):
   - DB layer bằng `better-sqlite3` (rebuild theo ABI Electron qua `@electron/rebuild`), bảng `accounts` + CRUD.
   - `BrowserManager` dùng Patchright: mở/đóng persistent context theo profile riêng mỗi account, gắn proxy (parse `user:pass@host:port`), tự mở x.com để đăng nhập thủ công lần đầu, đóng sạch khi quit.

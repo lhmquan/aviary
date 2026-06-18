@@ -83,6 +83,10 @@ class BrowserManager {
     this.open.clear()
     await Promise.all(contexts.map((c) => c.close().catch(() => {})))
   }
+
+  getContext(accountId: string): BrowserContext | undefined {
+    return this.open.get(accountId)
+  }
 }
 
 export const browserManager = new BrowserManager()

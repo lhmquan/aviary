@@ -11,6 +11,8 @@ import {
 import { getAllSettings, saveSettings } from './db/settings'
 import { testWebhook } from './n8n/N8nConnector'
 import { browserManager } from './browser/BrowserManager'
+import { postTweet } from './actions/XActions'
+import { fetchPostPayload, downloadAssets } from './n8n/N8nConnector'
 
 export function registerIpc(): void {
   ipcMain.handle(IpcChannels.accountsList, () => listAccounts())
@@ -46,4 +48,21 @@ export function registerIpc(): void {
   ipcMain.handle(IpcChannels.settingsSave, (_e, patch: Partial<AppSettings>) => saveSettings(patch))
 
   ipcMain.handle(IpcChannels.webhookTest, (_e, accountId?: string) => testWebhook(accountId))
+
+  ipcMain.handle(IpcChannels.postRunNow, async (_e, accountId: string) => {
+    const account = getAccount(accountId)
+    if (!account) throw new Error(`Account không tồn tại: ${accountId}`)
+
+    const context = browserManager.getContext(accountId)
+    if (!context) throw new Error('Profile chưa mở. Hãy mở profile trước khi đăng.')
+
+    // 1. Gọi n8n webhook lấy payload
+    const payload = await fetchPostPayload(accountId)
+
+    // 2. Tải asset về đĩa
+    const mediaPaths = await downloadAssets(payload, accountId, `job_${Date.now()}`)
+
+    // 3. Post lên X
+    return await postTweet(context, payload.caption, mediaPaths.length > 0 ? mediaPaths : undefined)
+  })
 }

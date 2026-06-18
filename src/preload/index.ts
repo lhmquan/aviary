@@ -23,6 +23,9 @@ const api: AviaryApi = {
   },
   webhook: {
     test: (accountId?: string) => ipcRenderer.invoke(IpcChannels.webhookTest, accountId)
+  },
+  post: {
+    runNow: (accountId: string) => ipcRenderer.invoke(IpcChannels.postRunNow, accountId)
   }
 }
 

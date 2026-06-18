@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback } from 'react'
-import type { Account, AccountInput } from '@shared/types'
+import type { Account, AccountInput, PostResult } from '@shared/types'
 
 const STATUS_LABEL: Record<Account['status'], string> = {
   new: 'Mới',
@@ -15,6 +15,8 @@ export default function AccountsView(): JSX.Element {
   const [showForm, setShowForm] = useState(false)
   const [editing, setEditing] = useState<Account | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
+  const [posting, setPosting] = useState<string | null>(null)
+  const [postResult, setPostResult] = useState<{ accountId: string; result: PostResult } | null>(null)
 
   const refresh = useCallback(async () => {
     const list = await window.aviary.accounts.list()
@@ -55,6 +57,24 @@ export default function AccountsView(): JSX.Element {
     if (!confirm(`Xóa tài khoản "${a.label}"? Profile và session sẽ vẫn nằm trên ổ đĩa.`)) return
     await window.aviary.accounts.remove(a.id)
     await refresh()
+  }
+
+  async function handlePostNow(a: Account): Promise<void> {
+    if (!confirm(`Đăng bài thử cho "${a.label}"? Profile sẽ mở tab mới để đăng.`)) return
+    setPosting(a.id)
+    setPostResult(null)
+    try {
+      const result = await window.aviary.post.runNow(a.id)
+      setPostResult({ accountId: a.id, result })
+    } catch (e) {
+      setPostResult({ accountId: a.id, result: { ok: false, error: (e as Error).message } })
+    } finally {
+      setPosting(null)
+    }
+  }
+
+  function closePostResult(): void {
+    setPostResult(null)
   }
 
   return (
@@ -114,6 +134,15 @@ export default function AccountsView(): JSX.Element {
                   >
                     Sửa
                   </button>
+                  {openMap[a.id] && (
+                    <button
+                      className="btn"
+                      disabled={posting === a.id}
+                      onClick={() => handlePostNow(a)}
+                    >
+                      {posting === a.id ? 'Đang đăng…' : 'Đăng thử'}
+                    </button>
+                  )}
                   <button className="btn danger" onClick={() => handleDelete(a)}>
                     Xóa
                   </button>
@@ -132,6 +161,13 @@ export default function AccountsView(): JSX.Element {
             setShowForm(false)
             await refresh()
           }}
+        />
+      )}
+
+      {postResult && (
+        <PostResultModal
+          result={postResult.result}
+          onClose={closePostResult}
         />
       )}
     </div>
@@ -196,6 +232,43 @@ function AccountForm(props: {
           <button className="btn primary" disabled={saving} onClick={save}>
             {saving ? 'Đang lưu…' : 'Lưu'}
           </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function PostResultModal(props: {
+  result: PostResult
+  onClose: () => void
+}): JSX.Element {
+  const { result, onClose } = props
+
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal" onClick={(e) => e.stopPropagation()}>
+        <h2>Kết quả đăng bài</h2>
+        {result.ok ? (
+          <>
+            <p style={{ color: '#4ade80' }}>✓ Đăng thành công</p>
+            {result.url && (
+              <p>
+                <a href={result.url} target="_blank" rel="noopener noreferrer">
+                  {result.url}
+                </a>
+              </p>
+            )}
+          {!result.url && <p className="hint">Không lấy được URL bài đăng</p>}
+          </>
+        ) : (
+          <>
+            <p style={{ color: '#f5b9bd' }}>✗ Đăng thất bại</p>
+            <p>{result.error}</p>
+            {result.step && <p className="hint">Bước: {result.step}</p>}
+          </>
+        )}
+        <div className="modal-actions">
+          <button className="btn primary" onClick={onClose}>Đóng</button>
         </div>
       </div>
     </div>
