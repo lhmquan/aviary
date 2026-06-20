@@ -6,7 +6,7 @@ import { pipeline } from 'stream/promises'
 import { app } from 'electron'
 import type { PostPayload, WebhookTestResult } from '../../shared/types'
 import { getAllSettings } from '../db/settings'
-import { muxVideoAudio } from '../media/ffmpeg'
+import { muxVideoAudio, muxFromManifest } from '../media/ffmpeg'
 
 // Dạng response Aviary chuẩn hóa. Chấp nhận cả Reddit-style của workflow user.
 function normalizePayload(raw: unknown): PostPayload {
@@ -14,13 +14,23 @@ function normalizePayload(raw: unknown): PostPayload {
   const items = arr.filter((x) => x && typeof x === 'object') as Record<string, unknown>[]
   if (items.length === 0) return { caption: '', assets: [] }
 
+  // n8n báo link hỏng -> {"Title": "...", "XProceed?": "SKIP"}. Đánh dấu skip + giữ title
+  // để app gọi markdone đánh dấu video đó (tránh lấy lại) rồi báo user.
+  for (const o of items) {
+    const proceed = o['XProceed?'] ?? o['XProceed'] ?? o.xproceed ?? o.proceed
+    if (typeof proceed === 'string' && proceed.trim().toUpperCase() === 'SKIP') {
+      const title = o.Title ?? o.title ?? o.caption
+      return { caption: typeof title === 'string' ? title : '', assets: [], skip: true }
+    }
+  }
+
   let caption = ''
   const assets: PostPayload['assets'] = []
   const videoSpecs: NonNullable<PostPayload['videoSpecs']> = []
 
   // Caption: ưu tiên trường rõ ràng -> title (Reddit) -> text/content.
   for (const o of items) {
-    const c = o.caption ?? o.text ?? o.content ?? o.title
+    const c = o.caption ?? o.text ?? o.content ?? o.title ?? o.Title
     if (typeof c === 'string' && c.trim()) {
       caption = c
       break
@@ -40,7 +50,12 @@ function normalizePayload(raw: unknown): PostPayload {
       if (typeof o.audioUrl2 === 'string') audios.push(o.audioUrl2)
       const dedup = [...new Set(audios)]
       assets.push({ url: o.videoUrl as string, type: 'video' })
-      videoSpecs.push({ videoUrl: o.videoUrl as string, audioUrls: dedup })
+      videoSpecs.push({
+        videoUrl: o.videoUrl as string,
+        audioUrls: dedup,
+        dashUrl: typeof o.dashUrl === 'string' ? o.dashUrl : undefined,
+        hlsUrl: typeof o.hlsUrl === 'string' ? o.hlsUrl : undefined
+      })
       continue
     }
 
@@ -73,18 +88,35 @@ function normalizePayload(raw: unknown): PostPayload {
   return { caption, assets, videoSpecs: videoSpecs.length ? videoSpecs : undefined }
 }
 
-async function callWebhook(accountId?: string): Promise<{ status: number; payload: PostPayload }> {
+type WebhookEvent = 'publishpost' | 'markdone'
+
+// POST body webhook chung: có event để n8n rẽ nhánh (publishpost | markdone).
+function webhookBody(
+  event: WebhookEvent,
+  data: Record<string, unknown>
+): Record<string, unknown> {
+  return { event, source: 'aviary', ...data }
+}
+
+async function postWebhook(body: Record<string, unknown>): Promise<Response> {
   const { webhookUrl, webhookSecret } = getAllSettings()
   if (!webhookUrl) throw new Error('Chưa cấu hình Webhook URL trong Cài đặt')
 
   const headers: Record<string, string> = { 'Content-Type': 'application/json' }
   if (webhookSecret) headers['X-Aviary-Secret'] = webhookSecret
+  return fetch(webhookUrl, { method: 'POST', headers, body: JSON.stringify(body) })
+}
 
-  const res = await fetch(webhookUrl, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify({ accountId: accountId ?? null, source: 'aviary' })
-  })
+async function callWebhook(
+  accountId?: string,
+  assetUrl?: string | null
+): Promise<{ status: number; payload: PostPayload }> {
+  const res = await postWebhook(
+    webhookBody('publishpost', {
+      accountId: accountId ?? null,
+      assetUrl: assetUrl ?? null
+    })
+  )
 
   if (!res.ok) {
     const body = await res.text().catch(() => '')
@@ -97,20 +129,58 @@ async function callWebhook(accountId?: string): Promise<{ status: number; payloa
   return { status: res.status, payload: normalizePayload(json) }
 }
 
-export async function fetchPostPayload(accountId?: string): Promise<PostPayload> {
-  const { payload } = await callWebhook(accountId)
+export async function fetchPostPayload(
+  accountId?: string,
+  assetUrl?: string | null
+): Promise<PostPayload> {
+  const { payload } = await callWebhook(accountId, assetUrl)
   return payload
 }
 
-export async function testWebhook(accountId?: string): Promise<WebhookTestResult> {
+// #3: báo về n8n rằng 1 bài đã xử lý xong -> n8n update sheet đánh dấu video done.
+// reason: 'posted' = đăng thành công; 'broken' = link hỏng (403/SKIP) cần đánh dấu để
+// không lấy lại. Gửi kèm accountId, assetUrl, title, postUrl để n8n tìm đúng dòng sheet.
+export async function markDone(p: {
+  accountId: string
+  assetUrl: string | null
+  title: string
+  postUrl: string | null
+  reason?: 'posted' | 'broken'
+}): Promise<{ ok: boolean; error?: string }> {
   try {
-    const { status, payload } = await callWebhook(accountId)
+    const res = await postWebhook(
+      webhookBody('markdone', {
+        accountId: p.accountId,
+        assetUrl: p.assetUrl,
+        title: p.title,
+        postUrl: p.postUrl,
+        reason: p.reason ?? 'posted'
+      })
+    )
+    if (!res.ok) {
+      const body = await res.text().catch(() => '')
+      return { ok: false, error: `Webhook markdone HTTP ${res.status}${body ? ': ' + body.slice(0, 200) : ''}` }
+    }
+    return { ok: true }
+  } catch (e) {
+    return { ok: false, error: (e as Error).message }
+  }
+}
+
+export async function testWebhook(
+  accountId?: string,
+  assetUrl?: string | null
+): Promise<WebhookTestResult> {
+  try {
+    const { status, payload } = await callWebhook(accountId, assetUrl)
     return {
       ok: true,
       status,
       caption: payload.caption,
       assetCount: payload.assets.length,
-      hasAudioMerge: !!payload.videoSpecs?.some((v) => v.audioUrls.length > 0)
+      hasAudioMerge: !!payload.videoSpecs?.some((v) => v.audioUrls.length > 0),
+      assetUrl: assetUrl ?? null,
+      accountId: accountId ?? null
     }
   } catch (e) {
     return { ok: false, error: (e as Error).message }
@@ -120,6 +190,15 @@ export async function testWebhook(accountId?: string): Promise<WebhookTestResult
 function resolveDownloadsRoot(): string {
   const { downloadsDir } = getAllSettings()
   return downloadsDir && downloadsDir.trim() ? downloadsDir : join(app.getPath('userData'), 'downloads')
+}
+
+// Lỗi đặc thù: link media hỏng/không tải được (403, 404...). Dùng để postRunNow
+// nhận biết -> gọi markdone đánh dấu link đó rồi báo user (không tự lặp tránh loop).
+export class BrokenMediaError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'BrokenMediaError'
+  }
 }
 
 async function downloadToFile(url: string, destPath: string): Promise<void> {
@@ -135,6 +214,17 @@ function guessExt(url: string, type?: 'image' | 'video'): string {
   const m = url.split('?')[0].match(/\.(mp4|mov|m4a|jpg|jpeg|png|gif|webp|webm)$/i)
   if (m) return '.' + m[1].toLowerCase()
   return type === 'video' ? '.mp4' : '.jpg'
+}
+
+function getAudioUrlsFromDash(dashUrl: string): string[] {
+  try {
+    const url = new URL(dashUrl)
+    const basePath = url.pathname.replace(/\/[^/]*$/, '')
+    const names = ['DASH_AUDIO_128.mp4', 'DASH_AUDIO_64.mp4', 'DASH_audio.mp4']
+    return names.map(name => `${url.origin}${basePath}/${name}?${url.search}`)
+  } catch {
+    return []
+  }
 }
 
 // Tải tuần tự nhiều ứng viên audio, trả về path đầu tiên thành công và có size > 0.
@@ -164,8 +254,9 @@ export async function downloadAssets(
   await mkdir(dir, { recursive: true })
 
   const out: string[] = []
-  const videoSpecMap = new Map<string, { audioUrls: string[] }>()
-  for (const v of payload.videoSpecs ?? []) videoSpecMap.set(v.videoUrl, { audioUrls: v.audioUrls })
+  const videoSpecMap = new Map<string, { audioUrls: string[]; dashUrl?: string; hlsUrl?: string }>()
+  for (const v of payload.videoSpecs ?? [])
+    videoSpecMap.set(v.videoUrl, { audioUrls: v.audioUrls, dashUrl: v.dashUrl, hlsUrl: v.hlsUrl })
 
   for (let i = 0; i < payload.assets.length; i++) {
     const asset = payload.assets[i]
@@ -173,27 +264,57 @@ export async function downloadAssets(
 
     if (asset.type === 'video' && videoSpecMap.has(asset.url)) {
       const spec = videoSpecMap.get(asset.url)!
-      const videoTmp = join(dir, `video_${i}_v${ext}`)
-      await downloadToFile(asset.url, videoTmp)
+      const finalPath = join(dir, `video_${i}.mp4`)
 
-      if (spec.audioUrls.length > 0) {
-        const audioTmp = await downloadFirstWorkingAudio(spec.audioUrls, dir)
-        if (audioTmp) {
-          const finalPath = join(dir, `video_${i}.mp4`)
-          try {
-            await muxVideoAudio(videoTmp, audioTmp, finalPath)
-            await unlink(videoTmp).catch(() => {})
-            await unlink(audioTmp).catch(() => {})
-            out.push(finalPath)
-            continue
-          } catch (e) {
-            // Mux fail - fallback dùng video thuần (im lặng) + log để dev biết.
-            console.warn('[n8n] mux fail, fallback video-only:', (e as Error).message)
-          }
+      // Cách 1 (ưu tiên): đọc thẳng manifest (DASH/HLS) bằng ffmpeg -> 1 file có cả
+      // video+audio. fallback_url của Reddit chỉ chứa video (không audio), còn
+      // DASH_AUDIO_*.mp4 tách rời thường 403 -> manifest là cách chắc nhất, chất
+      // lượng 720p + AAC stereo. Thử DASH trước, rồi HLS.
+      const manifest = spec.dashUrl || spec.hlsUrl
+      if (manifest) {
+        try {
+          await muxFromManifest(manifest, finalPath)
+          out.push(finalPath)
+          continue
+        } catch (e) {
+          console.warn('[n8n] manifest mux fail, thử fallback+audio:', (e as Error).message)
         }
       }
-      // Không có audio hoặc mux fail: dùng video gốc làm output.
-      const finalPath = join(dir, `video_${i}${ext}`)
+
+      // Cách 2 (fallback cũ): tải video + audio riêng rồi mux.
+      const videoTmp = join(dir, `video_${i}_v${ext}`)
+      try {
+        await downloadToFile(asset.url, videoTmp)
+      } catch (e) {
+        // Cả manifest lẫn fallback_url đều hỏng -> link Reddit này die (403/404...).
+        await unlink(videoTmp).catch(() => {})
+        throw new BrokenMediaError(`Link video hỏng: ${(e as Error).message}`)
+      }
+
+      let audioTmp: string | null = null
+      if (spec.audioUrls.length > 0) {
+        audioTmp = await downloadFirstWorkingAudio(spec.audioUrls, dir)
+      }
+      if (!audioTmp && spec.dashUrl) {
+        const dashAudioUrls = getAudioUrlsFromDash(spec.dashUrl)
+        if (dashAudioUrls.length > 0) {
+          audioTmp = await downloadFirstWorkingAudio(dashAudioUrls, dir)
+        }
+      }
+
+      if (audioTmp) {
+        try {
+          await muxVideoAudio(videoTmp, audioTmp, finalPath)
+          await unlink(videoTmp).catch(() => {})
+          await unlink(audioTmp).catch(() => {})
+          out.push(finalPath)
+          continue
+        } catch (e) {
+          console.warn('[n8n] mux fail, fallback video-only:', (e as Error).message)
+        }
+      }
+      // Không có audio hoặc mux fail: dùng video gốc (đã tải được) làm output.
+      await unlink(finalPath).catch(() => {})
       await rename(videoTmp, finalPath).catch(async () => {
         await downloadToFile(asset.url, finalPath)
       })
@@ -203,7 +324,11 @@ export async function downloadAssets(
 
     // Ảnh hoặc video không tách audio.
     const filePath = join(dir, `asset_${i}${ext}`)
-    await downloadToFile(asset.url, filePath)
+    try {
+      await downloadToFile(asset.url, filePath)
+    } catch (e) {
+      throw new BrokenMediaError(`Link media hỏng: ${(e as Error).message}`)
+    }
     out.push(filePath)
   }
   return out

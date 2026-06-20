@@ -2,12 +2,17 @@ import { spawn } from 'child_process'
 import { existsSync } from 'fs'
 import ffmpegStatic from 'ffmpeg-static'
 
-// Tìm ffmpeg theo thứ tự: ffmpeg trên PATH (system, vd C:\FFmpeg\bin\ffmpeg.exe), rồi fallback ffmpeg-static.
+// Tìm ffmpeg theo thứ tự: binary của ffmpeg-static (đã fix path khi đóng gói asar), rồi fallback 'ffmpeg' trên PATH.
 let cached: string | null | undefined
 export function resolveFfmpeg(): string | null {
   if (cached !== undefined) return cached
   // ffmpeg-static expose path tới binary đi kèm.
-  const fromStatic = (ffmpegStatic as unknown as string) || null
+  let fromStatic = (ffmpegStatic as unknown as string) || null
+  // Khi đóng gói, binary nằm trong app.asar nhưng không chạy được từ trong asar.
+  // electron-builder unpack sang app.asar.unpacked (asarUnpack ffmpeg-static).
+  if (fromStatic && fromStatic.includes('app.asar') && !fromStatic.includes('app.asar.unpacked')) {
+    fromStatic = fromStatic.replace('app.asar', 'app.asar.unpacked')
+  }
   if (fromStatic && existsSync(fromStatic)) {
     cached = fromStatic
     return cached
@@ -52,6 +57,23 @@ export async function muxVideoAudio(videoPath: string, audioPath: string, outPat
       '-c:v', 'copy',
       '-c:a', 'aac',
       '-shortest',
+      outPath
+    ]
+  })
+}
+
+// Tải video từ manifest (DASH .mpd hoặc HLS .m3u8) và mux video+audio thành 1 file MP4.
+// Reddit: fallback_url chỉ chứa video (không audio), còn DASH_AUDIO_*.mp4 tách rời
+// thường trả 403. Đọc thẳng manifest bằng ffmpeg là cách chắc có cả video+audio,
+// chất lượng 720p + audio AAC stereo.Ưu tiên DASH, fallback HLS.
+export async function muxFromManifest(manifestUrl: string, outPath: string): Promise<void> {
+  await runFfmpeg({
+    args: [
+      '-y',
+      '-i', manifestUrl,
+      '-c:v', 'copy',
+      '-c:a', 'aac',
+      '-movflags', '+faststart',
       outPath
     ]
   })

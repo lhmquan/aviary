@@ -25,6 +25,13 @@ secrets.json
 *.pem
 *.key
 
+# Claude Code (settings local có thể chứa token/credential đã được cache) — KHÔNG BAO GIỜ commit
+.claude/
+
+# Tạm / scratch
+tmp/
+*.tmp
+
 # OS / editor
 .DS_Store
 Thumbs.db

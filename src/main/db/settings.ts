@@ -5,7 +5,8 @@ const DEFAULTS: AppSettings = {
   webhookUrl: '',
   webhookSecret: '',
   downloadsDir: '',
-  concurrency: 3
+  concurrency: 3,
+  logRetentionDays: 30
 }
 
 export function getAllSettings(): AppSettings {
@@ -18,7 +19,10 @@ export function getAllSettings(): AppSettings {
     webhookUrl: map.get('webhookUrl') ?? DEFAULTS.webhookUrl,
     webhookSecret: map.get('webhookSecret') ?? DEFAULTS.webhookSecret,
     downloadsDir: map.get('downloadsDir') ?? DEFAULTS.downloadsDir,
-    concurrency: map.has('concurrency') ? Number(map.get('concurrency')) : DEFAULTS.concurrency
+    concurrency: map.has('concurrency') ? Number(map.get('concurrency')) : DEFAULTS.concurrency,
+    logRetentionDays: map.has('logRetentionDays')
+      ? Number(map.get('logRetentionDays'))
+      : DEFAULTS.logRetentionDays
   }
 }
 

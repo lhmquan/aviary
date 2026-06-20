@@ -1,6 +1,6 @@
 {
   "name": "aviary",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "description": "Quản lý nhiều tài khoản X qua profile chromium anti-detect, hẹn giờ đăng bài, tích hợp n8n",
   "private": true,
   "author": "",
@@ -11,6 +11,8 @@
     "build": "electron-vite build",
     "start": "electron-vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
+    "build:win": "electron-vite build && electron-builder --win",
+    "release": "electron-vite build && electron-builder --win --publish always",
     "lint": "echo \"chưa cấu hình\" && exit 0",
     "test": "echo \"chưa có test\" && exit 0"
   },
@@ -24,6 +26,7 @@
     "@types/react-dom": "^18.3.5",
     "@vitejs/plugin-react": "^4.3.4",
     "electron": "^33.3.1",
+    "electron-builder": "^25.1.8",
     "electron-vite": "^2.3.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
@@ -32,7 +35,37 @@
   },
   "dependencies": {
     "better-sqlite3": "^12.11.1",
+    "electron-updater": "^6.3.9",
     "ffmpeg-static": "^5.3.0",
+    "lucide-react": "^0.469.0",
     "patchright": "^1.60.2"
+  },
+  "build": {
+    "appId": "com.aviary.app",
+    "productName": "Aviary",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "out/**"
+    ],
+    "asarUnpack": [
+      "**/node_modules/ffmpeg-static/**"
+    ],
+    "win": {
+      "target": "nsis"
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": false,
+      "deleteAppDataOnUninstall": false
+    },
+    "publish": {
+      "provider": "github",
+      "owner": "lhmquan",
+      "repo": "aviary"
+    }
   }
 }

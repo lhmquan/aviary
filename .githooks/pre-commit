@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# Pre-commit hook: chặn commit nếu phát hiện secret trong staged files.
+# Cài đặt: git config core.hooksPath .githooks
+# Bỏ qua (KHÔNG khuyến nghị) muốn force: git commit --no-verify
+
+set -euo pipefail
+
+# Pattern secret phổ biến: GitHub token (ghp_/gho_/PAT), OpenAI sk-, AWS AKIA,
+# private key block.
+PATTERNS='ghp_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{82}|gho_[A-Za-z0-9]{36}|sk-[A-Za-z0-9]{20}|AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*PRIVATE KEY-----'
+
+# Nếu không có gì staged thì cho qua.
+if ! git diff --cached --name-only --diff-filter=ACM | grep -qE '\.(ts|tsx|js|jsx|json|md|env)$|\.env'; then
+  exit 0
+fi
+
+# Quét nội dung các file staged (chỉ phần được add).
+FOUND=$(git diff --cached --unified=0 --diff-filter=ACM -- \
+  '*.ts' '*.tsx' '*.js' '*.jsx' '*.json' '*.md' '*.env' \
+  | grep -E '^\+' | grep -vE '^\+\+\+' \
+  | grep -E "$PATTERNS" || true)
+
+if [ -n "$FOUND" ]; then
+  echo "❌ PRE-COMMIT CHẶN: phát hiện secret trong staged changes:" >&2
+  echo "$FOUND" >&2
+  echo "" >&2
+  echo "Nếu đây là false positive, dùng: git commit --no-verify" >&2
+  echo "Nếu là secret thật → KHÔNG commit, xem docs/SECURITY.md." >&2
+  exit 1
+fi
+
+exit 0

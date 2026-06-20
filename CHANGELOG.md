@@ -7,7 +7,61 @@ phiên bản theo [Semantic Versioning](https://semver.org/lang/vi/).
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-06-20
+
 ### Added
+- **Lên lịch đăng bài (tab Lịch đăng)** — tự động đăng theo lịch cho từng profile:
+  - 2 mô hình: theo khoảng (mỗi N phút) hoặc giờ cố định (danh sách HH:MM mỗi ngày).
+  - Jitter ± giây ngẫu nhiên mỗi lần chạy để giống thao tác người.
+  - Bộ lập lịch (main process) tick 30s, chạy **tuần tự** (1 lần 1, xếp hàng khi trùng giờ) — tránh tải máy + giảm risk bị X flag.
+  - UI: bảng Lịch đăng với toggle bật/tắt inline, cột "Lần cuối / Lần kế" (đếm ngược real-time), form thêm/sửa.
+  - Mọi sự kiện (khởi động scheduler, kích hoạt, tạo/sửa/xóa/toggle lịch) đều ghi vào Nhật ký.
+- **Quản lý Proxy (tab Proxy)** — kho proxy chung:
+  - Thêm proxy theo **danh sách** (paste nhiều dòng cùng lúc, tự dedup + sinh nhãn `Proxy 1, 2…`).
+  - Mỗi tài khoản gán proxy qua dropdown: **Local** (IP máy, mặc định) / **Random** (mỗi lần chạy lấy ngẫu nhiên) / proxy cụ thể.
+  - Đổi proxy **trực tiếp ngoài bảng tài khoản** (inline select), không cần mở form Sửa.
+- **Hashtag theo profile**: field hashtag trong cài đặt profile, tự chèn vào cuối caption khi đăng — **không** gửi vào webhook (markDone/fetch dùng caption gốc để n8n nhận diện đúng dòng sheet).
+- **Nhật ký (tab Nhật ký)**: lưu DB kết quả/lỗi mỗi lần chạy, tự prune theo "số ngày giữ nhật ký" (xoá cả ảnh chụp lỗi), cột **Loại** (Đăng / Chạy lịch / Hệ thống) + badge **Bỏ qua** cho SKIP.
+- **Thanh trạng thái**: full-width dưới đáy app, hiển thị tiến trình tác vụ real-time, có nút ẩn/hiện.
+- **Cấu hình per-profile**: link Google Sheet (assetUrl) để n8n route đúng tài khoản; tùy chọn "Chạy ngầm" (headless).
+- **markdone webhook**: app báo n8n đánh dấu video đã xử lý, kèm `event` (`publishpost`/`markdone`) + `reason` (`posted`/`broken`) + title + postUrl + assetUrl để n8n tìm đúng dòng sheet.
+- **Trích pipeline đăng bài** (`scheduler/runner.ts`): hàm `runPostForAccount` dùng chung cho cả nút "Đăng" lẫn scheduler → logic duy nhất.
+
+### Fixed
+- **Nút Post bị overlay chặn** (`subtree intercepts pointer events` → timeout 30s, nặng khi proxy chậm): click thường trước, fallback `dispatchEvent('click')` bypass overlay; detection thành công chặt hơn (chỉ `ok` khi modal đóng / điều hướng `/status/`, không còn "thành công ảo").
+- **Proxy `host:port:user:pass`**: `parseProxy` giờ hiểu dạng 4 phần (trước đó bỏ mất auth → proxy không có internet) cùng `user:pass@host:port`, `host:port`, kèm scheme `socks5://`.
+- **Luồng link hỏng (SKIP) tối ưu webhook**: n8n trả SKIP (đã mark sheet) → app **gọi lại publish lấy bài kế**, KHÔNG gọi markdone thừa; markdone(broken) chỉ gọi khi tải video/ffmpeg lỗi (n8n không phát hiện). Giới hạn 10 SKIP liên tiếp để tránh loop.
+- **Mở profile thủ công = headful luôn**: nút "Mở profile" hiện cửa sổ để đăng nhập bất kể cờ "Chạy ngầm"; cờ headless chỉ áp dụng khi đăng bài / lịch.
+- **Chrome headless ẩn hoàn toàn**: bỏ hack PowerShell, dùng headless thuần (`--headless` thật) → không cửa sổ, không taskbar.
+- **Nhãn nhật ký đúng nguồn**: eventType theo nguồn (manual='Đăng', schedule='Chạy lịch') áp dụng cho mọi dòng log kể cả SKIP/success; case tải lỗi sau SKIP cũng đúng loại.
+- **Profile lock** ("Opening in existing browser session"): kill Chrome cũ đang giữ profile (`wmic`+`taskkill`) rồi retry.
+- **Tự đóng profile** sau khi đăng thành công để giải phóng tài nguyên.
+- **Audio Reddit**: ghép audio bằng cách đọc manifest DASH/HLS trực tiếp (720p + AAC stereo) thay vì `fallback_url` (chỉ video) / `DASH_AUDIO_*.mp4` (403).
+
+### Notes
+- Đổi schema: cột `accounts.headless/asset_url/hashtag/proxy_id`, bảng mới `proxies`/`schedules`/`logs.event_type` — migration tự động, an toàn với DB cũ.
+
+### Added
+- **Auto-update (electron-updater)**:
+  - Module `src/main/updater.ts`: `initUpdater()` gắn listener (checking/available/downloading/downloaded/error), `checkForUpdates()` (báo `none` ở dev vì không có `app-update.yml`), `installUpdate()` đóng sạch profile chromium trước khi `quitAndInstall()`.
+  - IPC `update:check` / `update:install`, broadcast `update:status` từ main → renderer.
+  - Preload expose `window.aviary.update.check/install/onStatus`.
+  - UI sidebar: nút "Kiểm tra cập nhật → Có bản mới/đang tải → Cài & khởi động lại", thanh progress khi tải, hiện lỗi nếu có.
+  - `UpdateState` + `UpdateStatusPayload` trong `src/shared/types.ts`.
+- **Giao diện làm lại bằng lucide-react icons**:
+  - Sidebar, nav, theme toggle (system/light/dark, lưu localStorage), badge trạng thái có chấm màu, empty state.
+  - AccountsView: nút thao tác chuyển thành icon-only có tooltip (Mở/Đóng/Đăng thử/Sửa/Xóa), modal kết quả đăng bài đẹp hơn (hiện URL + ảnh lỗi).
+  - SettingsView: icon theo từng card, secret nhập dạng password, kết quả test webhook có icon OK/Lỗi.
+
+### Fixed
+- **XActions: lỗi `compose` timeout do neo nhầm `role="dialog"` ẩn**:
+  - Bỏ filter `[role="dialog"]` (trang X có dialog wrapper ẩn cũng "chứa" textarea theo DOM → chộp nhầm phần tử hidden → timeout 15s).
+  - Neo trực tiếp vào `tweetTextarea_0:visible`; nút media/Post tìm trong scope dialog/form visible chứa textarea đó.
+  - Upload media ưu tiên `setInputFiles` thẳng vào `[data-testid="fileInput"]` (ổn định hơn filechooser), fallback `mediaUploadButton`.
+  - Nút Post chấp nhận cả `tweetButton` và `tweetButtonInline` (lọc `:visible`), chờ visible rồi click.
+- **ffmpeg khi đóng gói**: sửa path binary `app.asar` → `app.asar.unpacked` (đã khai báo `asarUnpack` cho `ffmpeg-static`).
+
+### Added (đã có từ trước)
 - **XActions: post flow trên x.com** (Giai đoạn 1 - MVP):
   - Module `src/main/actions/XActions.ts` với `postTweet()`: mở compose page, nhập caption, upload media, bấm Post.
   - Hỗ trợ media ảnh/video (video đã được tải về với audio nếu cần).
