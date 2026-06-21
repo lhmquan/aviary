@@ -4,22 +4,20 @@ import {
   FolderOpen,
   Gauge,
   Save,
-  Send,
-  CheckCircle2,
-  XCircle,
-  Loader2
+  Loader2,
+  Monitor
 } from 'lucide-react'
-import type { AppSettings, WebhookTestResult } from '@shared/types'
+import type { AppSettings } from '@shared/types'
 
 export default function SettingsView(): JSX.Element {
   const [settings, setSettings] = useState<AppSettings | null>(null)
   const [saving, setSaving] = useState(false)
   const [savedAt, setSavedAt] = useState<number | null>(null)
-  const [testing, setTesting] = useState(false)
-  const [testResult, setTestResult] = useState<WebhookTestResult | null>(null)
+  const [autoStart, setAutoStart] = useState(false)
 
   useEffect(() => {
     window.aviary.settings.get().then(setSettings)
+    window.aviary.autoStart.get().then(setAutoStart)
   }, [])
 
   if (!settings) return <p className="placeholder">Đang tải cài đặt…</p>
@@ -37,19 +35,6 @@ export default function SettingsView(): JSX.Element {
       setSavedAt(Date.now())
     } finally {
       setSaving(false)
-    }
-  }
-
-  async function runTest(): Promise<void> {
-    setTesting(true)
-    setTestResult(null)
-    try {
-      // Lưu trước khi test để chắc chắn dùng giá trị mới nhất.
-      await window.aviary.settings.save(settings!)
-      const r = await window.aviary.webhook.test()
-      setTestResult(r)
-    } finally {
-      setTesting(false)
     }
   }
 
@@ -76,44 +61,6 @@ export default function SettingsView(): JSX.Element {
             placeholder="(tùy chọn)"
           />
         </label>
-        <div className="row">
-          <button className="btn primary" disabled={saving} onClick={save}>
-            {saving ? <Loader2 size={15} className="spin" /> : <Save size={15} />}
-            {saving ? 'Đang lưu…' : 'Lưu cài đặt'}
-          </button>
-          <button className="btn" disabled={testing || !settings.webhookUrl} onClick={runTest}>
-            {testing ? <Loader2 size={15} className="spin" /> : <Send size={15} />}
-            {testing ? 'Đang test…' : 'Test webhook'}
-          </button>
-          {savedAt && (
-            <span className="hint">Đã lưu lúc {new Date(savedAt).toLocaleTimeString()}</span>
-          )}
-        </div>
-
-        {testResult && (
-          <div className={`test-result ${testResult.ok ? 'ok' : 'fail'}`}>
-            {testResult.ok ? (
-              <>
-                <strong>
-                  <CheckCircle2 size={14} style={{ verticalAlign: 'middle' }} /> OK · HTTP{' '}
-                  {testResult.status}
-                </strong>
-                <div>Caption: {testResult.caption || <em>(rỗng)</em>}</div>
-                <div>Số asset: {testResult.assetCount ?? 0}</div>
-                {testResult.hasAudioMerge && (
-                  <div>Phát hiện video tách audio — sẽ ghép bằng ffmpeg khi tải.</div>
-                )}
-              </>
-            ) : (
-              <>
-                <strong>
-                  <XCircle size={14} style={{ verticalAlign: 'middle' }} /> Lỗi
-                </strong>
-                <div>{testResult.error}</div>
-              </>
-            )}
-          </div>
-        )}
       </section>
 
       <section className="card">
@@ -145,7 +92,7 @@ export default function SettingsView(): JSX.Element {
 
       <section className="card">
         <h2>
-          <Gauge size={16} /> Hiệu năng &amp; Nhật ký
+          <Gauge size={16} /> Hiệu năng & Nhật ký
         </h2>
         <label className="field">
           <span>Số profile mở đồng thời</span>
@@ -171,6 +118,37 @@ export default function SettingsView(): JSX.Element {
           <small className="hint">Log và ảnh lỗi cũ hơn số ngày này sẽ tự xoá khi app khởi động / sau mỗi lần đăng.</small>
         </label>
       </section>
+
+      <section className="card">
+        <h2>
+          <Monitor size={16} /> Hệ thống
+        </h2>
+        <label className="field checkbox-field">
+          <input
+            type="checkbox"
+            checked={autoStart}
+            onChange={async (e) => {
+              const next = e.target.checked
+              await window.aviary.autoStart.set(next)
+              setAutoStart(next)
+            }}
+          />
+          <span>Khởi động cùng Windows</span>
+        </label>
+        <small className="hint">
+          App tự chạy ngầm trên thanh tray khi khởi động. Nhấn X để thu xuống tray, chuột phải tray icon để thoát hẳn.
+        </small>
+      </section>
+
+      <div className="row" style={{ marginTop: 4 }}>
+        <button className="btn primary" disabled={saving} onClick={save}>
+          {saving ? <Loader2 size={15} className="spin" /> : <Save size={15} />}
+          {saving ? 'Đang lưu…' : 'Lưu cài đặt'}
+        </button>
+        {savedAt && (
+          <span className="hint">Đã lưu lúc {new Date(savedAt).toLocaleTimeString()}</span>
+        )}
+      </div>
     </div>
   )
 }

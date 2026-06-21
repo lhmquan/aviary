@@ -3,7 +3,7 @@ import { join } from 'path'
 import { rmSync } from 'fs'
 import { getDb } from './index'
 import { getAllSettings } from './settings'
-import type { LogEntry } from '../../shared/types'
+import type { LogEntry, LogListParams, LogListResult } from '../../shared/types'
 
 interface LogRow {
   id: number
@@ -55,11 +55,17 @@ export function insertLog(entry: Omit<LogEntry, 'id'>): void {
     )
 }
 
-export function listLogs(): LogEntry[] {
-  const rows = getDb()
-    .prepare('SELECT * FROM logs ORDER BY ts DESC LIMIT 500')
-    .all() as LogRow[]
-  return rows.map(toLog)
+export function listLogs(params?: LogListParams): LogListResult {
+  const page = Math.max(1, params?.page ?? 1)
+  const pageSize = Math.max(1, Math.min(200, params?.pageSize ?? 50))
+  const offset = (page - 1) * pageSize
+
+  const db = getDb()
+  const total = (db.prepare('SELECT COUNT(*) as c FROM logs').get() as { c: number }).c
+  const rows = db
+    .prepare('SELECT * FROM logs ORDER BY ts DESC LIMIT ? OFFSET ?')
+    .all(pageSize, offset) as LogRow[]
+  return { rows: rows.map(toLog), total }
 }
 
 // Xoá log cũ hơn retentionDays; xoá luôn file screenshot trên đĩa.

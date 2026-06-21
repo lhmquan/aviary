@@ -92,6 +92,14 @@ function migrate(d: Database.Database): void {
 
   // Cột phân loại sự kiện trong logs: 'post' | 'schedule' | 'run'. Cũ = NULL (= post).
   addColumnIfMissing(d, 'logs', 'event_type', 'TEXT')
+
+  // Cột kết quả kiểm tra proxy: status (unchecked/live/dead), vị trí, latency.
+  addColumnIfMissing(d, 'proxies', 'status', "TEXT NOT NULL DEFAULT 'unchecked'")
+  addColumnIfMissing(d, 'proxies', 'checked_at', 'INTEGER')
+  addColumnIfMissing(d, 'proxies', 'latency_ms', 'INTEGER')
+  addColumnIfMissing(d, 'proxies', 'country', 'TEXT')
+  addColumnIfMissing(d, 'proxies', 'city', 'TEXT')
+  addColumnIfMissing(d, 'proxies', 'check_ip', 'TEXT')
 }
 
 function addColumnIfMissing(d: Database.Database, table: string, col: string, decl: string): void {

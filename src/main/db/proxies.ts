@@ -12,6 +12,13 @@ export interface Proxy {
   note: string | null
   createdAt: number
   updatedAt: number
+  // Kết quả kiểm tra proxy
+  status: 'unchecked' | 'live' | 'dead'
+  checkedAt: number | null
+  latencyMs: number | null
+  country: string | null
+  city: string | null
+  checkIp: string | null
 }
 
 export interface ProxyInput {
@@ -19,6 +26,16 @@ export interface ProxyInput {
   proxyString: string
   kind?: string | null
   note?: string | null
+}
+
+export interface ProxyCheckResult {
+  id: string
+  status: 'live' | 'dead'
+  latencyMs: number | null
+  country: string | null
+  city: string | null
+  checkIp: string | null
+  error?: string
 }
 
 interface ProxyRow {
@@ -29,6 +46,12 @@ interface ProxyRow {
   note: string | null
   created_at: number
   updated_at: number
+  status: string
+  checked_at: number | null
+  latency_ms: number | null
+  country: string | null
+  city: string | null
+  check_ip: string | null
 }
 
 function toProxy(r: ProxyRow): Proxy {
@@ -39,7 +62,13 @@ function toProxy(r: ProxyRow): Proxy {
     kind: r.kind,
     note: r.note,
     createdAt: r.created_at,
-    updatedAt: r.updated_at
+    updatedAt: r.updated_at,
+    status: (r.status === 'live' || r.status === 'dead') ? r.status : 'unchecked',
+    checkedAt: r.checked_at,
+    latencyMs: r.latency_ms,
+    country: r.country,
+    city: r.city,
+    checkIp: r.check_ip
   }
 }
 
@@ -156,6 +185,20 @@ export function updateProxy(id: string, input: Partial<ProxyInput>): Proxy {
 
 export function deleteProxy(id: string): void {
   getDb().prepare('DELETE FROM proxies WHERE id = ?').run(id)
+}
+
+// Xoá toàn bộ proxy trong kho.
+export function clearProxies(): void {
+  getDb().prepare('DELETE FROM proxies').run()
+}
+
+// Cập nhật kết quả kiểm tra proxy.
+export function updateProxyCheck(id: string, result: Omit<ProxyCheckResult, 'id'>): void {
+  getDb()
+    .prepare(
+      `UPDATE proxies SET status = ?, checked_at = ?, latency_ms = ?, country = ?, city = ?, check_ip = ? WHERE id = ?`
+    )
+    .run(result.status, Date.now(), result.latencyMs, result.country, result.city, result.checkIp, id)
 }
 
 // Giá trị đặc biệt cho account.proxyId:

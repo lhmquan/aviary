@@ -102,7 +102,12 @@ class BrowserManager {
         headless,
         viewport: null,
         proxy: parseProxy(proxyString),
-        args: ['--no-first-run', '--no-default-browser-check']
+        args: [
+          '--no-first-run',
+          '--no-default-browser-check',
+          '--disable-infobars',
+          '--test-type'
+        ]
       })
 
     // Profile có thể bị khóa bởi tiến trình Chrome cũ/zombie ("Opening in existing

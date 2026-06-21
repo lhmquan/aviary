@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from 'react'
-import { Plus, Pencil, Trash2, RefreshCw, Loader2, Globe, ShieldCheck } from 'lucide-react'
-import type { Proxy, ProxyInput } from '@shared/types'
+import { Plus, Pencil, Trash2, RefreshCw, Loader2, Globe, ShieldCheck, X } from 'lucide-react'
+import type { Proxy, ProxyInput, ProxyCheckResult } from '@shared/types'
 
 // Định dạng hiển thị proxy: che phần user:pass để không lộ trên màn hình khi chia sẻ.
 function maskProxy(raw: string): string {
@@ -14,11 +14,31 @@ function maskProxy(raw: string): string {
   return `${maskedUser}@${host}`
 }
 
+// Badge trạng thái proxy check.
+function statusBadge(status: Proxy['status'], latencyMs: number | null): JSX.Element {
+  if (status === 'live') {
+    return (
+      <span className="badge on">
+        <span className="dot" />
+        Live{latencyMs != null ? ` · ${latencyMs}ms` : ''}
+      </span>
+    )
+  }
+  if (status === 'dead') {
+    return <span className="badge fail"><span className="dot" /> Die</span>
+  }
+  return <span className="badge"><span className="dot" /> Chưa kiểm</span>
+}
+
 export default function ProxiesView(): JSX.Element {
   const [proxies, setProxies] = useState<Proxy[]>([])
   const [loading, setLoading] = useState(false)
   const [showBulk, setShowBulk] = useState(false)
   const [editing, setEditing] = useState<Proxy | null>(null)
+  // Multi-select
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  // Check state
+  const [checkingIds, setCheckingIds] = useState<Set<string>>(new Set())
 
   const refresh = useCallback(async () => {
     setLoading(true)
@@ -33,11 +53,81 @@ export default function ProxiesView(): JSX.Element {
     refresh()
   }, [refresh])
 
+  // Khi danh sách proxy thay đổi, xoá selectedIds không còn tồn tại.
+  useEffect(() => {
+    setSelectedIds((prev) => {
+      const next = new Set<string>()
+      for (const id of prev) {
+        if (proxies.some((p) => p.id === id)) next.add(id)
+      }
+      return next.size === prev.size ? prev : next
+    })
+  }, [proxies])
+
   async function handleDelete(p: Proxy): Promise<void> {
     if (!confirm(`Xóa proxy "${p.label}"?\nCác tài khoản đang gán proxy này sẽ tự về Local.`)) return
     await window.aviary.proxies.remove(p.id)
     await refresh()
   }
+
+  async function handleClearAll(): Promise<void> {
+    if (!confirm('Xóa TOÀN BỘ proxy? Các tài khoản đang gán proxy sẽ tự về Local.')) return
+    await window.aviary.proxies.clear()
+    setSelectedIds(new Set())
+    await refresh()
+  }
+
+  function toggleSelect(id: string): void {
+    setSelectedIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  function toggleSelectAll(): void {
+    if (selectedIds.size === proxies.length) {
+      setSelectedIds(new Set())
+    } else {
+      setSelectedIds(new Set(proxies.map((p) => p.id)))
+    }
+  }
+
+  async function handleBulkDelete(): Promise<void> {
+    const count = selectedIds.size
+    if (!confirm(`Xóa ${count} proxy đã chọn?`)) return
+    for (const id of selectedIds) {
+      await window.aviary.proxies.remove(id).catch(() => {})
+    }
+    setSelectedIds(new Set())
+    await refresh()
+  }
+
+  async function handleCheckSelected(): Promise<void> {
+    const ids = [...selectedIds]
+    setCheckingIds(new Set(ids))
+    try {
+      await window.aviary.proxies.check(ids)
+    } finally {
+      setCheckingIds(new Set())
+      await refresh()
+    }
+  }
+
+  async function handleCheckAll(): Promise<void> {
+    const ids = proxies.map((p) => p.id)
+    setCheckingIds(new Set(ids))
+    try {
+      await window.aviary.proxies.check(ids)
+    } finally {
+      setCheckingIds(new Set())
+      await refresh()
+    }
+  }
+
+  const hasSelection = selectedIds.size > 0
+  const allSelected = proxies.length > 0 && selectedIds.size === proxies.length
 
   return (
     <div className="view">
@@ -56,6 +146,40 @@ export default function ProxiesView(): JSX.Element {
           <Plus size={15} />
           Thêm danh sách proxy
         </button>
+
+        <span className="badge count-badge">{proxies.length} proxy</span>
+
+        {proxies.length > 0 && (
+          <button className="btn icon-label" onClick={handleCheckAll} disabled={checkingIds.size > 0}>
+            {checkingIds.size > 0 ? <Loader2 size={15} className="spin" /> : <ShieldCheck size={15} />}
+            Kiểm tra tất cả
+          </button>
+        )}
+
+        {proxies.length > 0 && (
+          <button className="btn danger" onClick={handleClearAll}>
+            <Trash2 size={15} />
+            Xoá tất cả
+          </button>
+        )}
+
+        {hasSelection && (
+          <>
+            <span className="bulk-sep" />
+            <span className="badge selected-badge">Đã chọn {selectedIds.size}</span>
+            <button className="btn icon-label" disabled={checkingIds.size > 0} onClick={handleCheckSelected}>
+              <ShieldCheck size={15} />
+              Kiểm tra
+            </button>
+            <button className="btn icon-label danger" onClick={handleBulkDelete}>
+              <Trash2 size={15} />
+              Xoá
+            </button>
+            <button className="btn icon-only ghost" title="Bỏ chọn tất cả" onClick={() => setSelectedIds(new Set())}>
+              <X size={16} />
+            </button>
+          </>
+        )}
       </div>
 
       {proxies.length === 0 ? (
@@ -74,38 +198,79 @@ export default function ProxiesView(): JSX.Element {
           <table className="table">
             <thead>
               <tr>
+                <th className="col-check">
+                  <input
+                    type="checkbox"
+                    ref={(el) => {
+                      if (el) el.indeterminate = hasSelection && !allSelected
+                    }}
+                    checked={allSelected}
+                    onChange={toggleSelectAll}
+                  />
+                </th>
                 <th>Nhãn</th>
                 <th>Proxy</th>
                 <th>Nhóm</th>
+                <th>Trạng thái</th>
+                <th>Vị trí</th>
                 <th>Ghi chú</th>
                 <th className="col-actions"></th>
               </tr>
             </thead>
             <tbody>
-              {proxies.map((p) => (
-                <tr key={p.id}>
-                  <td className="cell-label">{p.label}</td>
-                  <td className="mono small">{maskProxy(p.proxyString)}</td>
-                  <td>{p.kind || '—'}</td>
-                  <td className="small">{p.note || '—'}</td>
-                  <td className="actions">
-                    <button
-                      className="btn icon-only"
-                      title="Sửa"
-                      onClick={() => setEditing(p)}
-                    >
-                      <Pencil size={16} />
-                    </button>
-                    <button
-                      className="btn icon-only danger"
-                      title="Xóa"
-                      onClick={() => handleDelete(p)}
-                    >
-                      <Trash2 size={16} />
-                    </button>
-                  </td>
-                </tr>
-              ))}
+              {proxies.map((p) => {
+                const isSelected = selectedIds.has(p.id)
+                const isChecking = checkingIds.has(p.id)
+                return (
+                  <tr key={p.id} className={isSelected ? 'row-selected' : ''}>
+                    <td className="col-check">
+                      <input
+                        type="checkbox"
+                        checked={isSelected}
+                        onChange={() => toggleSelect(p.id)}
+                      />
+                    </td>
+                    <td className="cell-label">
+                      {p.label}
+                      {isChecking && <Loader2 size={12} className="spin" style={{ marginLeft: 4, verticalAlign: 'middle' }} />}
+                    </td>
+                    <td className="mono small">{maskProxy(p.proxyString)}</td>
+                    <td>{p.kind || '—'}</td>
+                    <td>{statusBadge(p.status, p.latencyMs)}</td>
+                    <td className="small">
+                      {p.city && p.country ? `${p.city}, ${p.country}` : p.checkIp || '—'}
+                    </td>
+                    <td className="small">{p.note || '—'}</td>
+                    <td className="actions">
+                      <button
+                        className="btn icon-only"
+                        title="Kiểm tra"
+                        disabled={isChecking}
+                        onClick={async () => {
+                          setCheckingIds(new Set([p.id]))
+                          try { await window.aviary.proxies.check([p.id]) } finally { setCheckingIds(new Set()); await refresh() }
+                        }}
+                      >
+                        {isChecking ? <Loader2 size={16} className="spin" /> : <ShieldCheck size={16} />}
+                      </button>
+                      <button
+                        className="btn icon-only"
+                        title="Sửa"
+                        onClick={() => setEditing(p)}
+                      >
+                        <Pencil size={16} />
+                      </button>
+                      <button
+                        className="btn icon-only danger"
+                        title="Xóa"
+                        onClick={() => handleDelete(p)}
+                      >
+                        <Trash2 size={16} />
+                      </button>
+                    </td>
+                  </tr>
+                )
+              })}
             </tbody>
           </table>
         </div>

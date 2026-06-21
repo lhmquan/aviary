@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, useRef } from 'react'
 import {
   Plus,
   Pencil,
@@ -9,7 +9,12 @@ import {
   Loader2,
   ExternalLink,
   UserPlus,
-  Zap
+  Zap,
+  CheckCircle2,
+  XCircle,
+  Globe,
+  X,
+  ExternalLink as ExternalLinkIcon
 } from 'lucide-react'
 import type { Account, AccountInput, Proxy, WebhookTestResult } from '@shared/types'
 import { PROXY_LOCAL, PROXY_RANDOM } from '@shared/types'
@@ -35,6 +40,10 @@ export default function AccountsView(): JSX.Element {
   const [testResult, setTestResult] = useState<{ accountId: string; result: WebhookTestResult } | null>(
     null
   )
+  // Bulk selection
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  const [bulkBusy, setBulkBusy] = useState(false)
+  const [showBulkProxy, setShowBulkProxy] = useState(false)
 
   const refresh = useCallback(async () => {
     const [list, proxList] = await Promise.all([
@@ -57,6 +66,17 @@ export default function AccountsView(): JSX.Element {
     })
     return off
   }, [refresh])
+
+  // Khi danh sách account thay đổi (xoá...), xoá selectedIds không còn tồn tại.
+  useEffect(() => {
+    setSelectedIds((prev) => {
+      const next = new Set<string>()
+      for (const id of prev) {
+        if (accounts.some((a) => a.id === id)) next.add(id)
+      }
+      return next.size === prev.size ? prev : next
+    })
+  }, [accounts])
 
   async function handleOpen(a: Account): Promise<void> {
     setBusy(a.id)
@@ -128,6 +148,54 @@ export default function AccountsView(): JSX.Element {
     }
   }
 
+  // ---- Bulk actions ----
+  function toggleSelect(id: string): void {
+    setSelectedIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  function toggleSelectAll(): void {
+    if (selectedIds.size === accounts.length) {
+      setSelectedIds(new Set())
+    } else {
+      setSelectedIds(new Set(accounts.map((a) => a.id)))
+    }
+  }
+
+  async function handleBulkOpen(): Promise<void> {
+    setBulkBusy(true)
+    let errors = 0
+    for (const id of selectedIds) {
+      try {
+        await window.aviary.browser.open(id)
+      } catch {
+        errors++
+      }
+    }
+    await refresh()
+    setBulkBusy(false)
+    if (errors > 0) alert(`Đã mở ${selectedIds.size - errors}/${selectedIds.size} profile. ${errors} lỗi.`)
+  }
+
+  async function handleBulkDelete(): Promise<void> {
+    const count = selectedIds.size
+    if (!confirm(`Xóa ${count} tài khoản đã chọn? Profile và session sẽ vẫn nằm trên ổ đĩa.`)) return
+    setBulkBusy(true)
+    for (const id of selectedIds) {
+      await window.aviary.accounts.remove(id).catch(() => {})
+    }
+    setSelectedIds(new Set())
+    await refresh()
+    setBulkBusy(false)
+  }
+
+  const hasSelection = selectedIds.size > 0
+  const allSelected = accounts.length > 0 && selectedIds.size === accounts.length
+
   return (
     <div className="view">
       <div className="toolbar">
@@ -141,21 +209,74 @@ export default function AccountsView(): JSX.Element {
           <Plus size={16} />
           Thêm tài khoản
         </button>
+
+        <span className="badge count-badge">{accounts.length} tài khoản</span>
+
+        {hasSelection && (
+          <>
+            <span className="bulk-sep" />
+            <span className="badge selected-badge">Đã chọn {selectedIds.size}</span>
+            <button
+              className="btn icon-label"
+              disabled={bulkBusy}
+              onClick={handleBulkOpen}
+              title={`Mở ${selectedIds.size} profile (headful)`}
+            >
+              {bulkBusy ? <Loader2 size={15} className="spin" /> : <Power size={15} />}
+              Mở Profile
+            </button>
+            <button
+              className="btn icon-label"
+              disabled={bulkBusy}
+              onClick={() => setShowBulkProxy(true)}
+              title={`Đổi proxy cho ${selectedIds.size} tài khoản`}
+            >
+              <Globe size={15} />
+              Set Proxy
+            </button>
+            <button
+              className="btn icon-label danger"
+              disabled={bulkBusy}
+              onClick={handleBulkDelete}
+              title={`Xoá ${selectedIds.size} tài khoản`}
+            >
+              <Trash2 size={15} />
+              Xoá
+            </button>
+            <button
+              className="btn icon-only ghost"
+              title="Bỏ chọn tất cả"
+              onClick={() => setSelectedIds(new Set())}
+            >
+              <X size={16} />
+            </button>
+          </>
+        )}
       </div>
 
       {accounts.length === 0 ? (
         <div className="empty-state">
           <UserPlus size={36} />
           <p>Chưa có tài khoản nào</p>
-          <span>Bấm &quot;Thêm tài khoản&quot; để bắt đầu.</span>
+          <span>Bấm "Thêm tài khoản" để bắt đầu.</span>
         </div>
       ) : (
         <div className="card table-card">
           <table className="table">
             <thead>
               <tr>
-                <th>Nhãn</th>
-                <th>Handle</th>
+                <th className="col-check">
+                  <input
+                    type="checkbox"
+                    ref={(el) => {
+                      if (el) el.indeterminate = hasSelection && !allSelected
+                    }}
+                    checked={allSelected}
+                    onChange={toggleSelectAll}
+                  />
+                </th>
+                <th>Name</th>
+                <th>Username</th>
                 <th>Proxy</th>
                 <th>Trạng thái</th>
                 <th className="col-actions"></th>
@@ -168,8 +289,16 @@ export default function AccountsView(): JSX.Element {
                   a.proxyId !== PROXY_LOCAL &&
                   a.proxyId !== PROXY_RANDOM &&
                   !proxies.some((p) => p.id === a.proxyId)
+                const isSelected = selectedIds.has(a.id)
                 return (
-                  <tr key={a.id}>
+                  <tr key={a.id} className={isSelected ? 'row-selected' : ''}>
+                    <td className="col-check">
+                      <input
+                        type="checkbox"
+                        checked={isSelected}
+                        onChange={() => toggleSelect(a.id)}
+                      />
+                    </td>
                     <td className="cell-label">
                       <div>{a.label}</div>
                       <div className="row-tags">
@@ -177,7 +306,22 @@ export default function AccountsView(): JSX.Element {
                         {a.hashtag && <span className="badge-mini hashtag-mini">{a.hashtag}</span>}
                       </div>
                     </td>
-                    <td>{a.handle ? `@${a.handle.replace(/^@/, '')}` : '—'}</td>
+                    <td>
+                      {a.handle ? (
+                        <span className="username-cell">
+                          {a.handle ? a.handle.replace(/^@/, '') : '—'}
+                          <button
+                            className="btn icon-only ghost x-link"
+                            title={a.handle ? `Mở x.com/${a.handle.replace(/^@/, '')}` : 'Mở profile'}
+                            onClick={() =>
+                              window.open(`https://x.com/${(a.handle ?? '').replace(/^@/, '')}`, '_blank')
+                            }
+                          >
+                            <ExternalLinkIcon size={13} />
+                          </button>
+                        </span>
+                      ) : '—'}
+                    </td>
                     <td>
                       <select
                         className="proxy-select"
@@ -293,6 +437,32 @@ export default function AccountsView(): JSX.Element {
       {testResult && (
         <WebhookTestModal result={testResult.result} onClose={() => setTestResult(null)} />
       )}
+
+      {showBulkProxy && (
+        <BulkSetProxyModal
+          proxies={proxies}
+          selectedCount={selectedIds.size}
+          onApply={async (proxyId) => {
+            setBulkBusy(true)
+            let ok = 0
+            for (const id of selectedIds) {
+              try {
+                await window.aviary.accounts.update(id, { proxyId })
+                ok++
+              } catch {
+                /* bỏ qua lỗi từng account */
+              }
+            }
+            await refresh()
+            setBulkBusy(false)
+            setShowBulkProxy(false)
+            if (ok < selectedIds.size) {
+              alert(`Đã cập nhật ${ok}/${selectedIds.size} tài khoản.`)
+            }
+          }}
+          onClose={() => setShowBulkProxy(false)}
+        />
+      )}
     </div>
   )
 }
@@ -354,7 +524,7 @@ function AccountForm(props: {
           />
         </label>
         <label className="field">
-          <span>Handle (@)</span>
+          <span>Username (X)</span>
           <input value={handle} onChange={(e) => setHandle(e.target.value)} placeholder="vd: myhandle" />
         </label>
         <label className="field">
@@ -421,39 +591,123 @@ function WebhookTestModal(props: { result: WebhookTestResult; onClose: () => voi
   const { result, onClose } = props
   return (
     <div className="modal-backdrop" onClick={onClose}>
-      <div className="modal" onClick={(e) => e.stopPropagation()}>
+      <div className="modal webhook-result-modal" onClick={(e) => e.stopPropagation()}>
         <h2>Kết quả test webhook</h2>
         {result.ok ? (
-          <div className="result-block ok">
-            <strong>OK · HTTP {result.status}</strong>
-            <div>accountId: {result.accountId ?? '(null)'}</div>
-            <div>
-              assetUrl gửi đi:{' '}
-              {result.assetUrl ? (
-                <a href={result.assetUrl} target="_blank" rel="noopener noreferrer" className="result-link">
-                  {result.assetUrl}
-                  <ExternalLink size={12} />
-                </a>
-              ) : (
-                <em>(null)</em>
-              )}
+          <>
+            <div className="webhook-status-banner ok">
+              <CheckCircle2 size={20} />
+              <span>OK · HTTP {result.status}</span>
             </div>
-            <div>Caption: {result.caption || <em>(rỗng)</em>}</div>
-            <div>Số asset: {result.assetCount ?? 0}</div>
-            {result.hasAudioMerge && <div>Phát hiện video tách audio — sẽ ghép bằng ffmpeg.</div>}
-          </div>
+            <div className="webhook-detail-rows">
+              <div className="webhook-detail-row">
+                <span className="webhook-detail-label">Caption</span>
+                <span className="webhook-detail-value">{result.caption || <em>(rỗng)</em>}</span>
+              </div>
+              <div className="webhook-detail-row">
+                <span className="webhook-detail-label">Phát hiện</span>
+                <span className="webhook-detail-value">
+                  {result.assetCount ?? 0} asset{result.hasAudioMerge ? ' — tách video+audio, sẽ ghép bằng ffmpeg' : ''}
+                </span>
+              </div>
+              <div className="webhook-detail-row">
+                <span className="webhook-detail-label">accountId</span>
+                <span className="webhook-detail-value mono small">{result.accountId ?? '(null)'}</span>
+              </div>
+              <div className="webhook-detail-row">
+                <span className="webhook-detail-label">assetUrl</span>
+                <span className="webhook-detail-value">
+                  {result.assetUrl ? (
+                    <a href={result.assetUrl} target="_blank" rel="noopener noreferrer" className="result-link">
+                      {result.assetUrl}
+                      <ExternalLink size={12} />
+                    </a>
+                  ) : (
+                    <em>(null)</em>
+                  )}
+                </span>
+              </div>
+            </div>
+          </>
         ) : (
-          <div className="result-block fail">
-            <strong>Lỗi</strong>
-            <p className="result-error">{result.error}</p>
-            <p className="hint">
-              assetUrl gửi đi: {result.assetUrl ?? '(null)'} — nếu null là profile chưa lưu Google Sheet.
-            </p>
-          </div>
+          <>
+            <div className="webhook-status-banner fail">
+              <XCircle size={20} />
+              <span>Lỗi</span>
+            </div>
+            <div className="webhook-detail-rows">
+              <div className="webhook-detail-row">
+                <span className="webhook-detail-value result-error">{result.error}</span>
+              </div>
+              <div className="webhook-detail-row">
+                <span className="webhook-detail-label">assetUrl gửi đi</span>
+                <span className="webhook-detail-value mono small">
+                  {result.assetUrl ?? '(null)'}
+                </span>
+              </div>
+              <p className="hint" style={{ marginTop: 4 }}>
+                Nếu null là profile chưa lưu Google Sheet.
+              </p>
+            </div>
+          </>
         )}
         <div className="modal-actions">
           <button className="btn primary" onClick={onClose}>
             Đóng
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function BulkSetProxyModal(props: {
+  proxies: Proxy[]
+  selectedCount: number
+  onApply: (proxyId: string) => Promise<void>
+  onClose: () => void
+}): JSX.Element {
+  const { proxies, selectedCount, onApply, onClose } = props
+  const [proxyId, setProxyId] = useState(PROXY_LOCAL)
+  const [applying, setApplying] = useState(false)
+
+  async function apply(): Promise<void> {
+    setApplying(true)
+    try {
+      await onApply(proxyId)
+    } finally {
+      setApplying(false)
+    }
+  }
+
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal" onClick={(e) => e.stopPropagation()}>
+        <h2>Set Proxy cho {selectedCount} tài khoản</h2>
+        <label className="field">
+          <span>Proxy</span>
+          <select value={proxyId} onChange={(e) => setProxyId(e.target.value)}>
+            <option value={PROXY_LOCAL}>Local (IP máy)</option>
+            <option value={PROXY_RANDOM}>Random (mỗi lần chạy lấy ngẫu nhiên)</option>
+            {proxies.length > 0 && (
+              <optgroup label="Proxy đã thêm">
+                {proxies.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.label}
+                    {p.kind ? ` (${p.kind})` : ''}
+                  </option>
+                ))}
+              </optgroup>
+            )}
+          </select>
+        </label>
+        <div className="modal-actions">
+          <button className="btn" onClick={onClose} disabled={applying}>
+            Hủy
+          </button>
+          <button className="btn primary" disabled={applying} onClick={apply}>
+            {applying ? <Loader2 size={15} className="spin" /> : null}
+            {applying ? 'Đang áp dụng…' : 'Áp dụng'}
           </button>
         </div>
       </div>

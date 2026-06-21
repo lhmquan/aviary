@@ -1,14 +1,32 @@
-import { app, shell, BrowserWindow, ipcMain, dialog } from 'electron'
+import { app, shell, BrowserWindow, ipcMain, dialog, nativeImage } from 'electron'
 import { join } from 'path'
+import { existsSync } from 'fs'
 import { IpcChannels, type AppInfo } from '../shared/types'
 import { registerIpc } from './ipc'
 import { browserManager } from './browser/BrowserManager'
 import { initUpdater, checkForUpdates, installUpdate } from './updater'
 import { pruneLogs } from './db/logs'
 import { startScheduler, stopScheduler } from './scheduler'
+import { createTray, getIsQuitting, setIsQuitting } from './tray'
+import { getAutoStart, setAutoStart } from './autostart'
 
-function createWindow(): void {
-  const mainWindow = new BrowserWindow({
+let mainWindow: BrowserWindow | null = null
+
+function getAppIcon(): Electron.NativeImage | undefined {
+  // Ưu tiên file build/icon.png (từ script generate-icons.js).
+  // Khi đóng gói, file nằm trong resources; khi dev, nằm trong build/.
+  const iconPath = app.isPackaged
+    ? join(process.resourcesPath, 'icon.png')
+    : join(__dirname, '../../build/icon.png')
+  if (existsSync(iconPath)) {
+    return nativeImage.createFromPath(iconPath)
+  }
+  return undefined
+}
+
+function createWindow(): BrowserWindow {
+  const icon = getAppIcon()
+  const win = new BrowserWindow({
     width: 1280,
     height: 800,
     minWidth: 940,
@@ -16,6 +34,7 @@ function createWindow(): void {
     show: false,
     autoHideMenuBar: true,
     title: 'Aviary',
+    ...(icon ? { icon } : {}),
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       sandbox: false,
@@ -24,19 +43,30 @@ function createWindow(): void {
     }
   })
 
-  mainWindow.on('ready-to-show', () => mainWindow.show())
+  win.on('ready-to-show', () => win.show())
 
-  mainWindow.webContents.setWindowOpenHandler((details) => {
+  // Nhấn X = thu xuống tray (không thoát). Chỉ thoát thật khi isQuitting=true
+  // (từ tray "Thoát", relaunch, update install).
+  win.on('close', (e) => {
+    if (!getIsQuitting()) {
+      e.preventDefault()
+      win.hide()
+    }
+  })
+
+  win.webContents.setWindowOpenHandler((details) => {
     shell.openExternal(details.url)
     return { action: 'deny' }
   })
 
   // electron-vite cung cấp ELECTRON_RENDERER_URL khi chạy dev (HMR).
   if (process.env['ELECTRON_RENDERER_URL']) {
-    mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL'])
+    win.loadURL(process.env['ELECTRON_RENDERER_URL'])
   } else {
-    mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
+    win.loadFile(join(__dirname, '../renderer/index.html'))
   }
+
+  return win
 }
 
 function registerAppIpc(): void {
@@ -45,6 +75,7 @@ function registerAppIpc(): void {
   })
 
   ipcMain.handle(IpcChannels.appRelaunch, async () => {
+    setIsQuitting(true)
     await browserManager.closeAll()
 
     // DEV (electron-vite): renderer chạy qua Vite dev server. Gọi app.relaunch()+exit
@@ -74,12 +105,20 @@ function registerAppIpc(): void {
 
   ipcMain.handle(IpcChannels.updateCheck, () => checkForUpdates())
   ipcMain.handle(IpcChannels.updateInstall, () => installUpdate())
+
+  // Auto-start cùng Windows.
+  ipcMain.handle(IpcChannels.autoStartGet, () => getAutoStart())
+  ipcMain.handle(IpcChannels.autoStartSet, (_e, enabled: boolean) => setAutoStart(enabled))
 }
 
 app.whenReady().then(() => {
   registerAppIpc()
   registerIpc()
-  createWindow()
+
+  mainWindow = createWindow()
+
+  // Khởi tạo system tray (thu xuống tray khi nhấn X).
+  createTray(mainWindow)
 
   // Phải gọi initUpdater sau khi window đã tạo để
   // các event listener của autoUpdater có thể broadcast về renderer.
@@ -100,7 +139,13 @@ app.whenReady().then(() => {
   }
 
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow()
+    // macOS: click dock icon khi cửa sổ đang ẩn → hiện lại.
+    if (BrowserWindow.getAllWindows().length === 0) {
+      mainWindow = createWindow()
+    } else {
+      mainWindow?.show()
+      mainWindow?.focus()
+    }
   })
 })
 
@@ -114,6 +159,8 @@ app.on('before-quit', async (e) => {
   }
 })
 
+// KHÔNG tự quit khi tất cả cửa sổ đóng — app chạy nền trên tray.
+// Chỉ quit khi user bấm "Thoát" từ tray (isQuitting=true).
 app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') app.quit()
+  // macOS: không quit (mặc định). Windows/Linux: thu xuống tray, không quit.
 })

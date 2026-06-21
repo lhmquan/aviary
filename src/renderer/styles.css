@@ -494,6 +494,82 @@ nav {
   width: 1%;
 }
 
+.col-check {
+  width: 40px;
+  text-align: center;
+}
+
+.col-check input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+  accent-color: var(--accent);
+}
+
+/* Dòng được chọn */
+.table tbody tr.row-selected td {
+  background: var(--accent-soft) !important;
+}
+
+/* Bulk toolbar */
+.bulk-sep {
+  display: inline-block;
+  width: 1px;
+  height: 22px;
+  background: var(--border-strong);
+  margin: 0 2px;
+  vertical-align: middle;
+}
+
+.count-badge {
+  font-size: 12px;
+  background: var(--panel-3);
+  color: var(--text-2);
+  border-color: var(--border);
+}
+
+.selected-badge {
+  font-size: 12px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 30%, transparent);
+}
+
+/* Username cell with X link icon */
+.username-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.x-link {
+  width: 22px !important;
+  height: 22px !important;
+  min-width: 22px !important;
+  padding: 0 !important;
+  opacity: 0.5;
+  transition: opacity var(--ease);
+}
+
+.x-link:hover {
+  opacity: 1;
+}
+
+/* ---------- Pagination ---------- */
+.pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 12px 0 4px;
+}
+
+.page-info {
+  font-size: 13px;
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+}
+
 .actions {
   display: flex;
   gap: 6px;
@@ -860,6 +936,72 @@ nav {
   position: absolute;
   right: 8px;
   bottom: 4px;
+}
+
+/* ---------- Webhook test result modal ---------- */
+.webhook-result-modal {
+  width: 480px;
+}
+
+.webhook-status-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 16px;
+  border-radius: var(--r-md);
+  font-weight: 600;
+  font-size: 15px;
+  margin-bottom: 16px;
+}
+
+.webhook-status-banner.ok {
+  background: var(--success-soft);
+  border: 1px solid color-mix(in srgb, var(--success) 28%, transparent);
+  color: var(--success);
+}
+
+.webhook-status-banner.fail {
+  background: var(--danger-soft);
+  border: 1px solid color-mix(in srgb, var(--danger) 28%, transparent);
+  color: var(--danger);
+}
+
+.webhook-detail-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.webhook-detail-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.webhook-detail-row:last-child {
+  border-bottom: none;
+}
+
+.webhook-detail-label {
+  flex-shrink: 0;
+  width: 80px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  padding-top: 1px;
+}
+
+.webhook-detail-value {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  color: var(--text);
+  word-break: break-word;
+  line-height: 1.5;
 }
 
 /* ---------- Misc helpers ---------- */

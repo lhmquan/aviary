@@ -20,13 +20,29 @@ function normalizePayload(raw: unknown): PostPayload {
     const proceed = o['XProceed?'] ?? o['XProceed'] ?? o.xproceed ?? o.proceed
     if (typeof proceed === 'string' && proceed.trim().toUpperCase() === 'SKIP') {
       const title = o.Title ?? o.title ?? o.caption
-      return { caption: typeof title === 'string' ? title : '', assets: [], skip: true }
+      const skipId = typeof o.id === 'string' ? o.id : undefined
+      return {
+        caption: typeof title === 'string' ? title : '',
+        assets: [],
+        skip: true,
+        id: skipId
+      }
     }
   }
 
   let caption = ''
   const assets: PostPayload['assets'] = []
   const videoSpecs: NonNullable<PostPayload['videoSpecs']> = []
+
+  // id link Reddit (ổn định hơn title để markdone khớp đúng dòng sheet — title có thể
+  // trùng giữa crosspost và post gốc). Ưu tiên trường id rõ ràng.
+  let id: string | undefined
+  for (const o of items) {
+    if (typeof o.id === 'string' && o.id.trim()) {
+      id = o.id.trim()
+      break
+    }
+  }
 
   // Caption: ưu tiên trường rõ ràng -> title (Reddit) -> text/content.
   for (const o of items) {
@@ -85,7 +101,7 @@ function normalizePayload(raw: unknown): PostPayload {
     if (typeof o.url === 'string') assets.push({ url: o.url })
   }
 
-  return { caption, assets, videoSpecs: videoSpecs.length ? videoSpecs : undefined }
+  return { caption, assets, videoSpecs: videoSpecs.length ? videoSpecs : undefined, id }
 }
 
 type WebhookEvent = 'publishpost' | 'markdone'
@@ -139,19 +155,22 @@ export async function fetchPostPayload(
 
 // #3: báo về n8n rằng 1 bài đã xử lý xong -> n8n update sheet đánh dấu video done.
 // reason: 'posted' = đăng thành công; 'broken' = link hỏng (403/SKIP) cần đánh dấu để
-// không lấy lại. Gửi kèm accountId, assetUrl, title, postUrl để n8n tìm đúng dòng sheet.
+// không lấy lại. Gửi kèm id (ổn định nhất), title, accountId, assetUrl, postUrl để n8n
+// tìm đúng dòng sheet (ưu tiên khớp theo id, fallback title).
 export async function markDone(p: {
   accountId: string
   assetUrl: string | null
   title: string
   postUrl: string | null
   reason?: 'posted' | 'broken'
+  id?: string | null
 }): Promise<{ ok: boolean; error?: string }> {
   try {
     const res = await postWebhook(
       webhookBody('markdone', {
         accountId: p.accountId,
         assetUrl: p.assetUrl,
+        id: p.id ?? null,
         title: p.title,
         postUrl: p.postUrl,
         reason: p.reason ?? 'posted'

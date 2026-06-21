@@ -2,6 +2,7 @@ import { autoUpdater } from 'electron-updater'
 import { app, BrowserWindow } from 'electron'
 import { IpcChannels, type UpdateStatusPayload } from '../shared/types'
 import { browserManager } from './browser/BrowserManager'
+import { setIsQuitting } from './tray'
 
 let wired = false
 
@@ -47,7 +48,8 @@ export async function checkForUpdates(): Promise<void> {
 }
 
 export async function installUpdate(): Promise<void> {
-  // Đóng sạch các profile chromium trước khi cài + khởi động lại.
+  // Đánh dấu đang thoát thật (không thu tray) trước khi cài + khởi động lại.
+  setIsQuitting(true)
   await browserManager.closeAll()
   autoUpdater.quitAndInstall()
 }

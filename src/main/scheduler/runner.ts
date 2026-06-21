@@ -30,11 +30,13 @@ export function emitProgress(p: ProgressPayload): void {
 // KHÔNG phát hiện được link hỏng (không trả SKIP). App mới biết qua lỗi tải -> gọi markdone
 // (broken) báo n8n mark link đó trong sheet, ghi nhật ký, đóng profile, báo user xử lý sau.
 // eventType để cột Loại trong nhật ký đúng nguồn (run=chạy lịch, post=nút Đăng).
+// id link Reddit truyền kèm markdone để n8n khớp đúng dòng sheet (ổn định hơn title).
 export async function handleBrokenAndReport(
   account: Account,
   title: string,
   reason: string,
-  eventType: 'post' | 'run' = 'post'
+  eventType: 'post' | 'run' = 'post',
+  id?: string | null
 ): Promise<void> {
   emitProgress({
     accountId: account.id,
@@ -45,6 +47,7 @@ export async function handleBrokenAndReport(
   const md = await markDone({
     accountId: account.id,
     assetUrl: account.assetUrl,
+    id,
     title,
     postUrl: null,
     reason: 'broken'
@@ -172,7 +175,7 @@ export async function runPostForAccount(
     // Link Reddit hỏng (403/404 khi tải/ffmpeg) mà N8N không phát hiện -> app mới biết.
     // Đây là case markdone: báo n8n mark link đó trong sheet, log, đóng profile.
     if (e instanceof BrokenMediaError) {
-      await handleBrokenAndReport(account, payload.caption ?? '', e.message, logEventType)
+      await handleBrokenAndReport(account, payload.caption ?? '', e.message, logEventType, payload.id)
       return { ok: false, skipped: true, error: `Bài bị bỏ qua: ${e.message}` }
     }
     throw e
@@ -222,6 +225,7 @@ export async function runPostForAccount(
     const md = await markDone({
       accountId,
       assetUrl: account.assetUrl,
+      id: payload.id,
       title: payload.caption ?? '',
       postUrl: result.url ?? null,
       reason: 'posted'

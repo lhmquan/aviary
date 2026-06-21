@@ -41,6 +41,13 @@ export interface Proxy {
   note: string | null
   createdAt: number
   updatedAt: number
+  // Kết quả kiểm tra proxy
+  status: 'unchecked' | 'live' | 'dead'
+  checkedAt: number | null
+  latencyMs: number | null
+  country: string | null
+  city: string | null
+  checkIp: string | null
 }
 
 export interface ProxyInput {
@@ -48,6 +55,17 @@ export interface ProxyInput {
   proxyString: string
   kind?: string | null
   note?: string | null
+}
+
+// Kết quả kiểm tra 1 proxy (live/die + vị trí).
+export interface ProxyCheckResult {
+  id: string
+  status: 'live' | 'dead'
+  latencyMs: number | null
+  country: string | null
+  city: string | null
+  checkIp: string | null
+  error?: string
 }
 
 // Giá trị đặc biệt cho account.proxyId.
@@ -105,6 +123,8 @@ export interface PostPayload {
   videoSpecs?: VideoSpec[]
   // n8n báo bỏ qua bài này (link hỏng) -> app tự lấy bài kế.
   skip?: boolean
+  // id link Reddit (ổn định hơn title để markdone khớp đúng dòng sheet).
+  id?: string
 }
 
 export interface WebhookTestResult {
@@ -143,6 +163,17 @@ export interface LogEntry {
   screenshot: string | null
   // 'post' = đăng bài | 'schedule' = sự kiện lịch (tạo/sửa/xóa/toggle) | 'run' = 1 lần chạy do lịch | null = cũ.
   eventType?: string | null
+}
+
+// Phân trang nhật ký.
+export interface LogListParams {
+  page?: number
+  pageSize?: number
+}
+
+export interface LogListResult {
+  rows: LogEntry[]
+  total: number
 }
 
 // Trạng thái tiến trình 1 tác vụ (main -> renderer, hiển thị thanh trạng thái).
@@ -184,6 +215,8 @@ export const IpcChannels = {
   proxiesCreate: 'proxies:create',
   proxiesUpdate: 'proxies:update',
   proxiesDelete: 'proxies:delete',
+  proxiesClear: 'proxies:clear',
+  proxiesCheck: 'proxies:check',
   schedulesList: 'schedules:list',
   schedulesCreate: 'schedules:create',
   schedulesUpdate: 'schedules:update',
@@ -199,9 +232,12 @@ export const IpcChannels = {
   taskProgress: 'task:progress',
   logsList: 'logs:list',
   logsClear: 'logs:clear',
+  logsCount: 'logs:count',
   updateCheck: 'update:check',
   updateInstall: 'update:install',
-  updateStatus: 'update:status'
+  updateStatus: 'update:status',
+  autoStartGet: 'app:autoStart:get',
+  autoStartSet: 'app:autoStart:set'
 } as const
 
 // API mà preload expose ra window.aviary cho renderer.
@@ -224,6 +260,8 @@ export interface AviaryApi {
     create: (input: ProxyInput) => Promise<Proxy>
     update: (id: string, input: Partial<ProxyInput>) => Promise<Proxy>
     remove: (id: string) => Promise<void>
+    clear: () => Promise<void>
+    check: (ids: string[]) => Promise<ProxyCheckResult[]>
   }
   schedules: {
     list: () => Promise<Schedule[]>
@@ -249,12 +287,16 @@ export interface AviaryApi {
     onProgress: (cb: (p: ProgressPayload) => void) => () => void
   }
   logs: {
-    list: () => Promise<LogEntry[]>
+    list: (params?: LogListParams) => Promise<LogListResult>
     clear: () => Promise<void>
   }
   update: {
     check: () => Promise<void>
     install: () => Promise<void>
     onStatus: (cb: (status: UpdateStatusPayload) => void) => () => void
+  }
+  autoStart: {
+    get: () => Promise<boolean>
+    set: (enabled: boolean) => Promise<void>
   }
 }

@@ -7,7 +7,8 @@ import {
   type ProxyInput,
   type ScheduleInput,
   type UpdateStatusPayload,
-  type ProgressPayload
+  type ProgressPayload,
+  type LogListParams
 } from '../shared/types'
 
 const api: AviaryApi = {
@@ -30,7 +31,9 @@ const api: AviaryApi = {
     create: (input: ProxyInput) => ipcRenderer.invoke(IpcChannels.proxiesCreate, input),
     update: (id: string, input: Partial<ProxyInput>) =>
       ipcRenderer.invoke(IpcChannels.proxiesUpdate, id, input),
-    remove: (id: string) => ipcRenderer.invoke(IpcChannels.proxiesDelete, id)
+    remove: (id: string) => ipcRenderer.invoke(IpcChannels.proxiesDelete, id),
+    clear: () => ipcRenderer.invoke(IpcChannels.proxiesClear),
+    check: (ids: string[]) => ipcRenderer.invoke(IpcChannels.proxiesCheck, ids)
   },
   schedules: {
     list: () => ipcRenderer.invoke(IpcChannels.schedulesList),
@@ -66,7 +69,7 @@ const api: AviaryApi = {
     }
   },
   logs: {
-    list: () => ipcRenderer.invoke(IpcChannels.logsList),
+    list: (params?: LogListParams) => ipcRenderer.invoke(IpcChannels.logsList, params),
     clear: () => ipcRenderer.invoke(IpcChannels.logsClear)
   },
   update: {
@@ -77,6 +80,10 @@ const api: AviaryApi = {
       ipcRenderer.on(IpcChannels.updateStatus, listener)
       return () => ipcRenderer.removeListener(IpcChannels.updateStatus, listener)
     }
+  },
+  autoStart: {
+    get: () => ipcRenderer.invoke(IpcChannels.autoStartGet),
+    set: (enabled: boolean) => ipcRenderer.invoke(IpcChannels.autoStartSet, enabled)
   }
 }
 
