@@ -5,6 +5,17 @@ Mọi thay đổi đáng chú ý của Aviary được ghi tại đây.
 Định dạng theo [Keep a Changelog](https://keepachangelog.com/vi/1.0.0/),
 phiên bản theo [Semantic Versioning](https://semver.org/lang/vi/).
 
+## [0.2.1] - 2026-06-23
+
+### Added
+- Redesign statusbar thành panel kiểu terminal với resize handle, auto‑scroll, cắt dòng (MAX_LINES 180), memo hoá các dòng, pill stage màu sắc cải tiến.
+- Cải thiện hiệu năng bằng cách format thời gian một lần và dùng `memo` cho `TerminalRow`.
+- UI mới: status dot, nút thu/mở, nút xoá log, nút nhảy xuống cuối.
+- Lưu chiều cao vào `localStorage` để giữ giữa các phiên.
+
+### Fixed
+- Điều chỉnh CSS cho dark theme nhất quán.
+
 ## [0.2.0] - 2026-06-22
 
 ### Added
