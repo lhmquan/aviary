@@ -14,9 +14,12 @@ import {
   XCircle,
   Globe,
   X,
+  Clock,
+  Eye,
+  EyeOff,
   ExternalLink as ExternalLinkIcon
 } from 'lucide-react'
-import type { Account, AccountInput, Proxy, WebhookTestResult } from '@shared/types'
+import type { Account, AccountInput, Proxy, Schedule, WebhookTestResult } from '@shared/types'
 import { PROXY_LOCAL, PROXY_RANDOM } from '@shared/types'
 
 const STATUS_LABEL: Record<Account['status'], string> = {
@@ -30,6 +33,7 @@ const STATUS_LABEL: Record<Account['status'], string> = {
 export default function AccountsView(): JSX.Element {
   const [accounts, setAccounts] = useState<Account[]>([])
   const [proxies, setProxies] = useState<Proxy[]>([])
+  const [schedules, setSchedules] = useState<Schedule[]>([])
   const [openMap, setOpenMap] = useState<Record<string, boolean>>({})
   const [showForm, setShowForm] = useState(false)
   const [editing, setEditing] = useState<Account | null>(null)
@@ -46,12 +50,14 @@ export default function AccountsView(): JSX.Element {
   const [showBulkProxy, setShowBulkProxy] = useState(false)
 
   const refresh = useCallback(async () => {
-    const [list, proxList] = await Promise.all([
+    const [list, proxList, schedList] = await Promise.all([
       window.aviary.accounts.list(),
-      window.aviary.proxies.list()
+      window.aviary.proxies.list(),
+      window.aviary.schedules.list()
     ])
     setAccounts(list)
     setProxies(proxList)
+    setSchedules(schedList)
     const entries = await Promise.all(
       list.map(async (a) => [a.id, (await window.aviary.browser.status(a.id)).open] as const)
     )
@@ -145,6 +151,20 @@ export default function AccountsView(): JSX.Element {
       alert('Đổi proxy lỗi: ' + (e as Error).message)
     } finally {
       setProxyBusy(null)
+    }
+  }
+
+  // Bật/tắt nhanh chế độ chạy ngầm (headless) ngay tại dòng — lưu tức thì, không cần mở Sửa.
+  // Lưu ý: thay đổi chỉ áp dụng cho lần MỞ profile kế tiếp; profile đang mở không đổi chế độ.
+  async function handleToggleHeadless(a: Account): Promise<void> {
+    setBusy(a.id)
+    try {
+      await window.aviary.accounts.update(a.id, { headless: !a.headless })
+      await refresh()
+    } catch (e) {
+      alert('Đổi chế độ chạy ngầm lỗi: ' + (e as Error).message)
+    } finally {
+      setBusy(null)
     }
   }
 
@@ -290,6 +310,8 @@ export default function AccountsView(): JSX.Element {
                   a.proxyId !== PROXY_RANDOM &&
                   !proxies.some((p) => p.id === a.proxyId)
                 const isSelected = selectedIds.has(a.id)
+                // Tài khoản có lịch đang bật (enabled) -> hiện nhãn "Đang lên lịch"
+                const hasEnabledSchedule = schedules.some((s) => s.accountId === a.id && s.enabled)
                 return (
                   <tr key={a.id} className={isSelected ? 'row-selected' : ''}>
                     <td className="col-check">
@@ -302,6 +324,11 @@ export default function AccountsView(): JSX.Element {
                     <td className="cell-label">
                       <div>{a.label}</div>
                       <div className="row-tags">
+                        {hasEnabledSchedule && (
+                          <span className="badge-mini schedule-mini" title="Tài khoản đang được lên lịch chạy">
+                            <Clock size={11} /> Lên lịch
+                          </span>
+                        )}
                         {a.headless && <span className="badge-mini">Ngầm</span>}
                         {a.hashtag && <span className="badge-mini hashtag-mini">{a.hashtag}</span>}
                       </div>
@@ -381,6 +408,24 @@ export default function AccountsView(): JSX.Element {
                           {busy === a.id ? <Loader2 size={16} className="spin" /> : <Power size={16} />}
                         </button>
                       )}
+                      <button
+                        className={`btn icon-only ${a.headless ? 'accent' : ''}`}
+                        title={
+                          a.headless
+                            ? 'Đang chạy ngầm (ẩn cửa sổ) — bấm để chuyển sang hiện cửa sổ. Áp dụng cho lần mở kế tiếp.'
+                            : 'Đang hiện cửa sổ — bấm để chuyển sang chạy ngầm. Áp dụng cho lần mở kế tiếp.'
+                        }
+                        disabled={busy === a.id}
+                        onClick={() => handleToggleHeadless(a)}
+                      >
+                        {busy === a.id ? (
+                          <Loader2 size={16} className="spin" />
+                        ) : a.headless ? (
+                          <EyeOff size={16} />
+                        ) : (
+                          <Eye size={16} />
+                        )}
+                      </button>
                       <button
                         className="btn icon-only accent"
                         title="Đăng bài (tự mở profile nếu chưa mở)"

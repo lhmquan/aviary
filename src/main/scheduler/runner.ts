@@ -5,7 +5,9 @@ import {
   IpcChannels,
   type Account,
   type PostResult,
-  type ProgressPayload
+  type DeleteResult,
+  type ProgressPayload,
+  type DeleteMode
 } from '../../shared/types'
 import { getAccount, setAccountStatus } from '../db/accounts'
 import { getAllSettings } from '../db/settings'
@@ -16,7 +18,7 @@ import {
   BrokenMediaError
 } from '../n8n/N8nConnector'
 import { browserManager } from '../browser/BrowserManager'
-import { postTweet } from '../actions/XActions'
+import { postTweet, deleteTweetsFromProfile } from '../actions/XActions'
 import { insertLog, pruneLogs } from '../db/logs'
 
 // Broadcast tiến trình tới mọi renderer window (dùng chung cho manual + schedule).
@@ -40,6 +42,7 @@ export async function handleBrokenAndReport(
 ): Promise<void> {
   emitProgress({
     accountId: account.id,
+    accountLabel: account.label,
     stage: 'markdone',
     message: 'Link hỏng — đang báo n8n đánh dấu…',
     busy: true
@@ -71,6 +74,7 @@ export async function handleBrokenAndReport(
 
   emitProgress({
     accountId: account.id,
+    accountLabel: account.label,
     stage: 'error',
     message: md.ok
       ? 'Bài bị bỏ qua (link hỏng) — đã đánh dấu n8n. Bấm đăng lại để lấy bài kế.'
@@ -88,13 +92,14 @@ export async function runPostForAccount(
   const account = getAccount(accountId)
   if (!account) throw new Error(`Account không tồn tại: ${accountId}`)
   const logEventType = opts?.source === 'schedule' ? 'run' : 'post'
+  const label = account.label
 
-  emitProgress({ accountId, stage: 'prepare', message: 'Đang kiểm tra profile…', busy: true })
+  emitProgress({ accountId, accountLabel: label, stage: 'prepare', message: 'Đang kiểm tra profile…', busy: true })
 
   // Nếu profile chưa mở, tự mở theo chế độ headless của account rồi đăng.
   let context = browserManager.getContext(accountId)
   if (!context) {
-    emitProgress({ accountId, stage: 'open', message: 'Đang mở profile…', busy: true })
+    emitProgress({ accountId, accountLabel: label, stage: 'open', message: 'Đang mở profile…', busy: true })
     await browserManager.openProfile(account)
     setAccountStatus(accountId, 'logged_in')
     context = browserManager.getContext(accountId)
@@ -106,7 +111,7 @@ export async function runPostForAccount(
   //      luồng đăng. Giới hạn MAX_SKIPS để tránh loop khi sheet có nhiều link hỏng liền nhau.
   // markdone(broken) CHỈ gọi khi tải video/ffmpeg lỗi (N8N không phát hiện được link hỏng).
   const MAX_SKIPS = 10
-  emitProgress({ accountId, stage: 'fetch', message: 'Đang lấy dữ liệu từ n8n…', busy: true })
+  emitProgress({ accountId, accountLabel: label, stage: 'fetch', message: 'Đang lấy dữ liệu từ n8n…', busy: true })
   let payload = await fetchPostPayload(accountId, account.assetUrl)
   let skips = 0
   while (payload.skip) {
@@ -129,6 +134,7 @@ export async function runPostForAccount(
       // KHÔNG markdone (n8n đã mark từng cái). User xử lý sheet rồi thử lại.
       emitProgress({
         accountId,
+        accountLabel: label,
         stage: 'error',
         message: `Đã bỏ qua ${MAX_SKIPS} bài SKIP liên tiếp — sheet có vẻ hết bài tốt. Vui lòng kiểm tra lại.`,
         busy: false
@@ -153,6 +159,7 @@ export async function runPostForAccount(
     }
     emitProgress({
       accountId,
+      accountLabel: label,
       stage: 'fetch',
       message: `Bài SKIP (link hỏng, n8n đã mark) — đang lấy bài kế…`,
       busy: true
@@ -161,7 +168,7 @@ export async function runPostForAccount(
   }
 
   // Tải asset về đĩa
-  emitProgress({ accountId, stage: 'download', message: 'Đang tải video/ảnh…', busy: true })
+  emitProgress({ accountId, accountLabel: label, stage: 'download', message: 'Đang tải video/ảnh…', busy: true })
   const jobId = `job_${Date.now()}`
   const { downloadsDir } = getAllSettings()
   const downloadsRoot =
@@ -187,14 +194,15 @@ export async function runPostForAccount(
   const fullCaption = account.hashtag
     ? `${payload.caption}\n${account.hashtag}`.trim()
     : payload.caption
-  emitProgress({ accountId, stage: 'post', message: 'Đang đăng bài lên X…', busy: true })
+  emitProgress({ accountId, accountLabel: label, stage: 'post', message: 'Đang đăng bài lên X…', busy: true })
   let result: PostResult | undefined
   try {
     result = await postTweet(
       context,
       fullCaption,
       mediaPaths.length > 0 ? mediaPaths : undefined,
-      accountId
+      accountId,
+      (message) => emitProgress({ accountId, accountLabel: label, stage: 'post', message, busy: true })
     )
   } finally {
     if (result?.ok) {
@@ -221,7 +229,7 @@ export async function runPostForAccount(
   if (result?.ok) {
     // Báo n8n đánh dấu video đã đăng (markdone) kèm title + postUrl. title = caption GỐC
     // (không hashtag) để n8n khớp đúng dòng sheet.
-    emitProgress({ accountId, stage: 'markdone', message: 'Đang báo n8n đánh dấu done…', busy: true })
+    emitProgress({ accountId, accountLabel: label, stage: 'markdone', message: 'Đang báo n8n đánh dấu done…', busy: true })
     const md = await markDone({
       accountId,
       assetUrl: account.assetUrl,
@@ -236,6 +244,7 @@ export async function runPostForAccount(
 
     emitProgress({
       accountId,
+      accountLabel: label,
       stage: 'done',
       message: md.ok
         ? result.url
@@ -247,8 +256,115 @@ export async function runPostForAccount(
   } else {
     emitProgress({
       accountId,
+      accountLabel: label,
       stage: 'error',
       message: `Lỗi: ${result?.error ?? 'không xác định'}`,
+      busy: false
+    })
+  }
+  return result
+}
+
+// Pipeline xoá bài dùng chung cho scheduler. Không gọi n8n / tải / markDone.
+// Mở profile, duyệt trang profile X, xoá bài theo chế độ (mới nhất / theo ngày),
+// ghi nhật ký, đóng profile.
+export async function runDeleteForAccount(
+  accountId: string,
+  opts?: {
+    source?: 'manual' | 'schedule'
+    deleteMode?: DeleteMode
+    deleteBeforeDate?: string | null
+    deleteCount?: number
+  }
+): Promise<DeleteResult> {
+  const account = getAccount(accountId)
+  if (!account) throw new Error(`Account không tồn tại: ${accountId}`)
+  if (!account.handle) {
+    const emptyResult: DeleteResult = {
+      ok: false,
+      deletedCount: 0,
+      urls: [],
+      error: 'Tài khoản chưa có username X — không thể mở trang profile để xoá bài.',
+      step: 'prepare'
+    }
+    return emptyResult
+  }
+
+  const logEventType = opts?.source === 'schedule' ? 'run_delete' : 'delete'
+  const label = account.label
+
+  emitProgress({ accountId, accountLabel: label, stage: 'prepare', message: 'Đang kiểm tra profile…', busy: true })
+
+  // Mở profile nếu chưa mở
+  let context = browserManager.getContext(accountId)
+  if (!context) {
+    emitProgress({ accountId, accountLabel: label, stage: 'open', message: 'Đang mở profile…', busy: true })
+    await browserManager.openProfile(account)
+    setAccountStatus(accountId, 'logged_in')
+    context = browserManager.getContext(accountId)
+  }
+  if (!context) throw new Error('Không mở được profile.')
+
+  // Xoá bài từ profile X
+  emitProgress({ accountId, accountLabel: label, stage: 'delete', message: 'Đang xoá bài trên X…', busy: true })
+  const result = await deleteTweetsFromProfile(
+    context,
+    account.handle,
+    {
+      mode: opts?.deleteMode ?? 'newest',
+      beforeDate: opts?.deleteBeforeDate ?? null,
+      maxCount: opts?.deleteCount ?? 1
+    },
+    accountId,
+    (message) => emitProgress({ accountId, accountLabel: label, stage: 'delete', message, busy: true })
+  )
+
+  // Ghi nhật ký: hiển thị link bài đầu tiên (nếu có) + dấu link
+  const caption = result.ok
+    ? (() => {
+        if (result.deletedCount <= 0) return 'Đã xoá 0 bài';
+        const firstUrl = result.urls[0] ?? null;
+        if (result.deletedCount === 1) {
+          return firstUrl ? 'Đã xoá 1 bài 🔗' : 'Đã xoá 1 bài';
+        }
+        return firstUrl
+          ? `Đã xoá ${result.deletedCount} bài 🔗`
+          : `Đã xoá ${result.deletedCount} bài`;
+      })()
+    : `Xoá bài lỗi${result.deletedCount > 0 ? ` (đã xoá ${result.deletedCount} bài trước khi lỗi)` : ''}`;
+
+  insertLog({
+    accountId,
+    accountLabel: account.label,
+    ts: Date.now(),
+    ok: result.ok,
+    caption,
+    url: result.urls[0] ?? null,
+    error: result.ok ? (result.error ?? null) : (result.error ?? 'Lỗi không xác định'),
+    step: result.step ?? null,
+    screenshot: result.screenshot ?? null,
+    eventType: logEventType,
+    urls: result.urls
+  })
+  pruneLogs()
+
+  if (result.ok) {
+    // Đóng profile sau khi xoá thành công
+    await browserManager.closeProfile(accountId).catch(() => {})
+
+    emitProgress({
+      accountId,
+      accountLabel: label,
+      stage: 'done',
+      message: `Hoàn thành — đã xoá ${result.deletedCount} bài`,
+      busy: false
+    })
+  } else {
+    emitProgress({
+      accountId,
+      accountLabel: label,
+      stage: 'error',
+      message: `Lỗi: ${result.error ?? 'không xác định'}`,
       busy: false
     })
   }

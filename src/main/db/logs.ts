@@ -17,9 +17,19 @@ interface LogRow {
   step: string | null
   screenshot: string | null
   event_type: string | null
+  urls_json: string | null
 }
 
 function toLog(r: LogRow): LogEntry {
+  let urls: string[] | undefined
+  if (r.urls_json) {
+    try {
+      const parsed = JSON.parse(r.urls_json)
+      if (Array.isArray(parsed)) urls = parsed.filter((u): u is string => typeof u === 'string')
+    } catch {
+      /* JSON hỏng → bỏ qua */
+    }
+  }
   return {
     id: r.id,
     accountId: r.account_id,
@@ -31,15 +41,16 @@ function toLog(r: LogRow): LogEntry {
     error: r.error,
     step: r.step,
     screenshot: r.screenshot,
-    eventType: r.event_type
+    eventType: r.event_type,
+    urls
   }
 }
 
 export function insertLog(entry: Omit<LogEntry, 'id'>): void {
   getDb()
     .prepare(
-      `INSERT INTO logs (account_id, account_label, ts, ok, caption, url, error, step, screenshot, event_type)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO logs (account_id, account_label, ts, ok, caption, url, error, step, screenshot, event_type, urls_json)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       entry.accountId,
@@ -51,7 +62,8 @@ export function insertLog(entry: Omit<LogEntry, 'id'>): void {
       entry.error,
       entry.step,
       entry.screenshot,
-      entry.eventType ?? null
+      entry.eventType ?? null,
+      entry.urls && entry.urls.length > 0 ? JSON.stringify(entry.urls) : null
     )
 }
 
@@ -59,12 +71,28 @@ export function listLogs(params?: LogListParams): LogListResult {
   const page = Math.max(1, params?.page ?? 1)
   const pageSize = Math.max(1, Math.min(200, params?.pageSize ?? 50))
   const offset = (page - 1) * pageSize
+  const eventType = params?.eventType ?? null
 
   const db = getDb()
-  const total = (db.prepare('SELECT COUNT(*) as c FROM logs').get() as { c: number }).c
-  const rows = db
-    .prepare('SELECT * FROM logs ORDER BY ts DESC LIMIT ? OFFSET ?')
-    .all(pageSize, offset) as LogRow[]
+
+  // Xây dựng WHERE clause động theo eventType filter.
+  let where = ''
+  const args: any[] = []
+  if (eventType === 'post') {
+    // Đăng: bao gồm cả log cũ (event_type NULL) và log có event_type = 'post'.
+    where = 'WHERE (event_type IS NULL OR event_type = ?)'
+    args.push('post')
+  } else if (eventType) {
+    where = 'WHERE event_type = ?'
+    args.push(eventType)
+  }
+  // eventType null/undefined: lấy tất cả (không có WHERE)
+
+  const totalSql = `SELECT COUNT(*) as c FROM logs ${where}`
+  const total = (db.prepare(totalSql).get(...args) as { c: number }).c
+
+  const rowsSql = `SELECT * FROM logs ${where} ORDER BY ts DESC LIMIT ? OFFSET ?`
+  const rows = db.prepare(rowsSql).all(...args, pageSize, offset) as LogRow[]
   return { rows: rows.map(toLog), total }
 }
 

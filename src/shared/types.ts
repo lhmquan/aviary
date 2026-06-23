@@ -72,18 +72,24 @@ export interface ProxyCheckResult {
 export const PROXY_LOCAL = '__local'
 export const PROXY_RANDOM = '__random'
 
-// ---- Lịch đăng bài ----
+// ---- Lên lịch đăng / xoá bài ----
 export type ScheduleKind = 'interval' | 'fixed'
+export type ScheduleAction = 'post' | 'delete'
+export type DeleteMode = 'newest' | 'by_date'
 
 export interface Schedule {
   id: string
   accountId: string
   label: string | null
   enabled: boolean
+  action: ScheduleAction
   kind: ScheduleKind
   intervalMinutes: number | null // kind='interval'
   times: string[] // kind='fixed': mảng "HH:MM"
   jitterSeconds: number // ± ngẫu nhiên mỗi lần chạy
+  deleteMode: DeleteMode | null // action='delete': 'newest' | 'by_date'
+  deleteBeforeDate: string | null // action='delete' + deleteMode='by_date': "YYYY-MM-DD"
+  deleteCount: number // action='delete': số bài xoá mỗi lần (0 = xoá tất cả)
   lastRunAt: number | null
   nextRunAt: number | null
   createdAt: number
@@ -93,11 +99,15 @@ export interface Schedule {
 export interface ScheduleInput {
   accountId: string
   label?: string | null
+  action?: ScheduleAction
   kind: ScheduleKind
   intervalMinutes?: number | null
   times?: string[]
   jitterSeconds?: number
   enabled?: boolean
+  deleteMode?: DeleteMode | null
+  deleteBeforeDate?: string | null
+  deleteCount?: number
 }
 
 export interface AppSettings {
@@ -149,6 +159,16 @@ export interface PostResult {
   skipped?: boolean
 }
 
+// Kết quả xoá bài trên X
+export interface DeleteResult {
+  ok: boolean
+  deletedCount: number
+  urls: string[]
+  error?: string
+  step?: string
+  screenshot?: string
+}
+
 // Một dòng nhật ký đăng bài (lưu DB, hiển thị ở tab Nhật ký).
 export interface LogEntry {
   id: number
@@ -161,7 +181,13 @@ export interface LogEntry {
   error: string | null
   step: string | null
   screenshot: string | null
-  // 'post' = đăng bài | 'schedule' = sự kiện lịch (tạo/sửa/xóa/toggle) | 'run' = 1 lần chạy do lịch | null = cũ.
+  // Danh sách URL các bài đã xoá (chỉ có ở log loại 'delete'/'run_delete').
+  // Dùng để hiển thị chi tiết cho user kiểm tra. Có thể ít hơn số bài đã xoá
+  // (bài không lấy được link sẽ không nằm trong đây).
+  urls?: string[]
+  // 'post' = đăng bài thủ công | 'delete' = xoá bài thủ công |
+  // 'schedule' = sự kiện lịch (tạo/sửa/xóa/toggle) | 'run' = 1 lần chạy đăng do lịch |
+  // 'run_delete' = 1 lần chạy xoá do lịch | null = cũ.
   eventType?: string | null
 }
 
@@ -169,6 +195,9 @@ export interface LogEntry {
 export interface LogListParams {
   page?: number
   pageSize?: number
+  // Lọc theo loại sự kiện (event_type). 'post' gồm cả log cũ (event_type = NULL).
+  // Bỏ trống / null = lấy tất cả.
+  eventType?: string | null
 }
 
 export interface LogListResult {
@@ -179,6 +208,8 @@ export interface LogListResult {
 // Trạng thái tiến trình 1 tác vụ (main -> renderer, hiển thị thanh trạng thái).
 export interface ProgressPayload {
   accountId?: string
+  // Tên tài khoản (label) để statusbar hiển thị mà không cần lookup lại bên renderer.
+  accountLabel?: string
   stage: string
   message: string
   busy: boolean

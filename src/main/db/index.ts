@@ -71,7 +71,7 @@ function migrate(d: Database.Database): void {
     );
   `)
 
-  // Bảng lịch đăng bài (tab Lịch đăng).
+  // Bảng lên lịch đăng bài (tab Lên lịch).
   d.exec(`
     CREATE TABLE IF NOT EXISTS schedules (
       id               TEXT PRIMARY KEY,
@@ -92,6 +92,8 @@ function migrate(d: Database.Database): void {
 
   // Cột phân loại sự kiện trong logs: 'post' | 'schedule' | 'run'. Cũ = NULL (= post).
   addColumnIfMissing(d, 'logs', 'event_type', 'TEXT')
+  // JSON mảng URL các bài đã xoá (log loại delete/run_delete). Cũ = NULL.
+  addColumnIfMissing(d, 'logs', 'urls_json', 'TEXT')
 
   // Cột kết quả kiểm tra proxy: status (unchecked/live/dead), vị trí, latency.
   addColumnIfMissing(d, 'proxies', 'status', "TEXT NOT NULL DEFAULT 'unchecked'")
@@ -100,6 +102,12 @@ function migrate(d: Database.Database): void {
   addColumnIfMissing(d, 'proxies', 'country', 'TEXT')
   addColumnIfMissing(d, 'proxies', 'city', 'TEXT')
   addColumnIfMissing(d, 'proxies', 'check_ip', 'TEXT')
+
+  // Cột mở rộng cho lịch xoá bài (action='delete').
+  addColumnIfMissing(d, 'schedules', 'action', "TEXT NOT NULL DEFAULT 'post'")
+  addColumnIfMissing(d, 'schedules', 'delete_mode', 'TEXT')
+  addColumnIfMissing(d, 'schedules', 'delete_before_date', 'TEXT')
+  addColumnIfMissing(d, 'schedules', 'delete_count', 'INTEGER NOT NULL DEFAULT 1')
 }
 
 function addColumnIfMissing(d: Database.Database, table: string, col: string, decl: string): void {

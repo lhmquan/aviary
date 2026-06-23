@@ -1,17 +1,22 @@
 import { randomUUID } from 'crypto'
 import { getDb } from './index'
 import { insertLog } from './logs'
-import type { Schedule, ScheduleInput, ScheduleKind } from '../../shared/types'
+import { getAccount } from './accounts'
+import type { Schedule, ScheduleInput, ScheduleKind, ScheduleAction, DeleteMode } from '../../shared/types'
 
 interface ScheduleRow {
   id: string
   account_id: string
   label: string | null
   enabled: number
+  action: string
   kind: string
   interval_minutes: number | null
   times: string | null
   jitter_seconds: number
+  delete_mode: string | null
+  delete_before_date: string | null
+  delete_count: number
   last_run_at: number | null
   next_run_at: number | null
   created_at: number
@@ -30,10 +35,14 @@ function toSchedule(r: ScheduleRow): Schedule {
     accountId: r.account_id,
     label: r.label,
     enabled: !!r.enabled,
+    action: (r.action ?? 'post') as ScheduleAction,
     kind: r.kind as ScheduleKind,
     intervalMinutes: r.interval_minutes,
     times,
     jitterSeconds: r.jitter_seconds ?? 0,
+    deleteMode: (r.delete_mode ?? null) as DeleteMode | null,
+    deleteBeforeDate: r.delete_before_date,
+    deleteCount: r.delete_count ?? 1,
     lastRunAt: r.last_run_at,
     nextRunAt: r.next_run_at,
     createdAt: r.created_at,
@@ -75,7 +84,7 @@ function sanitizeTimes(raw: string[] | undefined): string[] {
 function logScheduleEvent(accountId: string, ok: boolean, message: string): void {
   insertLog({
     accountId,
-    accountLabel: 'Lịch đăng',
+    accountLabel: getAccount(accountId)?.label ?? '(tài khoản đã xoá)',
     ts: Date.now(),
     ok,
     caption: message,
@@ -94,20 +103,34 @@ export function createSchedule(input: ScheduleInput): Schedule {
   const times = sanitizeTimes(input.times)
   const schedule = buildScheduleObject({ ...input, times })
   const nextRunAt = computeNextRun(schedule, now)
+
+  // Tính giá trị cột delete
+  const action = input.action ?? 'post'
+  const deleteMode = action === 'delete' ? (input.deleteMode ?? 'newest') : null
+  const deleteBeforeDate = action === 'delete' && deleteMode === 'by_date' ? (input.deleteBeforeDate ?? null) : null
+  const deleteCount = action === 'delete'
+    ? Math.max(0, input.deleteCount === undefined ? 1 : Number(input.deleteCount))
+    : 1
+
   getDb()
     .prepare(
-      `INSERT INTO schedules (id, account_id, label, enabled, kind, interval_minutes, times, jitter_seconds, last_run_at, next_run_at, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)`
+      `INSERT INTO schedules (id, account_id, label, enabled, action, kind, interval_minutes, times, jitter_seconds,
+        delete_mode, delete_before_date, delete_count, last_run_at, next_run_at, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)`
     )
     .run(
       id,
       input.accountId,
       input.label?.trim() || null,
       input.enabled === false ? 0 : 1,
+      action,
       input.kind,
       input.kind === 'interval' ? Number(input.intervalMinutes) || null : null,
       input.kind === 'fixed' ? JSON.stringify(times) : null,
       Number(input.jitterSeconds) || 0,
+      deleteMode,
+      deleteBeforeDate,
+      deleteCount,
       nextRunAt,
       now,
       now
@@ -128,11 +151,15 @@ export function updateSchedule(id: string, input: Partial<ScheduleInput>): Sched
   const merged: ScheduleInput = {
     accountId: existing.accountId,
     label: existing.label,
+    action: existing.action,
     kind: existing.kind,
     intervalMinutes: existing.intervalMinutes,
     times: existing.times,
     jitterSeconds: existing.jitterSeconds,
     enabled: existing.enabled,
+    deleteMode: existing.deleteMode,
+    deleteBeforeDate: existing.deleteBeforeDate,
+    deleteCount: existing.deleteCount,
     ...input
   }
   validateInput(merged)
@@ -140,19 +167,33 @@ export function updateSchedule(id: string, input: Partial<ScheduleInput>): Sched
   const schedule = buildScheduleObject({ ...merged, times })
   const nextRunAt = computeNextRun(schedule, Date.now())
   const now = Date.now()
+
+  // Tính giá trị cột delete
+  const action = merged.action ?? 'post'
+  const deleteMode = action === 'delete' ? (merged.deleteMode ?? 'newest') : null
+  const deleteBeforeDate = action === 'delete' && deleteMode === 'by_date' ? (merged.deleteBeforeDate ?? null) : null
+  const deleteCount = action === 'delete'
+    ? Math.max(0, merged.deleteCount === undefined ? 1 : Number(merged.deleteCount))
+    : 1
+
   getDb()
     .prepare(
-      `UPDATE schedules SET account_id = ?, label = ?, enabled = ?, kind = ?, interval_minutes = ?,
-       times = ?, jitter_seconds = ?, next_run_at = ?, updated_at = ? WHERE id = ?`
+      `UPDATE schedules SET account_id = ?, label = ?, enabled = ?, action = ?, kind = ?, interval_minutes = ?,
+       times = ?, jitter_seconds = ?, delete_mode = ?, delete_before_date = ?, delete_count = ?,
+       next_run_at = ?, updated_at = ? WHERE id = ?`
     )
     .run(
       merged.accountId,
       merged.label?.trim() || null,
       merged.enabled === false ? 0 : 1,
+      action,
       merged.kind,
       merged.kind === 'interval' ? Number(merged.intervalMinutes) || null : null,
       merged.kind === 'fixed' ? JSON.stringify(times) : null,
       Number(merged.jitterSeconds) || 0,
+      deleteMode,
+      deleteBeforeDate,
+      deleteCount,
       nextRunAt,
       now,
       id
@@ -211,6 +252,30 @@ export function ensureNextRun(now = Date.now()): void {
 
 function validateInput(input: ScheduleInput): void {
   if (!input.accountId?.trim()) throw new Error('Phải chọn tài khoản')
+
+  // Validate tác vụ
+  const action = input.action ?? 'post'
+  if (action !== 'post' && action !== 'delete') {
+    throw new Error('Loại tác vụ không hợp lệ')
+  }
+  if (action === 'delete') {
+    const mode = input.deleteMode ?? 'newest'
+    if (mode !== 'newest' && mode !== 'by_date') {
+      throw new Error('Chế độ xoá không hợp lệ')
+    }
+    const count = input.deleteCount === undefined ? 1 : Number(input.deleteCount)
+    if (!Number.isFinite(count) || count < 0) {
+      throw new Error('Số bài xoá phải ≥ 0')
+    }
+    if (mode === 'by_date') {
+      const date = input.deleteBeforeDate?.trim()
+      if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+        throw new Error('Phải chọn ngày xoá hợp lệ (YYYY-MM-DD)')
+      }
+    }
+  }
+
+  // Validate thời gian
   if (input.kind === 'interval') {
     const m = Number(input.intervalMinutes)
     if (!m || m < 1) throw new Error('Số phút phải ≥ 1')
@@ -224,15 +289,22 @@ function validateInput(input: ScheduleInput): void {
 
 // Build object Schedule (thiếu id/timestamps) đủ dùng cho computeNextRun.
 function buildScheduleObject(input: ScheduleInput): Schedule {
+  const action = input.action ?? 'post'
   return {
     id: '',
     accountId: input.accountId,
     label: input.label ?? null,
     enabled: input.enabled !== false,
+    action,
     kind: input.kind,
     intervalMinutes: input.kind === 'interval' ? Number(input.intervalMinutes) || null : null,
     times: sanitizeTimes(input.times),
     jitterSeconds: Number(input.jitterSeconds) || 0,
+    deleteMode: action === 'delete' ? (input.deleteMode ?? 'newest') : null,
+    deleteBeforeDate: action === 'delete' && input.deleteMode === 'by_date' ? (input.deleteBeforeDate ?? null) : null,
+    deleteCount: action === 'delete'
+      ? Math.max(0, input.deleteCount === undefined ? 1 : Number(input.deleteCount))
+      : 1,
     lastRunAt: null,
     nextRunAt: null,
     createdAt: 0,
@@ -281,10 +353,18 @@ export function computeNextRun(schedule: Pick<Schedule, 'kind' | 'intervalMinute
   return target.getTime() + jitterMs(schedule.jitterSeconds)
 }
 
-// Mô tả lịch dạng text cho log/UI.
-export function describeSchedule(s: Pick<Schedule, 'kind' | 'intervalMinutes' | 'times' | 'jitterSeconds'>): string {
-  if (s.kind === 'interval') {
-    return `Mỗi ${s.intervalMinutes} phút${s.jitterSeconds ? ` ±${s.jitterSeconds}s` : ''}`
+// Mô tả lịch dạng text cho log/UI. Bao gồm cả tác vụ (đăng/xoá).
+export function describeSchedule(s: Pick<Schedule, 'kind' | 'intervalMinutes' | 'times' | 'jitterSeconds'> & Partial<Pick<Schedule, 'action' | 'deleteMode' | 'deleteBeforeDate' | 'deleteCount'>>): string {
+  const timing =
+    s.kind === 'interval'
+      ? `Mỗi ${s.intervalMinutes} phút${s.jitterSeconds ? ` ±${s.jitterSeconds}s` : ''}`
+      : `${(s.times ?? []).join(', ')}${s.jitterSeconds ? ` ±${s.jitterSeconds}s` : ''}`
+
+  if ((s.action ?? 'post') === 'delete') {
+    const countText = (s.deleteCount ?? 1) === 0 ? 'tất cả bài khớp' : `${s.deleteCount ?? 1} bài`
+    const modeText = s.deleteMode === 'by_date' ? `trước/đến ${s.deleteBeforeDate ?? '?'}` : 'mới nhất'
+    return `Xoá ${countText} (${modeText}) · ${timing}`
   }
-  return `${(s.times ?? []).join(', ')}${s.jitterSeconds ? ` ±${s.jitterSeconds}s` : ''}`
+
+  return timing
 }

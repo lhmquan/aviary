@@ -43,6 +43,7 @@ import {
 import { browserManager } from './browser/BrowserManager'
 import { listLogs, clearLogs } from './db/logs'
 import { runPostForAccount } from './scheduler/runner'
+import { markBusy, markIdle } from './scheduler/index'
 
 // Broadcast trạng thái browser (đóng cửa sổ thủ công...) tới renderer.
 function emitBrowserStatus(accountId: string, open: boolean): void {
@@ -157,14 +158,20 @@ export function registerIpc(): void {
     return undefined
   })
 
-  ipcMain.handle(IpcChannels.postRunNow, (_e, accountId: string) =>
+  ipcMain.handle(IpcChannels.postRunNow, async (_e, accountId: string) => {
     // Pipeline đăng bài dùng chung (runner.ts): mở profile nếu chưa mở -> fetch n8n ->
     // tải -> ghép hashtag -> đăng -> markdone -> nhật ký. Cả nút "Đăng" lẫn scheduler
     // đều gọi chung hàm này -> tránh trùng lặp logic.
-    runPostForAccount(accountId, { source: 'manual' })
-  )
+    // Báo bận cho scheduler — tránh lịch nhảy vào khi manual đang chạy.
+    markBusy()
+    try {
+      return await runPostForAccount(accountId, { source: 'manual' })
+    } finally {
+      markIdle()
+    }
+  })
 
-  // ---- Lịch đăng bài (tab Lịch đăng) ----
+  // ---- Lên lịch đăng bài (tab Lên lịch) ----
   ipcMain.handle(IpcChannels.schedulesList, () => listSchedules())
   ipcMain.handle(IpcChannels.schedulesCreate, (_e, input: ScheduleInput) => createSchedule(input))
   ipcMain.handle(IpcChannels.schedulesUpdate, (_e, id: string, input: Partial<ScheduleInput>) =>
