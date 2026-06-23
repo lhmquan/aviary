@@ -19,6 +19,7 @@ interface ScheduleRow {
   delete_count: number
   last_run_at: number | null
   next_run_at: number | null
+  running: number
   created_at: number
   updated_at: number
 }
@@ -45,6 +46,7 @@ function toSchedule(r: ScheduleRow): Schedule {
     deleteCount: r.delete_count ?? 1,
     lastRunAt: r.last_run_at,
     nextRunAt: r.next_run_at,
+    running: !!r.running,
     createdAt: r.created_at,
     updatedAt: r.updated_at
   }
@@ -215,15 +217,28 @@ export function deleteSchedule(id: string): void {
   }
 }
 
-// Các lịch đã đến giờ (enabled + next_run_at <= now), sắp xếp theo giờ sớm nhất.
+// Các lịch đã đến giờ (enabled + next_run_at <= now), chưa chạy (running=0),
+// sắp xếp theo giờ sớm nhất.
 export function listDueSchedules(now = Date.now()): Schedule[] {
   const rows = getDb()
     .prepare(
-      `SELECT * FROM schedules WHERE enabled = 1 AND next_run_at IS NOT NULL AND next_run_at <= ?
+      `SELECT * FROM schedules WHERE enabled = 1 AND running = 0 AND next_run_at IS NOT NULL AND next_run_at <= ?
        ORDER BY next_run_at ASC`
     )
     .all(now) as ScheduleRow[]
   return rows.map(toSchedule)
+}
+
+// Đặt cờ đang chạy (semaphore hàng đợi scheduler).
+export function setScheduleRunning(id: string, running: boolean): void {
+  getDb()
+    .prepare('UPDATE schedules SET running = ? WHERE id = ?')
+    .run(running ? 1 : 0, id)
+}
+
+// Reset toàn bộ cờ running về 0 (gọi khi khởi động app — khôi phục sau crash).
+export function resetAllRunning(): void {
+  getDb().prepare('UPDATE schedules SET running = 0').run()
 }
 
 // Cập nhật sau khi chạy xong: last_run_at = now, next_run_at = lần kế.
@@ -307,6 +322,7 @@ function buildScheduleObject(input: ScheduleInput): Schedule {
       : 1,
     lastRunAt: null,
     nextRunAt: null,
+    running: false,
     createdAt: 0,
     updatedAt: 0
   }

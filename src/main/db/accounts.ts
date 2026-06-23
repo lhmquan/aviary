@@ -16,6 +16,9 @@ interface AccountRow {
   asset_url: string | null
   headless: number
   hashtag: string | null
+  followers: number | null
+  following: number | null
+  statuses: number | null
   created_at: number
   updated_at: number
 }
@@ -32,6 +35,9 @@ function toAccount(r: AccountRow): Account {
     assetUrl: r.asset_url,
     headless: !!r.headless,
     hashtag: r.hashtag,
+    followers: r.followers ?? null,
+    following: r.following ?? null,
+    statusesCount: r.statuses ?? null,
     createdAt: r.created_at,
     updatedAt: r.updated_at
   }
@@ -101,6 +107,18 @@ export function updateAccount(id: string, input: Partial<AccountInput>): Account
       id
     )
   return getAccount(id)!
+}
+
+// Cập nhật thống kê hồ sơ X (cache sau khi fetch). Không đụng tới các cột khác.
+export function updateAccountStats(
+  id: string,
+  stats: { followers: number | null; following: number | null; statuses: number | null }
+): void {
+  getDb()
+    .prepare(
+      'UPDATE accounts SET followers = ?, following = ?, statuses = ?, updated_at = ? WHERE id = ?'
+    )
+    .run(stats.followers, stats.following, stats.statuses, Date.now(), id)
 }
 
 // Chuẩn hoá proxyId: rỗng/null -> '__local' (IP máy, mặc định).

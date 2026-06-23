@@ -19,6 +19,10 @@ export interface Account {
   hashtag: string | null
   // '__local' (IP máy, mặc định) | '__random' (random mỗi lần chạy) | id proxy cụ thể.
   proxyId: string
+  // Thống kê hồ sơ X (tự fetch từ username). null = chưa fetch.
+  followers: number | null
+  following: number | null
+  statusesCount: number | null
   createdAt: number
   updatedAt: number
 }
@@ -72,6 +76,15 @@ export interface ProxyCheckResult {
 export const PROXY_LOCAL = '__local'
 export const PROXY_RANDOM = '__random'
 
+// Thông tin hồ sơ X tự fetch từ username (GraphQL guest token).
+export interface XProfileInfo {
+  name: string | null // tên hiển thị
+  followers: number | null
+  following: number | null
+  posts: number | null // số bài (statuses_count)
+  error?: string
+}
+
 // ---- Lên lịch đăng / xoá bài ----
 export type ScheduleKind = 'interval' | 'fixed'
 export type ScheduleAction = 'post' | 'delete'
@@ -92,6 +105,8 @@ export interface Schedule {
   deleteCount: number // action='delete': số bài xoá mỗi lần (0 = xoá tất cả)
   lastRunAt: number | null
   nextRunAt: number | null
+  // Đang chạy (semaphore hàng đợi scheduler). Khi true: countdown dừng, đang chờ/đang chạy.
+  running: boolean
   createdAt: number
   updatedAt: number
 }
@@ -241,6 +256,7 @@ export const IpcChannels = {
   accountsCreate: 'accounts:create',
   accountsUpdate: 'accounts:update',
   accountsDelete: 'accounts:delete',
+  accountsLookupX: 'accounts:lookupX',
   proxiesList: 'proxies:list',
   proxiesBulkCreate: 'proxies:bulkCreate',
   proxiesCreate: 'proxies:create',
@@ -261,6 +277,7 @@ export const IpcChannels = {
   postRunNow: 'post:runNow',
   browserStatusChanged: 'browser:statusChanged',
   taskProgress: 'task:progress',
+  queueChanged: 'queue:changed',
   logsList: 'logs:list',
   logsClear: 'logs:clear',
   logsCount: 'logs:count',
@@ -281,6 +298,9 @@ export interface AviaryApi {
     create: (input: AccountInput) => Promise<Account>
     update: (id: string, input: Partial<AccountInput>) => Promise<Account>
     remove: (id: string) => Promise<void>
+    // Fetch follower/following/số bài + tên hiển thị từ username X.
+    // accountId (nếu có) dùng để chọn proxy của tài khoản khi gọi.
+    lookup: (handle: string, accountId?: string) => Promise<XProfileInfo>
   }
   proxies: {
     list: () => Promise<Proxy[]>
@@ -316,6 +336,8 @@ export interface AviaryApi {
   post: {
     runNow: (accountId: string) => Promise<PostResult>
     onProgress: (cb: (p: ProgressPayload) => void) => () => void
+    // Báo hàng đợi scheduler thay đổi (để ScheduleView cập nhật "đang chờ/đang chạy").
+    onQueueChanged: (cb: () => void) => () => void
   }
   logs: {
     list: (params?: LogListParams) => Promise<LogListResult>

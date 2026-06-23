@@ -5,6 +5,34 @@ Mọi thay đổi đáng chú ý của Aviary được ghi tại đây.
 Định dạng theo [Keep a Changelog](https://keepachangelog.com/vi/1.0.0/),
 phiên bản theo [Semantic Versioning](https://semver.org/lang/vi/).
 
+## [0.3.0] - 2026-06-23
+
+### Added
+- **Auto-fetch thông tin X khi nhập username** — điền follower / following / số bài + tên hiển thị tự động:
+  - Module mới `src/main/x/FetchProfile.ts`: gọi API GraphQL công khai của X (guest token + `UserByScreenName`), hỗ trợ chạy qua proxy của tài khoản (CONNECT tunnel + TLS, native `http`/`https`, không thêm dependency `proxy-agent`).
+  - DB migration: thêm cột `followers`, `following`, `statuses` (INTEGER, nullable) cho bảng `accounts`.
+  - IPC `accounts:lookupX`, preload expose `window.aviary.accounts.lookup(handle, accountId?)`. Kết quả tự cache vào DB qua `updateAccountStats`.
+  - UI AccountForm: debounce 600ms trên ô Username, hiện badge Followers/Following/Bài viết + Tên, tự điền Nhãn từ tên hiển thị X (chỉ khi không đang focus, tránh loop).
+  - UI bảng Accounts: cột **Thống kê X** mới với badge màu riêng (xanh / xanh-lục / vàng).
+- **Concurrency thật cho scheduler + bulk open** — chạy song song tối đa `settings.concurrency` job (mặc định 3):
+  - DB migration: thêm cột `schedules.running` (INTEGER NOT NULL DEFAULT 0) — cờ bền vững, khôi phục sau crash bằng `resetAllRunning()` khi khởi động app.
+  - Thay `_busy` boolean bằng semaphore (`activeRunCount` + `activeAccountIds` Set). `acquireSlot`/`releaseSlot` cho cả nút Đăng và scheduler. Mỗi tài khoản chỉ chạy 1 job cùng lúc.
+  - `listDueSchedules` lọc `running = 0` tránh nhặt lại lịch đang chạy. Tick nhặt nhiều lịch tới giờ, lấp đầy slot còn trống, chạy fire-and-forget.
+  - Thứ tự `finally` bắt buộc: `markRun` → `setScheduleRunning(false)` → `releaseSlot` → `emitQueueChanged` (tránh double-run).
+  - Nút Đăng thủ công cũng đi qua semaphore — khi hết slot, báo progress `stage: 'queue'` "Đang chờ slot trống…" và chờ.
+  - IPC `queue:changed` + preload `onQueueChanged` báo renderer hàng đợi thay đổi.
+  - ScheduleView: cột "Lần kế" hiện badge "Đang chạy" (xanh) hoặc "Đang chờ hàng đợi" (vàng `st-queued`) thay vì countdown khi lịch trong hàng đợi.
+- **Cột bảng kéo dãn được (resizable)** — kỹ thuật `<colgroup>` + `table-layout: fixed`:
+  - Drag mutate trực tiếp `col.style.width` qua ref (KHÔNG re-render mỗi pixel) → mượt như native; mouseup mới commit về state 1 lần.
+  - 5 cột kéo dãn: Name / Username / Thống kê X / Proxy / Trạng thái. Cột check (40px) và Actions (240px) cố định.
+  - Handle dải mảnh ở mép phải header, hover mới nổi bật, khóa chọn text toàn app khi đang kéo.
+- **Bulk-open profile song song**: dùng `Promise.allSettled` thay vì loop tuần tự — mở tất cả profile đã tick cùng lúc.
+- **n8n: hỗ trợ payload Reddit gallery** — `normalizePayload` nhận `type: 'gallery'` + mảng `images[].highResImage` (lấy tối đa 4 ảnh theo giới hạn X), dùng `title` làm caption nếu chưa có.
+
+### Fixed
+- **Đóng profile sau pipeline (dù lỗi)** — cờ `openedByUs` trong `runPostForAccount` / `runDeleteForAccount`; nếu pipeline tự mở profile thì `finally` luôn đóng lại, giải phóng tài nguyên cho lần chạy kế (trước đó chỉ đóng khi thành công → browser treo vô hạn khi lỗi).
+- **Lỗi nút Actions bị cắt mất sau khi bật kéo dãn cột** — `overflow: hidden` trên toàn bảng làm nhóm nút Actions bị clip. Khắc phục: cột Actions `width: 240px` cố định (chứa 6 nút icon 34px) + loại trừ `.col-actions` / `td.actions` khỏi `overflow: hidden` (`overflow: visible; white-space: nowrap`).
+
 ## [0.2.1] - 2026-06-23
 
 ### Added

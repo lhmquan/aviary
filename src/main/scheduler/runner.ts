@@ -97,172 +97,180 @@ export async function runPostForAccount(
   emitProgress({ accountId, accountLabel: label, stage: 'prepare', message: 'Đang kiểm tra profile…', busy: true })
 
   // Nếu profile chưa mở, tự mở theo chế độ headless của account rồi đăng.
+  // Ghi nhận openedByUs để luôn đóng profile khi xong (dù thành công hay lỗi) —
+  // giải phóng tài nguyên cho lần chạy kế, tránh browser treo vô hạn.
+  let openedByUs = false
   let context = browserManager.getContext(accountId)
   if (!context) {
     emitProgress({ accountId, accountLabel: label, stage: 'open', message: 'Đang mở profile…', busy: true })
     await browserManager.openProfile(account)
     setAccountStatus(accountId, 'logged_in')
     context = browserManager.getContext(accountId)
+    openedByUs = true
   }
   if (!context) throw new Error('Không mở được profile.')
 
-  // Lấy dữ liệu từ n8n. Nếu n8n trả SKIP (link Reddit hỏng, N8N ĐÃ mark trong sheet):
-  //   -> KHÔNG gọi markdone (thừa — n8n mark rồi). Gọi lại publish để lấy bài kế, tiếp tục
-  //      luồng đăng. Giới hạn MAX_SKIPS để tránh loop khi sheet có nhiều link hỏng liền nhau.
-  // markdone(broken) CHỈ gọi khi tải video/ffmpeg lỗi (N8N không phát hiện được link hỏng).
-  const MAX_SKIPS = 10
-  emitProgress({ accountId, accountLabel: label, stage: 'fetch', message: 'Đang lấy dữ liệu từ n8n…', busy: true })
-  let payload = await fetchPostPayload(accountId, account.assetUrl)
-  let skips = 0
-  while (payload.skip) {
-    skips++
-    // Ghi log informational: n8n đã xử lý link này, app lấy bài kế.
-    insertLog({
-      accountId,
-      accountLabel: account.label,
-      ts: Date.now(),
-      ok: true,
-      caption: payload.caption || '(không tiêu đề)',
-      url: null,
-      error: null,
-      step: 'skipped',
-      screenshot: null,
-      eventType: logEventType
-    })
-    if (skips >= MAX_SKIPS) {
-      // Quá nhiều SKIP liên tiếp -> sheet có vẻ toàn link hỏng. Dừng, báo user kiểm tra.
-      // KHÔNG markdone (n8n đã mark từng cái). User xử lý sheet rồi thử lại.
-      emitProgress({
-        accountId,
-        accountLabel: label,
-        stage: 'error',
-        message: `Đã bỏ qua ${MAX_SKIPS} bài SKIP liên tiếp — sheet có vẻ hết bài tốt. Vui lòng kiểm tra lại.`,
-        busy: false
-      })
+  let result: PostResult | undefined
+  try {
+    // Lấy dữ liệu từ n8n. Nếu n8n trả SKIP (link Reddit hỏng, N8N ĐÃ mark trong sheet):
+    //   -> KHÔNG gọi markdone (thừa — n8n mark rồi). Gọi lại publish để lấy bài kế, tiếp tục
+    //      luồng đăng. Giới hạn MAX_SKIPS để tránh loop khi sheet có nhiều link hỏng liền nhau.
+    // markdone(broken) CHỈ gọi khi tải video/ffmpeg lỗi (N8N không phát hiện được link hỏng).
+    const MAX_SKIPS = 10
+    emitProgress({ accountId, accountLabel: label, stage: 'fetch', message: 'Đang lấy dữ liệu từ n8n…', busy: true })
+    let payload = await fetchPostPayload(accountId, account.assetUrl)
+    let skips = 0
+    while (payload.skip) {
+      skips++
+      // Ghi log informational: n8n đã xử lý link này, app lấy bài kế.
       insertLog({
         accountId,
         accountLabel: account.label,
         ts: Date.now(),
-        ok: false,
-        caption: `Hủy sau ${MAX_SKIPS} bài SKIP liên tiếp`,
+        ok: true,
+        caption: payload.caption || '(không tiêu đề)',
         url: null,
-        error: 'Quá nhiều bài SKIP liên tiếp — kiểm tra sheet Reddit',
+        error: null,
         step: 'skipped',
         screenshot: null,
         eventType: logEventType
       })
-      return {
-        ok: false,
-        skipped: true,
-        error: `Hủy sau ${MAX_SKIPS} bài SKIP liên tiếp — sheet có vẻ hết bài tốt`
+      if (skips >= MAX_SKIPS) {
+        // Quá nhiều SKIP liên tiếp -> sheet có vẻ toàn link hỏng. Dừng, báo user kiểm tra.
+        // KHÔNG markdone (n8n đã mark từng cái). User xử lý sheet rồi thử lại.
+        emitProgress({
+          accountId,
+          accountLabel: label,
+          stage: 'error',
+          message: `Đã bỏ qua ${MAX_SKIPS} bài SKIP liên tiếp — sheet có vẻ hết bài tốt. Vui lòng kiểm tra lại.`,
+          busy: false
+        })
+        insertLog({
+          accountId,
+          accountLabel: account.label,
+          ts: Date.now(),
+          ok: false,
+          caption: `Hủy sau ${MAX_SKIPS} bài SKIP liên tiếp`,
+          url: null,
+          error: 'Quá nhiều bài SKIP liên tiếp — kiểm tra sheet Reddit',
+          step: 'skipped',
+          screenshot: null,
+          eventType: logEventType
+        })
+        return {
+          ok: false,
+          skipped: true,
+          error: `Hủy sau ${MAX_SKIPS} bài SKIP liên tiếp — sheet có vẻ hết bài tốt`
+        }
+      }
+      emitProgress({
+        accountId,
+        accountLabel: label,
+        stage: 'fetch',
+        message: `Bài SKIP (link hỏng, n8n đã mark) — đang lấy bài kế…`,
+        busy: true
+      })
+      payload = await fetchPostPayload(accountId, account.assetUrl)
+    }
+
+    // Tải asset về đĩa
+    emitProgress({ accountId, accountLabel: label, stage: 'download', message: 'Đang tải video/ảnh…', busy: true })
+    const jobId = `job_${Date.now()}`
+    const { downloadsDir } = getAllSettings()
+    const downloadsRoot =
+      downloadsDir && downloadsDir.trim() ? downloadsDir : join(app.getPath('userData'), 'downloads')
+    const jobDir = join(downloadsRoot, accountId, jobId)
+    let mediaPaths: string[]
+    try {
+      mediaPaths = await downloadAssets(payload, accountId, jobId)
+    } catch (e) {
+      await rm(jobDir, { recursive: true, force: true }).catch(() => {})
+      // Link Reddit hỏng (403/404 khi tải/ffmpeg) mà N8N không phát hiện -> app mới biết.
+      // Đây là case markdone: báo n8n mark link đó trong sheet, log, đóng profile.
+      if (e instanceof BrokenMediaError) {
+        await handleBrokenAndReport(account, payload.caption ?? '', e.message, logEventType, payload.id)
+        return { ok: false, skipped: true, error: `Bài bị bỏ qua: ${e.message}` }
+      }
+      throw e
+    }
+
+    // Post lên X, xoá file tạm sau khi đăng thành công. Hashtag ghép vào cuối caption KHI
+    // ĐĂNG — KHÔNG đưa vào webhook (markDone/fetchPostPayload dùng caption gốc) để n8n
+    // nhận diện đúng dòng sheet.
+    const fullCaption = account.hashtag
+      ? `${payload.caption}\n${account.hashtag}`.trim()
+      : payload.caption
+    emitProgress({ accountId, accountLabel: label, stage: 'post', message: 'Đang đăng bài lên X…', busy: true })
+    try {
+      result = await postTweet(
+        context,
+        fullCaption,
+        mediaPaths.length > 0 ? mediaPaths : undefined,
+        accountId,
+        (message) => emitProgress({ accountId, accountLabel: label, stage: 'post', message, busy: true })
+      )
+    } finally {
+      if (result?.ok) {
+        await rm(jobDir, { recursive: true, force: true }).catch(() => {})
       }
     }
-    emitProgress({
+
+    // Lưu nhật ký (DB) + prune. fullCaption (có hashtag) để user thấy đúng nội dung đã đăng.
+    // eventType theo nguồn: manual='post', schedule='run' -> badge Nhật ký đúng loại.
+    insertLog({
       accountId,
-      accountLabel: label,
-      stage: 'fetch',
-      message: `Bài SKIP (link hỏng, n8n đã mark) — đang lấy bài kế…`,
-      busy: true
+      accountLabel: account.label,
+      ts: Date.now(),
+      ok: result?.ok ?? false,
+      caption: fullCaption,
+      url: result?.url ?? null,
+      error: result?.ok ? null : result?.error ?? 'Lỗi không xác định',
+      step: result?.step ?? null,
+      screenshot: result?.screenshot ?? null,
+      eventType: logEventType
     })
-    payload = await fetchPostPayload(accountId, account.assetUrl)
-  }
+    pruneLogs()
 
-  // Tải asset về đĩa
-  emitProgress({ accountId, accountLabel: label, stage: 'download', message: 'Đang tải video/ảnh…', busy: true })
-  const jobId = `job_${Date.now()}`
-  const { downloadsDir } = getAllSettings()
-  const downloadsRoot =
-    downloadsDir && downloadsDir.trim() ? downloadsDir : join(app.getPath('userData'), 'downloads')
-  const jobDir = join(downloadsRoot, accountId, jobId)
-  let mediaPaths: string[]
-  try {
-    mediaPaths = await downloadAssets(payload, accountId, jobId)
-  } catch (e) {
-    await rm(jobDir, { recursive: true, force: true }).catch(() => {})
-    // Link Reddit hỏng (403/404 khi tải/ffmpeg) mà N8N không phát hiện -> app mới biết.
-    // Đây là case markdone: báo n8n mark link đó trong sheet, log, đóng profile.
-    if (e instanceof BrokenMediaError) {
-      await handleBrokenAndReport(account, payload.caption ?? '', e.message, logEventType, payload.id)
-      return { ok: false, skipped: true, error: `Bài bị bỏ qua: ${e.message}` }
-    }
-    throw e
-  }
-
-  // Post lên X, xoá file tạm sau khi đăng thành công. Hashtag ghép vào cuối caption KHI
-  // ĐĂNG — KHÔNG đưa vào webhook (markDone/fetchPostPayload dùng caption gốc) để n8n
-  // nhận diện đúng dòng sheet.
-  const fullCaption = account.hashtag
-    ? `${payload.caption}\n${account.hashtag}`.trim()
-    : payload.caption
-  emitProgress({ accountId, accountLabel: label, stage: 'post', message: 'Đang đăng bài lên X…', busy: true })
-  let result: PostResult | undefined
-  try {
-    result = await postTweet(
-      context,
-      fullCaption,
-      mediaPaths.length > 0 ? mediaPaths : undefined,
-      accountId,
-      (message) => emitProgress({ accountId, accountLabel: label, stage: 'post', message, busy: true })
-    )
-  } finally {
     if (result?.ok) {
-      await rm(jobDir, { recursive: true, force: true }).catch(() => {})
+      // Báo n8n đánh dấu video đã đăng (markdone) kèm title + postUrl. title = caption GỐC
+      // (không hashtag) để n8n khớp đúng dòng sheet.
+      emitProgress({ accountId, accountLabel: label, stage: 'markdone', message: 'Đang báo n8n đánh dấu done…', busy: true })
+      const md = await markDone({
+        accountId,
+        assetUrl: account.assetUrl,
+        id: payload.id,
+        title: payload.caption ?? '',
+        postUrl: result.url ?? null,
+        reason: 'posted'
+      })
+
+      emitProgress({
+        accountId,
+        accountLabel: label,
+        stage: 'done',
+        message: md.ok
+          ? result.url
+            ? `Hoàn thành ✓ — ${result.url}`
+            : 'Hoàn thành ✓'
+          : `Hoàn thành ✓ (báo n8n done thất bại: ${md.error})`,
+        busy: false
+      })
+    } else {
+      emitProgress({
+        accountId,
+        accountLabel: label,
+        stage: 'error',
+        message: `Lỗi: ${result?.error ?? 'không xác định'}`,
+        busy: false
+      })
+    }
+    return result
+  } finally {
+    // Luôn đóng profile nếu do pipeline tự mở — giải phóng tài nguyên cho lần chạy kế.
+    if (openedByUs) {
+      await browserManager.closeProfile(accountId).catch(() => {})
     }
   }
-
-  // Lưu nhật ký (DB) + prune. fullCaption (có hashtag) để user thấy đúng nội dung đã đăng.
-  // eventType theo nguồn: manual='post', schedule='run' -> badge Nhật ký đúng loại.
-  insertLog({
-    accountId,
-    accountLabel: account.label,
-    ts: Date.now(),
-    ok: result?.ok ?? false,
-    caption: fullCaption,
-    url: result?.url ?? null,
-    error: result?.ok ? null : result?.error ?? 'Lỗi không xác định',
-    step: result?.step ?? null,
-    screenshot: result?.screenshot ?? null,
-    eventType: logEventType
-  })
-  pruneLogs()
-
-  if (result?.ok) {
-    // Báo n8n đánh dấu video đã đăng (markdone) kèm title + postUrl. title = caption GỐC
-    // (không hashtag) để n8n khớp đúng dòng sheet.
-    emitProgress({ accountId, accountLabel: label, stage: 'markdone', message: 'Đang báo n8n đánh dấu done…', busy: true })
-    const md = await markDone({
-      accountId,
-      assetUrl: account.assetUrl,
-      id: payload.id,
-      title: payload.caption ?? '',
-      postUrl: result.url ?? null,
-      reason: 'posted'
-    })
-
-    // Tự đóng profile sau khi đăng thành công để giải phóng tài nguyên.
-    await browserManager.closeProfile(accountId).catch(() => {})
-
-    emitProgress({
-      accountId,
-      accountLabel: label,
-      stage: 'done',
-      message: md.ok
-        ? result.url
-          ? `Hoàn thành ✓ — ${result.url}`
-          : 'Hoàn thành ✓'
-        : `Hoàn thành ✓ (báo n8n done thất bại: ${md.error})`,
-      busy: false
-    })
-  } else {
-    emitProgress({
-      accountId,
-      accountLabel: label,
-      stage: 'error',
-      message: `Lỗi: ${result?.error ?? 'không xác định'}`,
-      busy: false
-    })
-  }
-  return result
 }
 
 // Pipeline xoá bài dùng chung cho scheduler. Không gọi n8n / tải / markDone.
@@ -295,78 +303,84 @@ export async function runDeleteForAccount(
 
   emitProgress({ accountId, accountLabel: label, stage: 'prepare', message: 'Đang kiểm tra profile…', busy: true })
 
-  // Mở profile nếu chưa mở
+  // Mở profile nếu chưa mở. Ghi nhận để đóng khi xong (dù thành công hay lỗi).
+  let openedByUs = false
   let context = browserManager.getContext(accountId)
   if (!context) {
     emitProgress({ accountId, accountLabel: label, stage: 'open', message: 'Đang mở profile…', busy: true })
     await browserManager.openProfile(account)
     setAccountStatus(accountId, 'logged_in')
     context = browserManager.getContext(accountId)
+    openedByUs = true
   }
   if (!context) throw new Error('Không mở được profile.')
 
-  // Xoá bài từ profile X
-  emitProgress({ accountId, accountLabel: label, stage: 'delete', message: 'Đang xoá bài trên X…', busy: true })
-  const result = await deleteTweetsFromProfile(
-    context,
-    account.handle,
-    {
-      mode: opts?.deleteMode ?? 'newest',
-      beforeDate: opts?.deleteBeforeDate ?? null,
-      maxCount: opts?.deleteCount ?? 1
-    },
-    accountId,
-    (message) => emitProgress({ accountId, accountLabel: label, stage: 'delete', message, busy: true })
-  )
-
-  // Ghi nhật ký: hiển thị link bài đầu tiên (nếu có) + dấu link
-  const caption = result.ok
-    ? (() => {
-        if (result.deletedCount <= 0) return 'Đã xoá 0 bài';
-        const firstUrl = result.urls[0] ?? null;
-        if (result.deletedCount === 1) {
-          return firstUrl ? 'Đã xoá 1 bài 🔗' : 'Đã xoá 1 bài';
-        }
-        return firstUrl
-          ? `Đã xoá ${result.deletedCount} bài 🔗`
-          : `Đã xoá ${result.deletedCount} bài`;
-      })()
-    : `Xoá bài lỗi${result.deletedCount > 0 ? ` (đã xoá ${result.deletedCount} bài trước khi lỗi)` : ''}`;
-
-  insertLog({
-    accountId,
-    accountLabel: account.label,
-    ts: Date.now(),
-    ok: result.ok,
-    caption,
-    url: result.urls[0] ?? null,
-    error: result.ok ? (result.error ?? null) : (result.error ?? 'Lỗi không xác định'),
-    step: result.step ?? null,
-    screenshot: result.screenshot ?? null,
-    eventType: logEventType,
-    urls: result.urls
-  })
-  pruneLogs()
-
-  if (result.ok) {
-    // Đóng profile sau khi xoá thành công
-    await browserManager.closeProfile(accountId).catch(() => {})
-
-    emitProgress({
+  try {
+    // Xoá bài từ profile X
+    emitProgress({ accountId, accountLabel: label, stage: 'delete', message: 'Đang xoá bài trên X…', busy: true })
+    const result = await deleteTweetsFromProfile(
+      context,
+      account.handle,
+      {
+        mode: opts?.deleteMode ?? 'newest',
+        beforeDate: opts?.deleteBeforeDate ?? null,
+        maxCount: opts?.deleteCount ?? 1
+      },
       accountId,
-      accountLabel: label,
-      stage: 'done',
-      message: `Hoàn thành — đã xoá ${result.deletedCount} bài`,
-      busy: false
-    })
-  } else {
-    emitProgress({
+      (message) => emitProgress({ accountId, accountLabel: label, stage: 'delete', message, busy: true })
+    )
+
+    // Ghi nhật ký: hiển thị link bài đầu tiên (nếu có) + dấu link
+    const caption = result.ok
+      ? (() => {
+          if (result.deletedCount <= 0) return 'Đã xoá 0 bài';
+          const firstUrl = result.urls[0] ?? null;
+          if (result.deletedCount === 1) {
+            return firstUrl ? 'Đã xoá 1 bài 🔗' : 'Đã xoá 1 bài';
+          }
+          return firstUrl
+            ? `Đã xoá ${result.deletedCount} bài 🔗`
+            : `Đã xoá ${result.deletedCount} bài`;
+        })()
+      : `Xoá bài lỗi${result.deletedCount > 0 ? ` (đã xoá ${result.deletedCount} bài trước khi lỗi)` : ''}`;
+
+    insertLog({
       accountId,
-      accountLabel: label,
-      stage: 'error',
-      message: `Lỗi: ${result.error ?? 'không xác định'}`,
-      busy: false
+      accountLabel: account.label,
+      ts: Date.now(),
+      ok: result.ok,
+      caption,
+      url: result.urls[0] ?? null,
+      error: result.ok ? (result.error ?? null) : (result.error ?? 'Lỗi không xác định'),
+      step: result.step ?? null,
+      screenshot: result.screenshot ?? null,
+      eventType: logEventType,
+      urls: result.urls
     })
+    pruneLogs()
+
+    if (result.ok) {
+      emitProgress({
+        accountId,
+        accountLabel: label,
+        stage: 'done',
+        message: `Hoàn thành — đã xoá ${result.deletedCount} bài`,
+        busy: false
+      })
+    } else {
+      emitProgress({
+        accountId,
+        accountLabel: label,
+        stage: 'error',
+        message: `Lỗi: ${result.error ?? 'không xác định'}`,
+        busy: false
+      })
+    }
+    return result
+  } finally {
+    // Luôn đóng profile nếu do pipeline tự mở.
+    if (openedByUs) {
+      await browserManager.closeProfile(accountId).catch(() => {})
+    }
   }
-  return result
 }

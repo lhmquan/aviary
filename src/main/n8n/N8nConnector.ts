@@ -82,7 +82,22 @@ function normalizePayload(raw: unknown): PostPayload {
       continue
     }
 
-    // 3) Aviary native dạng { caption, assets|media|urls: [...] }.
+    // 3) Reddit: type = 'gallery' — nhiều ảnh, mỗi ảnh có highResImage.
+    // X cho phép tối đa 4 ảnh / tweet nên chỉ lấy 4 ảnh đầu.
+    if (t === 'gallery' && Array.isArray(o.images)) {
+      const imgs = (o.images as Record<string, unknown>[]).slice(0, 4)
+      for (const img of imgs) {
+        const url = img.highResImage ?? img.url ?? img.src
+        if (typeof url === 'string') assets.push({ url, type: 'image' })
+      }
+      // Lấy caption từ title của gallery nếu chưa có.
+      if (!caption && typeof o.title === 'string' && o.title.trim()) {
+        caption = o.title.trim()
+      }
+      continue
+    }
+
+    // 4) Aviary native dạng { caption, assets|media|urls: [...] }.
     const rawAssets = o.assets ?? o.media ?? o.urls
     if (Array.isArray(rawAssets)) {
       for (const a of rawAssets) {

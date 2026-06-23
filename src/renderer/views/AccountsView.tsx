@@ -19,7 +19,7 @@ import {
   EyeOff,
   ExternalLink as ExternalLinkIcon
 } from 'lucide-react'
-import type { Account, AccountInput, Proxy, Schedule, WebhookTestResult } from '@shared/types'
+import type { Account, AccountInput, Proxy, Schedule, WebhookTestResult, XProfileInfo } from '@shared/types'
 import { PROXY_LOCAL, PROXY_RANDOM } from '@shared/types'
 
 const STATUS_LABEL: Record<Account['status'], string> = {
@@ -28,6 +28,20 @@ const STATUS_LABEL: Record<Account['status'], string> = {
   checkpoint: 'Checkpoint',
   banned: 'Bị khóa',
   disabled: 'Tắt'
+}
+
+// Bảng có cột kéo dãn được. Kỹ thuật: <colgroup> + table-layout:fixed. Khi kéo,
+// ta mutate trực tiếp thuộc tính width của phần tử <col> qua ref (KHÔNG set state
+// mỗi pixel) -> không re-render React -> mượt như native. Khi thả chuột mới commit
+// độ rộng về state (1 lần) để giữ khi re-render do refresh.
+const COL_KEYS = ['name', 'username', 'stats', 'proxy', 'status'] as const
+type ColKey = (typeof COL_KEYS)[number]
+const COL_DEFAULTS: Record<ColKey, number> = {
+  name: 200,
+  username: 160,
+  stats: 230,
+  proxy: 180,
+  status: 130
 }
 
 export default function AccountsView(): JSX.Element {
@@ -48,6 +62,13 @@ export default function AccountsView(): JSX.Element {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [bulkBusy, setBulkBusy] = useState(false)
   const [showBulkProxy, setShowBulkProxy] = useState(false)
+
+  // ---- Kéo dãn cột ----
+  // colRefs[k] -> phần tử <col> trong colgroup. colWidths lưu độ rộng đã commit.
+  const colRefs = useRef<Record<string, HTMLTableColElement | null>>({})
+  const colWidths = useRef<Record<ColKey, number>>({ ...COL_DEFAULTS })
+  const [activeCol, setActiveCol] = useState<ColKey | null>(null)
+  const dragState = useRef<{ col: ColKey; startX: number; startW: number } | null>(null)
 
   const refresh = useCallback(async () => {
     const [list, proxList, schedList] = await Promise.all([
@@ -83,6 +104,39 @@ export default function AccountsView(): JSX.Element {
       return next.size === prev.size ? prev : next
     })
   }, [accounts])
+
+  // Kéo dãn cột: khi activeCol khác null, gắn mousemove/mouseup lên window.
+  // mousemove mutate trực tiếp col width qua ref (KHÔNG re-render). mouseup commit về
+  // colWidths.current + clear activeCol (1 re-render).
+  useEffect(() => {
+    if (!activeCol) return
+    const onMove = (e: MouseEvent): void => {
+      const ds = dragState.current
+      if (!ds) return
+      const w = Math.max(80, ds.startW + (e.clientX - ds.startX))
+      colWidths.current[ds.col] = w
+      const col = colRefs.current[ds.col]
+      if (col) col.style.width = `${w}px`
+    }
+    const onUp = (): void => setActiveCol(null)
+    document.body.style.cursor = 'col-resize'
+    document.body.style.userSelect = 'none'
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+    return () => {
+      document.body.style.cursor = ''
+      document.body.style.userSelect = ''
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+    }
+  }, [activeCol])
+
+  function startResize(col: ColKey, e: React.MouseEvent): void {
+    e.preventDefault()
+    e.stopPropagation()
+    dragState.current = { col, startX: e.clientX, startW: colWidths.current[col] }
+    setActiveCol(col)
+  }
 
   async function handleOpen(a: Account): Promise<void> {
     setBusy(a.id)
@@ -188,17 +242,13 @@ export default function AccountsView(): JSX.Element {
 
   async function handleBulkOpen(): Promise<void> {
     setBulkBusy(true)
-    let errors = 0
-    for (const id of selectedIds) {
-      try {
-        await window.aviary.browser.open(id)
-      } catch {
-        errors++
-      }
-    }
+    const ids = [...selectedIds]
+    // Mở TẤT CẢ profile đã tick song song, không giới hạn đồng thời.
+    const results = await Promise.allSettled(ids.map((id) => window.aviary.browser.open(id)))
+    const errors = results.filter((r) => r.status === 'rejected').length
     await refresh()
     setBulkBusy(false)
-    if (errors > 0) alert(`Đã mở ${selectedIds.size - errors}/${selectedIds.size} profile. ${errors} lỗi.`)
+    if (errors > 0) alert(`Đã mở ${ids.length - errors}/${ids.length} profile. ${errors} lỗi.`)
   }
 
   async function handleBulkDelete(): Promise<void> {
@@ -282,7 +332,31 @@ export default function AccountsView(): JSX.Element {
         </div>
       ) : (
         <div className="card table-card">
-          <table className="table">
+          <table className={`table resizable-table${activeCol ? ' is-resizing' : ''}`}>
+            <colgroup>
+              <col className="col-check-col" />
+              <col
+                ref={(el) => (colRefs.current['name'] = el)}
+                style={{ width: colWidths.current.name }}
+              />
+              <col
+                ref={(el) => (colRefs.current['username'] = el)}
+                style={{ width: colWidths.current.username }}
+              />
+              <col
+                ref={(el) => (colRefs.current['stats'] = el)}
+                style={{ width: colWidths.current.stats }}
+              />
+              <col
+                ref={(el) => (colRefs.current['proxy'] = el)}
+                style={{ width: colWidths.current.proxy }}
+              />
+              <col
+                ref={(el) => (colRefs.current['status'] = el)}
+                style={{ width: colWidths.current.status }}
+              />
+              <col className="col-actions-col" />
+            </colgroup>
             <thead>
               <tr>
                 <th className="col-check">
@@ -295,10 +369,26 @@ export default function AccountsView(): JSX.Element {
                     onChange={toggleSelectAll}
                   />
                 </th>
-                <th>Name</th>
-                <th>Username</th>
-                <th>Proxy</th>
-                <th>Trạng thái</th>
+                <th className="th-resizable">
+                  <span className="th-label">Name</span>
+                  <span className="th-resize-handle" onMouseDown={(e) => startResize('name', e)} />
+                </th>
+                <th className="th-resizable">
+                  <span className="th-label">Username</span>
+                  <span className="th-resize-handle" onMouseDown={(e) => startResize('username', e)} />
+                </th>
+                <th className="th-resizable">
+                  <span className="th-label">Thống kê X</span>
+                  <span className="th-resize-handle" onMouseDown={(e) => startResize('stats', e)} />
+                </th>
+                <th className="th-resizable">
+                  <span className="th-label">Proxy</span>
+                  <span className="th-resize-handle" onMouseDown={(e) => startResize('proxy', e)} />
+                </th>
+                <th className="th-resizable">
+                  <span className="th-label">Trạng thái</span>
+                  <span className="th-resize-handle" onMouseDown={(e) => startResize('status', e)} />
+                </th>
                 <th className="col-actions"></th>
               </tr>
             </thead>
@@ -322,7 +412,7 @@ export default function AccountsView(): JSX.Element {
                       />
                     </td>
                     <td className="cell-label">
-                      <div>{a.label}</div>
+                      <div className="cell-label-main">{a.label}</div>
                       <div className="row-tags">
                         {hasEnabledSchedule && (
                           <span className="badge-mini schedule-mini" title="Tài khoản đang được lên lịch chạy">
@@ -348,6 +438,23 @@ export default function AccountsView(): JSX.Element {
                           </button>
                         </span>
                       ) : '—'}
+                    </td>
+                    <td className="small muted">
+                      {a.followers === null && a.following === null && a.statusesCount === null ? (
+                        '—'
+                      ) : (
+                        <div className="row-tags">
+                          <span className="badge-mini stat-followers">
+                            {a.followers === null ? '—' : a.followers.toLocaleString()}
+                          </span>
+                          <span className="badge-mini stat-following">
+                            {a.following === null ? '—' : a.following.toLocaleString()}
+                          </span>
+                          <span className="badge-mini stat-posts">
+                            {a.statusesCount === null ? '—' : a.statusesCount.toLocaleString()}
+                          </span>
+                        </div>
+                      )}
                     </td>
                     <td>
                       <select
@@ -526,11 +633,43 @@ function AccountForm(props: {
   const [hashtag, setHashtag] = useState(account?.hashtag ?? '')
   const [headless, setHeadless] = useState(account?.headless ?? false)
   const [saving, setSaving] = useState(false)
+  // Thông tin X tự fetch từ username.
+  const [xInfo, setXInfo] = useState<XProfileInfo | null>(null)
+  const [xFetching, setXFetching] = useState(false)
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   // Tải kho proxy để đổ vào dropdown (Local / Random / từng proxy).
   useEffect(() => {
     window.aviary.proxies.list().then(setProxies).catch(() => setProxies([]))
   }, [])
+
+  // Tự động tra cứu X khi username đổi (debounce 600ms). KHÔNG watch label để tránh loop:
+  // setLabel(info.name) không kích hoạt lại effect. Auto-fill Nhãn chỉ khi đang trống.
+  useEffect(() => {
+    const username = handle.trim().replace(/^@+/, '')
+    if (debounceRef.current) clearTimeout(debounceRef.current)
+    if (!username) {
+      setXInfo(null)
+      setXFetching(false)
+      return
+    }
+    setXFetching(true)
+    debounceRef.current = setTimeout(() => {
+      window.aviary.accounts
+        .lookup(username, account?.id)
+        .then((info) => {
+          setXInfo(info)
+          // Luôn cập nhật Nhãn theo tên hiển thị X trả về.
+          if (info.name) setLabel(info.name)
+        })
+        .catch(() => setXInfo(null))
+        .finally(() => setXFetching(false))
+    }, 600)
+    return () => {
+      if (debounceRef.current) clearTimeout(debounceRef.current)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [handle])
 
   async function save(): Promise<void> {
     if (!label.trim()) {
@@ -572,6 +711,30 @@ function AccountForm(props: {
           <span>Username (X)</span>
           <input value={handle} onChange={(e) => setHandle(e.target.value)} placeholder="vd: myhandle" />
         </label>
+        {xFetching && (
+          <p className="hint" style={{ marginTop: -4 }}>
+            <Loader2 size={13} className="spin" /> Đang lấy thông tin X…
+          </p>
+        )}
+        {!xFetching && xInfo && !xInfo.error && (
+          <div className="row-tags" style={{ marginTop: -4, marginBottom: 4 }}>
+            {[
+              ['Followers', xInfo.followers],
+              ['Following', xInfo.following],
+              ['Bài viết', xInfo.posts]
+            ].map(([t, v]) => (
+              <span key={t} className="badge-mini">
+                {t}: {v === null || v === undefined ? '—' : Number(v).toLocaleString()}
+              </span>
+            ))}
+            {xInfo.name && <span className="badge-mini">Tên: {xInfo.name}</span>}
+          </div>
+        )}
+        {!xFetching && xInfo?.error && (
+          <p className="test-result fail" style={{ marginTop: -4, marginBottom: 4 }}>
+            Không lấy được thông tin X: {xInfo.error}
+          </p>
+        )}
         <label className="field">
           <span>Proxy</span>
           <select value={proxyId} onChange={(e) => setProxyId(e.target.value)}>

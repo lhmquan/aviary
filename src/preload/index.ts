@@ -20,7 +20,9 @@ const api: AviaryApi = {
     create: (input: AccountInput) => ipcRenderer.invoke(IpcChannels.accountsCreate, input),
     update: (id: string, input: Partial<AccountInput>) =>
       ipcRenderer.invoke(IpcChannels.accountsUpdate, id, input),
-    remove: (id: string) => ipcRenderer.invoke(IpcChannels.accountsDelete, id)
+    remove: (id: string) => ipcRenderer.invoke(IpcChannels.accountsDelete, id),
+    lookup: (handle: string, accountId?: string) =>
+      ipcRenderer.invoke(IpcChannels.accountsLookupX, handle, accountId)
   },
   proxies: {
     list: () => ipcRenderer.invoke(IpcChannels.proxiesList),
@@ -66,6 +68,11 @@ const api: AviaryApi = {
       const listener = (_e: unknown, p: ProgressPayload): void => cb(p)
       ipcRenderer.on(IpcChannels.taskProgress, listener)
       return () => ipcRenderer.removeListener(IpcChannels.taskProgress, listener)
+    },
+    onQueueChanged: (cb) => {
+      const listener = (): void => cb()
+      ipcRenderer.on(IpcChannels.queueChanged, listener)
+      return () => ipcRenderer.removeListener(IpcChannels.queueChanged, listener)
     }
   },
   logs: {

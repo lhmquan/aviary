@@ -57,6 +57,10 @@ function migrate(d: Database.Database): void {
   addColumnIfMissing(d, 'accounts', 'hashtag', 'TEXT')
   // proxy_id: '__local' (mặc định, IP máy) | '__random' (random mỗi lần) | id proxy.
   addColumnIfMissing(d, 'accounts', 'proxy_id', "TEXT NOT NULL DEFAULT '__local'")
+  // Thống kê hồ sơ X (tự fetch từ username): follower / following / số bài. Cũ = NULL.
+  addColumnIfMissing(d, 'accounts', 'followers', 'INTEGER')
+  addColumnIfMissing(d, 'accounts', 'following', 'INTEGER')
+  addColumnIfMissing(d, 'accounts', 'statuses', 'INTEGER')
 
   // Bảng kho proxy chung (tab Proxy).
   d.exec(`
@@ -108,6 +112,8 @@ function migrate(d: Database.Database): void {
   addColumnIfMissing(d, 'schedules', 'delete_mode', 'TEXT')
   addColumnIfMissing(d, 'schedules', 'delete_before_date', 'TEXT')
   addColumnIfMissing(d, 'schedules', 'delete_count', 'INTEGER NOT NULL DEFAULT 1')
+  // Cờ đang chạy (semaphore hàng đợi scheduler). Reset về 0 khi khởi động app.
+  addColumnIfMissing(d, 'schedules', 'running', 'INTEGER NOT NULL DEFAULT 0')
 }
 
 function addColumnIfMissing(d: Database.Database, table: string, col: string, decl: string): void {

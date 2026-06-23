@@ -9,7 +9,8 @@ import {
   type ProxyInput,
   type ScheduleInput,
   type ProxyCheckResult,
-  type LogListParams
+  type LogListParams,
+  type XProfileInfo
 } from '../shared/types'
 import {
   listAccounts,
@@ -17,7 +18,8 @@ import {
   updateAccount,
   deleteAccount,
   getAccount,
-  setAccountStatus
+  setAccountStatus,
+  updateAccountStats
 } from './db/accounts'
 import { getAllSettings, saveSettings } from './db/settings'
 import {
@@ -31,7 +33,8 @@ import {
   bulkCreateProxies,
   clearProxies,
   updateProxyCheck,
-  getProxy
+  getProxy,
+  resolveProxyString
 } from './db/proxies'
 import { parseProxy } from './browser/BrowserManager'
 import {
@@ -42,8 +45,9 @@ import {
 } from './db/schedules'
 import { browserManager } from './browser/BrowserManager'
 import { listLogs, clearLogs } from './db/logs'
-import { runPostForAccount } from './scheduler/runner'
-import { markBusy, markIdle } from './scheduler/index'
+import { runPostForAccount, emitProgress } from './scheduler/runner'
+import { acquireSlot, releaseSlot } from './scheduler/index'
+import { fetchXProfile } from './x/FetchProfile'
 
 // Broadcast trạng thái browser (đóng cửa sổ thủ công...) tới renderer.
 function emitBrowserStatus(accountId: string, open: boolean): void {
@@ -162,14 +166,49 @@ export function registerIpc(): void {
     // Pipeline đăng bài dùng chung (runner.ts): mở profile nếu chưa mở -> fetch n8n ->
     // tải -> ghép hashtag -> đăng -> markdone -> nhật ký. Cả nút "Đăng" lẫn scheduler
     // đều gọi chung hàm này -> tránh trùng lặp logic.
-    // Báo bận cho scheduler — tránh lịch nhảy vào khi manual đang chạy.
-    markBusy()
+    // Chiếm 1 slot trong semaphore đồng thời (manual + schedule chung ngưỡng concurrency).
+    // Nếu đủ slot, lệnh sẽ CHỜ tới khi có chỗ trống (báo qua progress).
+    emitProgress({
+      accountId,
+      accountLabel: getAccount(accountId)?.label ?? accountId,
+      stage: 'queue',
+      message: 'Đang chờ slot trống để chạy…',
+      busy: true
+    })
+    await acquireSlot(accountId)
     try {
       return await runPostForAccount(accountId, { source: 'manual' })
     } finally {
-      markIdle()
+      releaseSlot(accountId)
     }
   })
+
+  // Tra cứu thông tin hồ sơ X từ username (follower/following/số bài + tên hiển thị).
+  // Dùng proxy của tài khoản (nếu truyền accountId). Cache kết quả vào DB khi thành công.
+  ipcMain.handle(
+    IpcChannels.accountsLookupX,
+    async (_e, handle: string, accountId?: string): Promise<XProfileInfo> => {
+      const username = (handle ?? '').trim().replace(/^@+/, '')
+      if (!username) {
+        return { name: null, followers: null, following: null, posts: null, error: 'Chưa nhập username' }
+      }
+      let proxyString: string | null = null
+      if (accountId) {
+        const acc = getAccount(accountId)
+        if (acc) proxyString = resolveProxyString(acc.proxyId)
+      }
+      const info = await fetchXProfile(username, proxyString)
+      // Cache vào DB nếu fetch thành công và có account để lưu.
+      if (accountId && !info.error) {
+        updateAccountStats(accountId, {
+          followers: info.followers,
+          following: info.following,
+          statuses: info.posts
+        })
+      }
+      return info
+    }
+  )
 
   // ---- Lên lịch đăng bài (tab Lên lịch) ----
   ipcMain.handle(IpcChannels.schedulesList, () => listSchedules())

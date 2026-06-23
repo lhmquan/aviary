@@ -46,10 +46,15 @@ export default function ScheduleView(): JSX.Element {
     const off = window.aviary.post.onProgress((p) => {
       if (!p.busy) refresh()
     })
+    // Hàng đợi scheduler thay đổi (nhặt lịch / chạy xong) -> làm mới để cập nhật cờ running.
+    const offQueue = window.aviary.post.onQueueChanged(() => {
+      window.aviary.schedules.list().then(setSchedules).catch(() => {})
+    })
     return () => {
       clearInterval(ivRefresh)
       clearInterval(ivForce)
       off()
+      offQueue()
     }
   }, [refresh, showForm])
 
@@ -134,9 +139,7 @@ export default function ScheduleView(): JSX.Element {
                   <td>{s.kind === 'interval' ? 'Khoảng' : 'Giờ cố định'}</td>
                   <td className="small">{describe(s)}</td>
                   <td className="mono small">{s.lastRunAt ? fmtTime(s.lastRunAt) : '—'}</td>
-                  <td className="mono small">
-                    {s.enabled && s.nextRunAt ? fmtCountdown(s.nextRunAt) : '—'}
-                  </td>
+                  <td className="mono small">{nextRunCell(s)}</td>
                   <td>
                     <button
                       className={`badge ${s.enabled ? 'on' : 'st-disabled'}`}
@@ -471,4 +474,22 @@ function fmtCountdown(nextRunAt: number): string {
     : `${mins}m ${secs}s`;
 
   return `${display} → ${at}`;
+}
+
+// Ô "Lần kế": hiển thị trạng thái hàng đợi scheduler.
+// - running           -> "Đang chạy"
+// - đến giờ nhưng chờ  -> "Đang chờ hàng đợi" (slot concurrency đầy hoặc account đang chạy)
+// - bình thường        -> countdown realtime
+// - tắt / chưa có kế  -> "—"
+function nextRunCell(s: Schedule): JSX.Element {
+  if (s.running) {
+    return <span className="badge on">Đang chạy</span>
+  }
+  if (s.enabled && s.nextRunAt && s.nextRunAt <= Date.now()) {
+    return <span className="badge st-queued">Đang chờ hàng đợi</span>
+  }
+  if (s.enabled && s.nextRunAt) {
+    return <>{fmtCountdown(s.nextRunAt)}</>
+  }
+  return <>—</>
 }
