@@ -217,6 +217,12 @@ export function deleteSchedule(id: string): void {
   }
 }
 
+// Xoá toàn bộ lịch của 1 tài khoản (dùng khi xoá account — tránh schedule mồ côi
+// fire mãi mãi vì không có ON DELETE CASCADE).
+export function deleteSchedulesByAccount(accountId: string): void {
+  getDb().prepare('DELETE FROM schedules WHERE account_id = ?').run(accountId)
+}
+
 // Các lịch đã đến giờ (enabled + next_run_at <= now), chưa chạy (running=0),
 // sắp xếp theo giờ sớm nhất.
 export function listDueSchedules(now = Date.now()): Schedule[] {

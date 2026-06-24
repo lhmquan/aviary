@@ -45,3 +45,18 @@ npm run release                      # đóng gói + publish GitHub release (cho
 - Kiến trúc: `docs/ARCHITECTURE.md`
 - Lộ trình: `docs/ROADMAP.md`
 - Bảo mật chi tiết + scan secret: `docs/SECURITY.md`
+
+## 🚀 Quy tắc "Up Version"
+Khi user nói **"Up Version"**, thực hiện **đúng theo thứ tự**:
+1. **Tổng hợp** công việc đã làm kể từ lần up version gần nhất (xem `git log` từ tag cuối).
+2. **Bump version** trong `package.json` (patch/minor/major tuỳ thay đổi — mặc định minor).
+3. **Ghi changelog** vào commit message (format: `chore: release vX.Y.Z – <tóm tắt ngắn>`).
+4. **Typecheck + build** phải sạch trước khi commit.
+5. **Commit** tất cả thay đổi (kiểm tra `git status` + `git diff --cached` cẩn thận, không commit secret/DB).
+6. **Push** lên origin/main (dùng GCM auth, không cần token).
+7. **Chuẩn bị command release** và **thông báo user chạy**:
+   ```powershell
+   $env:GH_TOKEN = "ghp_token_của_user"; npm run release
+   ```
+   **KHÔNG tự chạy `npm run release`** — phải đợi user cung cấp token và tự chạy.
+8. **Nhắc user**: sau khi release xong, vào GitHub kiểm tra bản draft có cần publish không.

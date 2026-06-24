@@ -2,6 +2,7 @@ import { ipcMain, BrowserWindow } from 'electron'
 import http from 'http'
 import https from 'https'
 import { URL } from 'url'
+import { rmSync } from 'fs'
 import {
   IpcChannels,
   type AccountInput,
@@ -41,13 +42,17 @@ import {
   listSchedules,
   createSchedule,
   updateSchedule,
-  deleteSchedule
+  deleteSchedule,
+  deleteSchedulesByAccount
 } from './db/schedules'
 import { browserManager } from './browser/BrowserManager'
-import { listLogs, clearLogs } from './db/logs'
+import { listLogs, clearLogs, deleteLogsByAccount } from './db/logs'
+import { deleteAnalyticsByAccount, clearAllAnalytics, pruneAnalytics, getAnalyticsStorageStats } from './db/analytics'
 import { runPostForAccount, emitProgress } from './scheduler/runner'
 import { acquireSlot, releaseSlot } from './scheduler/index'
-import { fetchXProfile } from './x/FetchProfile'
+import { fetchXProfile, downloadAvatarAsDataUrl } from './x/FetchProfile'
+import { fetchAllAccountsStats, fetchAccountStats } from './analytics/fetcher'
+import { getAnalyticsData } from './analytics/growth'
 
 // Broadcast trạng thái browser (đóng cửa sổ thủ công...) tới renderer.
 function emitBrowserStatus(accountId: string, open: boolean): void {
@@ -65,9 +70,25 @@ export function registerIpc(): void {
     updateAccount(id, input)
   )
 
+  // Xoá tài khoản: đóng profile + xoá profile_dir trên ổ đĩa + xoá schedules/logs
+  // mồ côi (không có ON DELETE CASCADE trong schema) + xoá row DB.
   ipcMain.handle(IpcChannels.accountsDelete, async (_e, id: string) => {
     await browserManager.closeProfile(id)
+    const acc = getAccount(id)
+    // Xoá schedules + logs + analytics trước khi xoá row (tránh mồ côi).
+    deleteSchedulesByAccount(id)
+    deleteLogsByAccount(id)
+    deleteAnalyticsByAccount(id)
     deleteAccount(id)
+    // Xoá profile_dir trên ổ đĩa (50-200MB mỗi account) — làm sau khi xoá DB để
+    // ngay cả nếu rmSync fail, row DB đã mất và không tạo schedule mồ côi.
+    if (acc?.profileDir) {
+      try {
+        rmSync(acc.profileDir, { recursive: true, force: true })
+      } catch {
+        /* ignore — profile dir có thể đang bị lock */
+      }
+    }
   })
 
   // ---- Proxy (kho proxy chung, tab Proxy) ----
@@ -183,27 +204,48 @@ export function registerIpc(): void {
     }
   })
 
-  // Tra cứu thông tin hồ sơ X từ username (follower/following/số bài + tên hiển thị).
+  // Tra cứu thông tin hồ sơ X từ username (follower/following/số bài + tên + avatar).
   // Dùng proxy của tài khoản (nếu truyền accountId). Cache kết quả vào DB khi thành công.
+  // Avatar được tải về thành data URL base64 để hiển thị trực tiếp trong renderer (tránh
+  // bị X block hotlink hoặc CSP chặn ảnh ngoài).
   ipcMain.handle(
     IpcChannels.accountsLookupX,
     async (_e, handle: string, accountId?: string): Promise<XProfileInfo> => {
       const username = (handle ?? '').trim().replace(/^@+/, '')
       if (!username) {
-        return { name: null, followers: null, following: null, posts: null, error: 'Chưa nhập username' }
+        return { name: null, followers: null, following: null, posts: null, avatarUrl: null, error: 'Chưa nhập username' }
       }
       let proxyString: string | null = null
+      let cachedAvatarUrl: string | null = null
       if (accountId) {
         const acc = getAccount(accountId)
-        if (acc) proxyString = resolveProxyString(acc.proxyId)
+        if (acc) {
+          proxyString = resolveProxyString(acc.proxyId)
+          // Nếu handle không đổi và đã có avatar data URL cached -> dùng lại,
+          // không cần tải lại (tiết kiệm mạng + DB write).
+          if (acc.handle && acc.handle.replace(/^@+/, '') === username && acc.avatarUrl?.startsWith('data:')) {
+            cachedAvatarUrl = acc.avatarUrl
+          }
+        }
       }
       const info = await fetchXProfile(username, proxyString)
+      // Tải avatar về base64 data URL để renderer hiển thị được (X block hotlink).
+      // Skip nếu đã có cache hợp lệ (handle không đổi).
+      if (info.avatarUrl) {
+        if (cachedAvatarUrl) {
+          info.avatarUrl = cachedAvatarUrl
+        } else {
+          const dataUrl = await downloadAvatarAsDataUrl(info.avatarUrl, proxyString)
+          if (dataUrl) info.avatarUrl = dataUrl
+        }
+      }
       // Cache vào DB nếu fetch thành công và có account để lưu.
       if (accountId && !info.error) {
         updateAccountStats(accountId, {
           followers: info.followers,
           following: info.following,
-          statuses: info.posts
+          statuses: info.posts,
+          avatarUrl: info.avatarUrl ?? null
         })
       }
       return info
@@ -221,6 +263,37 @@ export function registerIpc(): void {
   // #1: bridge sự kiện trạng thái browser từ manager -> renderer.
   browserManager.onStatusChange((accountId, open) => {
     emitBrowserStatus(accountId, open)
+  })
+
+  // ---- Analytics (tab Analytics) ----
+  // Fetch thủ công toàn bộ tài khoản.
+  ipcMain.handle(IpcChannels.analyticsFetchNow, async () => {
+    const result = await fetchAllAccountsStats()
+    pruneAnalytics()
+    return result
+  })
+
+  // Fetch thủ công 1 tài khoản (nút fetch riêng trong card).
+  ipcMain.handle(IpcChannels.analyticsFetchOne, async (_e, accountId: string) => {
+    const result = await fetchAccountStats(accountId)
+    pruneAnalytics()
+    return result
+  })
+
+  // Lấy dữ liệu analytics (tất cả hoặc theo accountId).
+  ipcMain.handle(IpcChannels.analyticsList, (_e, accountId?: string, days?: number) => {
+    return getAnalyticsData(accountId, days ?? 30)
+  })
+
+  // Xoá analytics (theo accountId hoặc tất cả).
+  ipcMain.handle(IpcChannels.analyticsDelete, (_e, accountId?: string) => {
+    if (accountId) deleteAnalyticsByAccount(accountId)
+    else clearAllAnalytics()
+  })
+
+  // Thống kê dung lượng analytics.
+  ipcMain.handle(IpcChannels.analyticsStorageStats, () => {
+    return getAnalyticsStorageStats()
   })
 }
 

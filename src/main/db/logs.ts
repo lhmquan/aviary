@@ -133,3 +133,20 @@ export function clearLogs(): void {
   }
   getDb().prepare('DELETE FROM logs').run()
 }
+
+// Xoá toàn bộ log + screenshot của 1 tài khoản (dùng khi xoá account).
+export function deleteLogsByAccount(accountId: string): void {
+  const shots = getDb()
+    .prepare('SELECT screenshot FROM logs WHERE account_id = ? AND screenshot IS NOT NULL')
+    .all(accountId) as { screenshot: string }[]
+  for (const r of shots) {
+    if (r.screenshot) {
+      try {
+        rmSync(r.screenshot, { force: true })
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+  getDb().prepare('DELETE FROM logs WHERE account_id = ?').run(accountId)
+}

@@ -169,6 +169,108 @@ function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms))
 }
 
+// Tải ảnh avatar từ URL (pbs.twimg.com) về thành data URL base64.
+// Trả về null nếu lỗi. Ảnh nhỏ (~3KB) nên base64 nằm gọn trong DB, không cần file.
+// Dùng chung logic proxy CONNECT tunnel với httpsRequest nhưng nhận binary Buffer.
+export async function downloadAvatarAsDataUrl(
+  imageUrl: string,
+  proxyString?: string | null
+): Promise<string | null> {
+  try {
+    const parsedUrl = new URL(imageUrl)
+    const host = parsedUrl.hostname
+    const path = parsedUrl.pathname + parsedUrl.search
+    const buf = await downloadBinary(host, path, proxyString)
+    if (!buf || buf.length === 0) return null
+    // Xác định mime từ đuôi file (.jpg/.png/.webp).
+    const ext = parsedUrl.pathname.split('.').pop()?.toLowerCase() ?? 'jpg'
+    const mime = ext === 'png' ? 'image/png' : ext === 'webp' ? 'image/webp' : 'image/jpeg'
+    return `data:${mime};base64,${buf.toString('base64')}`
+  } catch {
+    return null
+  }
+}
+
+// Tải binary từ HTTPS, trả về Buffer. Hỗ trợ proxy CONNECT tunnel.
+function downloadBinary(host: string, path: string, proxyString?: string | null): Promise<Buffer> {
+  const parsedProxy = proxyString ? parseProxy(proxyString) : undefined
+
+  if (!parsedProxy) {
+    return new Promise((resolve, reject) => {
+      const req = https.request(
+        {
+          host,
+          port: 443,
+          path,
+          method: 'GET',
+          headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
+          timeout: TIMEOUT_MS
+        },
+        (res) => {
+          const chunks: Buffer[] = []
+          res.on('data', (c: Buffer) => chunks.push(c))
+          res.on('end', () => resolve(Buffer.concat(chunks)))
+        }
+      )
+      req.on('error', reject)
+      req.on('timeout', () => {
+        req.destroy()
+        reject(new Error(`Timeout ${TIMEOUT_MS / 1000}s`))
+      })
+      req.end()
+    })
+  }
+
+  return new Promise((resolve, reject) => {
+    const proxyUrl = new URL(parsedProxy.server)
+    const proxyPort = parseInt(proxyUrl.port) || (proxyUrl.protocol === 'https:' ? 443 : 80)
+    const connectReq = http.request({
+      host: proxyUrl.hostname,
+      port: proxyPort,
+      method: 'CONNECT',
+      path: `${host}:443`,
+      headers: parsedProxy.username
+        ? {
+            'Proxy-Authorization':
+              'Basic ' +
+              Buffer.from(`${parsedProxy.username}:${parsedProxy.password ?? ''}`).toString('base64')
+          }
+        : {},
+      timeout: TIMEOUT_MS
+    })
+
+    connectReq.on('connect', (_res, socket) => {
+      const tlsSocket = tls.connect({ socket, servername: host }, () => {
+        const headerLines = Object.entries({
+          Host: host,
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+          Connection: 'close'
+        })
+          .map(([k, v]) => `${k}: ${v}`)
+          .join('\r\n')
+        tlsSocket.write(`GET ${path} HTTP/1.1\r\n${headerLines}\r\n\r\n`)
+      })
+
+      const chunks: Buffer[] = []
+      tlsSocket.on('data', (c: Buffer) => chunks.push(c))
+      tlsSocket.on('end', () => {
+        const all = Buffer.concat(chunks)
+        const sep = all.indexOf('\r\n\r\n')
+        if (sep !== -1) resolve(all.subarray(sep + 4))
+        else resolve(all)
+      })
+      tlsSocket.on('error', reject)
+    })
+
+    connectReq.on('error', reject)
+    connectReq.on('timeout', () => {
+      connectReq.destroy()
+      reject(new Error(`Timeout ${TIMEOUT_MS / 1000}s`))
+    })
+    connectReq.end()
+  })
+}
+
 // Bước 1: lấy guest token.
 async function activateGuestToken(proxyString?: string | null): Promise<string> {
   const res = await httpsRequest(
@@ -246,12 +348,18 @@ function safeJsonParse(body: string): unknown {
   }
 }
 
+// Nâng chất lượng avatar: thay đuôi _normal (48x48) bằng _bigger (73x73) cho nét hơn ở card.
+// Nếu không có đuôi _normal thì giữ nguyên URL.
+function upgradeAvatarUrl(url: string): string {
+  return url.replace(/_normal\./, '_bigger.')
+}
+
 export async function fetchXProfile(
   username: string,
   proxyString?: string | null
 ): Promise<XProfileInfo> {
   const clean = username.trim().replace(/^@+/, '')
-  if (!clean) return { name: null, followers: null, following: null, posts: null, error: 'Chưa nhập username' }
+  if (!clean) return { name: null, followers: null, following: null, posts: null, avatarUrl: null, error: 'Chưa nhập username' }
 
   try {
     const guestToken = await activateGuestToken(proxyString)
@@ -265,7 +373,7 @@ export async function fetchXProfile(
     }
 
     if (res.status !== 200) {
-      return { name: null, followers: null, following: null, posts: null, error: `Lỗi máy chủ X (HTTP ${res.status})` }
+      return { name: null, followers: null, following: null, posts: null, avatarUrl: null, error: `Lỗi máy chủ X (HTTP ${res.status})` }
     }
 
     const json = safeJsonParse(res.body) as {
@@ -273,7 +381,7 @@ export async function fetchXProfile(
     } | null
     const result = json?.data?.user?.result
     if (!result) {
-      return { name: null, followers: null, following: null, posts: null, error: 'Không tìm thấy tài khoản' }
+      return { name: null, followers: null, following: null, posts: null, avatarUrl: null, error: 'Không tìm thấy tài khoản' }
     }
     if (result.__typename === 'UserUnavailable') {
       return {
@@ -281,6 +389,7 @@ export async function fetchXProfile(
         followers: null,
         following: null,
         posts: null,
+        avatarUrl: null,
         error: (typeof result.message === 'string' && result.message) || 'Tài khoản không khả dụng (bị khoá/treo)'
       }
     }
@@ -289,13 +398,20 @@ export async function fetchXProfile(
     const followers = legacy.followers_count
     const following = legacy.friends_count
     const posts = legacy.statuses_count
+    // Avatar: ưu tiên legacy.profile_image_url_https, fallback core.profile_image.url
+    const rawAvatar =
+      (typeof legacy.profile_image_url_https === 'string' ? legacy.profile_image_url_https : null) ??
+      (typeof (core.profile_image as Record<string, unknown> | undefined)?.url === 'string'
+        ? (core.profile_image as Record<string, unknown>).url as string
+        : null)
     return {
       name: (typeof legacy.name === 'string' ? legacy.name : null) ?? (typeof core.name === 'string' ? core.name : null),
       followers: typeof followers === 'number' ? followers : null,
       following: typeof following === 'number' ? following : null,
-      posts: typeof posts === 'number' ? posts : null
+      posts: typeof posts === 'number' ? posts : null,
+      avatarUrl: rawAvatar ? upgradeAvatarUrl(rawAvatar) : null
     }
   } catch (e) {
-    return { name: null, followers: null, following: null, posts: null, error: (e as Error).message }
+    return { name: null, followers: null, following: null, posts: null, avatarUrl: null, error: (e as Error).message }
   }
 }

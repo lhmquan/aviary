@@ -1598,3 +1598,705 @@ nav {
 }
 .small { font-size: 12px; }
 .mono.small { font-size: 11px; }
+
+/* ---------- Tab Hàng đợi ---------- */
+.queue-slot-summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.queue-running-badge {
+  background: var(--success-soft);
+  color: var(--success);
+  border-color: color-mix(in srgb, var(--success) 28%, transparent);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.queue-upcoming-badge {
+  background: var(--accent-soft);
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 28%, transparent);
+}
+/* Dòng đang chạy: nhấn nhẹ bằng nền accent-soft */
+.table tbody tr.row-running td {
+  background: var(--accent-soft);
+}
+.table tbody tr.row-running:hover td {
+  background: color-mix(in srgb, var(--accent-soft) 70%, var(--panel-2));
+}
+/* Chi tiết lịch trong ô — icon + text cùng dòng */
+.queue-detail-line {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+/* =========================================================
+   Tab Tài khoản — Card grid layout
+   ========================================================= */
+
+/* Checkbox "Chọn tất cả" trong toolbar */
+.select-all-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  user-select: none;
+}
+.select-all-check input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+  accent-color: var(--accent);
+}
+
+/* Lưới card responsive — tự co giãn theo bề ngang */
+.account-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+  gap: 12px;
+}
+
+/* Mỗi card = 1 tài khoản */
+.account-card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  box-shadow: var(--shadow-sm);
+  transition: border-color var(--ease), box-shadow var(--ease);
+}
+.account-card:hover {
+  border-color: var(--border-strong);
+  box-shadow: var(--shadow-md);
+}
+.account-card.row-selected {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+/* Header: checkbox + dot trạng thái + tên + menu ⋮ */
+.account-card-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.account-card-header input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+  accent-color: var(--accent);
+  flex-shrink: 0;
+}
+.account-name {
+  font-weight: 600;
+  font-size: 14px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+}
+
+/* Avatar tài khoản — tròn, viền màu theo trạng thái */
+.avatar-status {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  border: 2.5px solid var(--muted);
+  background: var(--panel-3);
+  box-sizing: border-box;
+}
+.avatar-status img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+/* Fallback chữ cái đầu khi chưa có avatar */
+.avatar-fallback {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text-2);
+  text-transform: uppercase;
+  background: linear-gradient(135deg, var(--accent-soft), var(--panel-3));
+  width: 100%;
+  height: 100%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+/* Viền avatar theo trạng thái */
+.avatar-status.open { border-color: var(--success); }
+.avatar-status.new { border-color: var(--muted); }
+.avatar-status.logged_in { border-color: var(--success); }
+.avatar-status.checkpoint { border-color: var(--warn); }
+.avatar-status.banned { border-color: var(--danger); }
+.avatar-status.disabled { border-color: var(--muted); }
+
+/* Dòng phụ: @handle + badge trạng thái */
+.account-card-sub {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.badge.badge-sm {
+  padding: 2px 8px 2px 7px;
+  font-size: 11px;
+}
+
+/* Thống kê X — icon + số, mỗi chỉ số 1 màu */
+.account-stats {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-variant-numeric: tabular-nums;
+  font-size: 13px;
+  flex-wrap: wrap;
+}
+.stat-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  cursor: help;
+}
+.stat-item svg {
+  flex-shrink: 0;
+}
+.stat-followers-icon {
+  color: var(--accent);
+}
+.stat-following-icon {
+  color: var(--success);
+}
+.stat-posts-icon {
+  color: var(--warn);
+}
+.stat-sep {
+  color: var(--muted);
+  opacity: 0.5;
+}
+
+/* Dòng proxy */
+.account-proxy-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.proxy-label {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+/* Dòng action chính — 2 nút chiếm hết bề ngang */
+.account-actions {
+  display: flex;
+  gap: 8px;
+}
+.account-actions .btn {
+  flex: 1;
+}
+
+/* ---------- Action menu (⋮ dropdown) ---------- */
+.action-menu {
+  position: relative;
+  flex-shrink: 0;
+}
+.action-menu-dropdown {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  box-shadow: var(--shadow-lg);
+  padding: 4px;
+  min-width: 190px;
+  z-index: 100;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.action-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  border-radius: var(--r-xs);
+  cursor: pointer;
+  font-size: 13px;
+  font-family: inherit;
+  text-align: left;
+  width: 100%;
+  transition: background var(--ease);
+}
+.action-menu-item:hover:not(:disabled) {
+  background: var(--panel-2);
+}
+.action-menu-item:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.action-menu-item.danger {
+  color: var(--danger);
+}
+.action-menu-item.danger:hover:not(:disabled) {
+  background: var(--danger-soft);
+}
+
+/* =========================================================
+   Ô tìm kiếm + lọc nhanh (tab Tài khoản)
+   ========================================================= */
+
+/* Ô search — icon bên trái, input, nút clear bên phải */
+.search-box {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex: 1;
+  max-width: 360px;
+  min-width: 200px;
+}
+.search-box .search-icon {
+  position: absolute;
+  left: 10px;
+  color: var(--muted);
+  pointer-events: none;
+  flex-shrink: 0;
+}
+.search-box input {
+  width: 100%;
+  padding: 8px 32px 8px 32px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--panel);
+  color: var(--text);
+  font-size: 13px;
+  font-family: inherit;
+  transition: border-color var(--ease), box-shadow var(--ease);
+}
+.search-box input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.search-box input::placeholder {
+  color: var(--muted);
+}
+.search-clear {
+  position: absolute;
+  right: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  border-radius: var(--r-xs);
+  cursor: pointer;
+  transition: background var(--ease), color var(--ease);
+}
+.search-clear:hover {
+  background: var(--panel-3);
+  color: var(--text);
+}
+
+/* Hàng lọc nhanh — chips theo trạng thái + nhãn */
+.filter-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 18px;
+  margin-bottom: 16px;
+  padding: 10px 14px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+}
+.filter-chips {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.filter-label {
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+  margin-right: 2px;
+}
+
+/* Chip lọc — pill button, active = accent */
+.filter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-full);
+  background: var(--panel);
+  color: var(--text-2);
+  font-size: 12px;
+  font-weight: 500;
+  font-family: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background var(--ease), border-color var(--ease), color var(--ease);
+}
+.filter-chip:hover {
+  border-color: var(--border-strong);
+  background: var(--panel-2);
+}
+.filter-chip.active {
+  background: var(--accent-soft);
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+}
+
+/* Nút "Xoá lọc" */
+.filter-clear {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border: 0;
+  border-radius: var(--r-full);
+  background: transparent;
+  color: var(--danger);
+  font-size: 12px;
+  font-weight: 500;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background var(--ease);
+}
+.filter-clear:hover {
+  background: var(--danger-soft);
+}
+
+/* =========================================================
+   Tab Analytics
+   ========================================================= */
+
+/* ---- Overview: 4 summary cards ---- */
+.analytics-overview {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 12px;
+  margin-bottom: 16px;
+}
+.analytics-summary-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  padding: 14px 16px;
+  box-shadow: var(--shadow-sm);
+}
+.summary-icon {
+  flex-shrink: 0;
+  width: 36px;
+  height: 36px;
+  border-radius: var(--r-sm);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.summary-icon.accent { background: var(--accent-soft); color: var(--accent); }
+.summary-icon.blue { background: var(--accent-soft); color: var(--accent); }
+.summary-icon.warn { background: var(--warn-soft); color: var(--warn); }
+.summary-icon.success { background: var(--success-soft); color: var(--success); }
+.summary-value {
+  font-size: 20px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.2;
+}
+.summary-label {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+/* ---- Fetch result banner ---- */
+.analytics-fetch-result {
+  border-radius: var(--r-sm);
+  padding: 10px 14px;
+  margin-bottom: 16px;
+  font-size: 13px;
+}
+.analytics-fetch-result.all-ok {
+  background: var(--success-soft);
+  color: var(--success);
+  border: 1px solid color-mix(in srgb, var(--success) 28%, transparent);
+}
+.analytics-fetch-result.has-errors {
+  background: var(--danger-soft);
+  color: var(--danger);
+  border: 1px solid color-mix(in srgb, var(--danger) 28%, transparent);
+}
+.fetch-result-summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 500;
+}
+.fetch-errors {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+  font-size: 12px;
+}
+.fetch-error-item {
+  background: var(--panel);
+  padding: 2px 8px;
+  border-radius: var(--r-xs);
+  border: 1px solid var(--border);
+}
+
+/* ---- Delete menu ---- */
+.analytics-delete-menu {
+  position: relative;
+}
+.analytics-delete-dropdown {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  min-width: 220px;
+}
+
+/* ---- Analytics card ---- */
+.analytics-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.analytics-card-delete {
+  margin-left: auto;
+}
+
+/* Lỗi fetch riêng trong card — banner nhỏ đỏ */
+.analytics-card-error {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  background: var(--danger-soft);
+  color: var(--danger);
+  border-radius: var(--r-xs);
+  font-size: 12px;
+}
+
+/* ---- Metric rows ---- */
+.analytics-metrics {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.analytics-metric-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+.metric-icon {
+  flex-shrink: 0;
+  color: var(--muted);
+  display: inline-flex;
+}
+.metric-label {
+  flex-shrink: 0;
+  width: 70px;
+  color: var(--text-2);
+}
+.metric-value {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  min-width: 60px;
+}
+.metric-deltas {
+  display: flex;
+  gap: 8px;
+  flex: 1;
+  justify-content: flex-end;
+}
+.delta-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+.delta-label {
+  font-size: 10px;
+  color: var(--muted);
+  text-transform: uppercase;
+}
+
+/* ---- Delta badges ---- */
+.delta-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 1px 6px;
+  border-radius: var(--r-full);
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.delta-badge.up {
+  background: var(--success-soft);
+  color: var(--success);
+}
+.delta-badge.down {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+.delta-badge.neutral {
+  background: var(--panel-2);
+  color: var(--muted);
+}
+
+/* ---- Sparkline ---- */
+.analytics-sparkline-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.sparkline {
+  display: block;
+  flex-shrink: 0;
+}
+.sparkline-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* ---- Expand button ---- */
+.analytics-expand-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  width: 100%;
+  padding: 6px;
+  border: 0;
+  border-top: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-2);
+  font-size: 12px;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background var(--ease);
+}
+.analytics-expand-btn:hover {
+  background: var(--panel-2);
+}
+
+/* ---- Chart section ---- */
+.analytics-chart-section {
+  padding-top: 8px;
+}
+.growth-chart-wrapper {
+  position: relative;
+  width: 100%;
+}
+.growth-chart {
+  display: block;
+}
+.growth-chart-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px dashed var(--border);
+  border-radius: var(--r-sm);
+}
+
+/* Chart elements */
+.chart-grid-line {
+  stroke: var(--border);
+  stroke-width: 1;
+  stroke-dasharray: 2 3;
+  opacity: 0.6;
+}
+.chart-line {
+  fill: none;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+.chart-axis-text {
+  fill: var(--muted);
+  font-size: 10px;
+  font-family: var(--font-sans);
+}
+.chart-hover-line {
+  stroke: var(--text-2);
+  stroke-width: 1;
+  stroke-dasharray: 3 3;
+  opacity: 0.5;
+}
+
+/* Legend */
+.chart-legend {
+  display: flex;
+  gap: 16px;
+  justify-content: center;
+  padding: 6px 0 2px;
+}
+.chart-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  font-weight: 500;
+}
+.chart-legend-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+/* Tooltip */
+.chart-tooltip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  padding: 6px 10px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  box-shadow: var(--shadow-sm);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.chart-tooltip-date {
+  font-weight: 600;
+  color: var(--text);
+}
+
+/* ---- No data section ---- */
+.analytics-no-data-section {
+  margin-top: 20px;
+}
+.analytics-no-data-section > p {
+  margin: 0 0 8px;
+}
+.analytics-no-data-card {
+  opacity: 0.65;
+}

@@ -91,6 +91,14 @@ const api: AviaryApi = {
   autoStart: {
     get: () => ipcRenderer.invoke(IpcChannels.autoStartGet),
     set: (enabled: boolean) => ipcRenderer.invoke(IpcChannels.autoStartSet, enabled)
+  },
+  analytics: {
+    fetchNow: () => ipcRenderer.invoke(IpcChannels.analyticsFetchNow),
+    fetchOne: (accountId: string) => ipcRenderer.invoke(IpcChannels.analyticsFetchOne, accountId),
+    list: (accountId?: string, days?: number) =>
+      ipcRenderer.invoke(IpcChannels.analyticsList, accountId, days),
+    remove: (accountId?: string) => ipcRenderer.invoke(IpcChannels.analyticsDelete, accountId),
+    storageStats: () => ipcRenderer.invoke(IpcChannels.analyticsStorageStats)
   }
 }
 

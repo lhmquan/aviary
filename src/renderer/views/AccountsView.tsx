@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useRef } from 'react'
+import { useEffect, useState, useCallback, useRef, useMemo } from 'react'
 import {
   Plus,
   Pencil,
@@ -17,7 +17,12 @@ import {
   Clock,
   Eye,
   EyeOff,
-  ExternalLink as ExternalLinkIcon
+  ExternalLink as ExternalLinkIcon,
+  MoreVertical,
+  Users as UsersIcon,
+  UserCheck,
+  FileText,
+  Search
 } from 'lucide-react'
 import type { Account, AccountInput, Proxy, Schedule, WebhookTestResult, XProfileInfo } from '@shared/types'
 import { PROXY_LOCAL, PROXY_RANDOM } from '@shared/types'
@@ -28,20 +33,6 @@ const STATUS_LABEL: Record<Account['status'], string> = {
   checkpoint: 'Checkpoint',
   banned: 'Bị khóa',
   disabled: 'Tắt'
-}
-
-// Bảng có cột kéo dãn được. Kỹ thuật: <colgroup> + table-layout:fixed. Khi kéo,
-// ta mutate trực tiếp thuộc tính width của phần tử <col> qua ref (KHÔNG set state
-// mỗi pixel) -> không re-render React -> mượt như native. Khi thả chuột mới commit
-// độ rộng về state (1 lần) để giữ khi re-render do refresh.
-const COL_KEYS = ['name', 'username', 'stats', 'proxy', 'status'] as const
-type ColKey = (typeof COL_KEYS)[number]
-const COL_DEFAULTS: Record<ColKey, number> = {
-  name: 200,
-  username: 160,
-  stats: 230,
-  proxy: 180,
-  status: 130
 }
 
 export default function AccountsView(): JSX.Element {
@@ -62,13 +53,10 @@ export default function AccountsView(): JSX.Element {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [bulkBusy, setBulkBusy] = useState(false)
   const [showBulkProxy, setShowBulkProxy] = useState(false)
-
-  // ---- Kéo dãn cột ----
-  // colRefs[k] -> phần tử <col> trong colgroup. colWidths lưu độ rộng đã commit.
-  const colRefs = useRef<Record<string, HTMLTableColElement | null>>({})
-  const colWidths = useRef<Record<ColKey, number>>({ ...COL_DEFAULTS })
-  const [activeCol, setActiveCol] = useState<ColKey | null>(null)
-  const dragState = useRef<{ col: ColKey; startX: number; startW: number } | null>(null)
+  // Tìm kiếm + lọc
+  const [query, setQuery] = useState('')
+  const [statusFilter, setStatusFilter] = useState<string>('all')
+  const [tagFilters, setTagFilters] = useState<Set<'scheduled' | 'headless'>>(new Set())
 
   const refresh = useCallback(async () => {
     const [list, proxList, schedList] = await Promise.all([
@@ -105,39 +93,6 @@ export default function AccountsView(): JSX.Element {
     })
   }, [accounts])
 
-  // Kéo dãn cột: khi activeCol khác null, gắn mousemove/mouseup lên window.
-  // mousemove mutate trực tiếp col width qua ref (KHÔNG re-render). mouseup commit về
-  // colWidths.current + clear activeCol (1 re-render).
-  useEffect(() => {
-    if (!activeCol) return
-    const onMove = (e: MouseEvent): void => {
-      const ds = dragState.current
-      if (!ds) return
-      const w = Math.max(80, ds.startW + (e.clientX - ds.startX))
-      colWidths.current[ds.col] = w
-      const col = colRefs.current[ds.col]
-      if (col) col.style.width = `${w}px`
-    }
-    const onUp = (): void => setActiveCol(null)
-    document.body.style.cursor = 'col-resize'
-    document.body.style.userSelect = 'none'
-    window.addEventListener('mousemove', onMove)
-    window.addEventListener('mouseup', onUp)
-    return () => {
-      document.body.style.cursor = ''
-      document.body.style.userSelect = ''
-      window.removeEventListener('mousemove', onMove)
-      window.removeEventListener('mouseup', onUp)
-    }
-  }, [activeCol])
-
-  function startResize(col: ColKey, e: React.MouseEvent): void {
-    e.preventDefault()
-    e.stopPropagation()
-    dragState.current = { col, startX: e.clientX, startW: colWidths.current[col] }
-    setActiveCol(col)
-  }
-
   async function handleOpen(a: Account): Promise<void> {
     setBusy(a.id)
     try {
@@ -161,7 +116,7 @@ export default function AccountsView(): JSX.Element {
   }
 
   async function handleDelete(a: Account): Promise<void> {
-    if (!confirm(`Xóa tài khoản "${a.label}"? Profile và session sẽ vẫn nằm trên ổ đĩa.`)) return
+    if (!confirm(`Xóa tài khoản "${a.label}"? Profile, session, lịch và nhật ký sẽ bị xoá hết.`)) return
     await window.aviary.accounts.remove(a.id)
     await refresh()
   }
@@ -233,10 +188,10 @@ export default function AccountsView(): JSX.Element {
   }
 
   function toggleSelectAll(): void {
-    if (selectedIds.size === accounts.length) {
+    if (filteredAccounts.length > 0 && selectedIds.size === filteredAccounts.length) {
       setSelectedIds(new Set())
     } else {
-      setSelectedIds(new Set(accounts.map((a) => a.id)))
+      setSelectedIds(new Set(filteredAccounts.map((a) => a.id)))
     }
   }
 
@@ -253,7 +208,7 @@ export default function AccountsView(): JSX.Element {
 
   async function handleBulkDelete(): Promise<void> {
     const count = selectedIds.size
-    if (!confirm(`Xóa ${count} tài khoản đã chọn? Profile và session sẽ vẫn nằm trên ổ đĩa.`)) return
+    if (!confirm(`Xóa ${count} tài khoản đã chọn? Profile, session, lịch và nhật ký sẽ bị xoá hết.`)) return
     setBulkBusy(true)
     for (const id of selectedIds) {
       await window.aviary.accounts.remove(id).catch(() => {})
@@ -263,8 +218,52 @@ export default function AccountsView(): JSX.Element {
     setBulkBusy(false)
   }
 
+  // ---- Tìm kiếm + lọc đa chức năng ----
+  // Text search: tìm trên tên (label), username (handle), hashtag — không phân biệt hoa thường.
+  // Status filter: lọc theo trạng thái tài khoản (single-select chip).
+  // Tag filter: lọc theo nhãn "Lên lịch" / "Ngầm" (multi-select chip, kết hợp AND).
+  const filteredAccounts = useMemo(() => {
+    const q = query.trim().toLowerCase()
+    return accounts.filter((a) => {
+      if (q) {
+        const haystack = [a.label, a.handle ?? '', a.hashtag ?? ''].join(' ').toLowerCase()
+        if (!haystack.includes(q)) return false
+      }
+      if (statusFilter !== 'all') {
+        if (statusFilter === 'open') {
+          if (!openMap[a.id]) return false
+        } else if (a.status !== statusFilter) {
+          return false
+        }
+      }
+      if (tagFilters.has('scheduled')) {
+        const hasSched = schedules.some((s) => s.accountId === a.id && s.enabled)
+        if (!hasSched) return false
+      }
+      if (tagFilters.has('headless') && !a.headless) return false
+      return true
+    })
+  }, [accounts, query, statusFilter, tagFilters, openMap, schedules])
+
+  const isFiltering = query.trim() !== '' || statusFilter !== 'all' || tagFilters.size > 0
+
+  function toggleTagFilter(tag: 'scheduled' | 'headless'): void {
+    setTagFilters((prev) => {
+      const next = new Set(prev)
+      if (next.has(tag)) next.delete(tag)
+      else next.add(tag)
+      return next
+    })
+  }
+
+  function clearFilters(): void {
+    setQuery('')
+    setStatusFilter('all')
+    setTagFilters(new Set())
+  }
+
   const hasSelection = selectedIds.size > 0
-  const allSelected = accounts.length > 0 && selectedIds.size === accounts.length
+  const allSelected = filteredAccounts.length > 0 && selectedIds.size === filteredAccounts.length
 
   return (
     <div className="view">
@@ -280,7 +279,44 @@ export default function AccountsView(): JSX.Element {
           Thêm tài khoản
         </button>
 
-        <span className="badge count-badge">{accounts.length} tài khoản</span>
+        {/* Ô tìm kiếm — tìm trên tên, username, hashtag */}
+        <div className="search-box">
+          <Search size={15} className="search-icon" />
+          <input
+            type="text"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Tìm theo tên, @username, hashtag…"
+            spellCheck={false}
+          />
+          {query && (
+            <button
+              className="search-clear"
+              title="Xoá từ khoá"
+              onClick={() => setQuery('')}
+            >
+              <X size={14} />
+            </button>
+          )}
+        </div>
+
+        <span className="badge count-badge">
+          {isFiltering ? `${filteredAccounts.length}/${accounts.length}` : accounts.length} tài khoản
+        </span>
+
+        {filteredAccounts.length > 0 && (
+          <label className="select-all-check">
+            <input
+              type="checkbox"
+              ref={(el) => {
+                if (el) el.indeterminate = hasSelection && !allSelected
+              }}
+              checked={allSelected}
+              onChange={toggleSelectAll}
+            />
+            <span className="small muted">Chọn tất cả</span>
+          </label>
+        )}
 
         {hasSelection && (
           <>
@@ -324,254 +360,262 @@ export default function AccountsView(): JSX.Element {
         )}
       </div>
 
+      {/* Hàng lọc nhanh — chips theo trạng thái + nhãn */}
+      {accounts.length > 0 && (
+        <div className="filter-bar">
+          <div className="filter-chips">
+            <span className="filter-label">Trạng thái:</span>
+            <FilterChip active={statusFilter === 'all'} onClick={() => setStatusFilter('all')}>
+              Tất cả
+            </FilterChip>
+            <FilterChip active={statusFilter === 'open'} onClick={() => setStatusFilter('open')}>
+              Đang mở
+            </FilterChip>
+            {(Object.keys(STATUS_LABEL) as Account['status'][]).map((st) => (
+              <FilterChip key={st} active={statusFilter === st} onClick={() => setStatusFilter(st)}>
+                {STATUS_LABEL[st]}
+              </FilterChip>
+            ))}
+          </div>
+          <div className="filter-chips">
+            <span className="filter-label">Nhãn:</span>
+            <FilterChip
+              active={tagFilters.has('scheduled')}
+              onClick={() => toggleTagFilter('scheduled')}
+            >
+              <Clock size={12} /> Lên lịch
+            </FilterChip>
+            <FilterChip
+              active={tagFilters.has('headless')}
+              onClick={() => toggleTagFilter('headless')}
+            >
+              <EyeOff size={12} /> Ngầm
+            </FilterChip>
+            {isFiltering && (
+              <button className="filter-clear" onClick={clearFilters}>
+                <X size={13} /> Xoá lọc
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
       {accounts.length === 0 ? (
         <div className="empty-state">
           <UserPlus size={36} />
           <p>Chưa có tài khoản nào</p>
           <span>Bấm "Thêm tài khoản" để bắt đầu.</span>
         </div>
+      ) : filteredAccounts.length === 0 ? (
+        <div className="empty-state">
+          <Search size={36} />
+          <p>Không tìm thấy tài khoản</p>
+          <span>Thử đổi từ khoá hoặc xoá bộ lọc.</span>
+          <button className="btn" onClick={clearFilters} style={{ marginTop: 12 }}>
+            <X size={15} /> Xoá lọc
+          </button>
+        </div>
       ) : (
-        <div className="card table-card">
-          <table className={`table resizable-table${activeCol ? ' is-resizing' : ''}`}>
-            <colgroup>
-              <col className="col-check-col" />
-              <col
-                ref={(el) => (colRefs.current['name'] = el)}
-                style={{ width: colWidths.current.name }}
-              />
-              <col
-                ref={(el) => (colRefs.current['username'] = el)}
-                style={{ width: colWidths.current.username }}
-              />
-              <col
-                ref={(el) => (colRefs.current['stats'] = el)}
-                style={{ width: colWidths.current.stats }}
-              />
-              <col
-                ref={(el) => (colRefs.current['proxy'] = el)}
-                style={{ width: colWidths.current.proxy }}
-              />
-              <col
-                ref={(el) => (colRefs.current['status'] = el)}
-                style={{ width: colWidths.current.status }}
-              />
-              <col className="col-actions-col" />
-            </colgroup>
-            <thead>
-              <tr>
-                <th className="col-check">
+        <div className="account-grid">
+          {filteredAccounts.map((a) => {
+            const isOpen = openMap[a.id]
+            const proxyMissing =
+              a.proxyId !== PROXY_LOCAL &&
+              a.proxyId !== PROXY_RANDOM &&
+              !proxies.some((p) => p.id === a.proxyId)
+            const isSelected = selectedIds.has(a.id)
+            const hasEnabledSchedule = schedules.some((s) => s.accountId === a.id && s.enabled)
+            const hasStats =
+              a.followers !== null || a.following !== null || a.statusesCount !== null
+            const isBusy = busy === a.id
+            const statusKey = isOpen ? 'open' : a.status
+            const initial = a.label.trim().charAt(0).toUpperCase() || '?'
+            return (
+              <div key={a.id} className={`account-card${isSelected ? ' row-selected' : ''}`}>
+                {/* ---- Header: checkbox + avatar + tên + menu ---- */}
+                <div className="account-card-header">
                   <input
                     type="checkbox"
-                    ref={(el) => {
-                      if (el) el.indeterminate = hasSelection && !allSelected
-                    }}
-                    checked={allSelected}
-                    onChange={toggleSelectAll}
+                    checked={isSelected}
+                    onChange={() => toggleSelect(a.id)}
                   />
-                </th>
-                <th className="th-resizable">
-                  <span className="th-label">Name</span>
-                  <span className="th-resize-handle" onMouseDown={(e) => startResize('name', e)} />
-                </th>
-                <th className="th-resizable">
-                  <span className="th-label">Username</span>
-                  <span className="th-resize-handle" onMouseDown={(e) => startResize('username', e)} />
-                </th>
-                <th className="th-resizable">
-                  <span className="th-label">Thống kê X</span>
-                  <span className="th-resize-handle" onMouseDown={(e) => startResize('stats', e)} />
-                </th>
-                <th className="th-resizable">
-                  <span className="th-label">Proxy</span>
-                  <span className="th-resize-handle" onMouseDown={(e) => startResize('proxy', e)} />
-                </th>
-                <th className="th-resizable">
-                  <span className="th-label">Trạng thái</span>
-                  <span className="th-resize-handle" onMouseDown={(e) => startResize('status', e)} />
-                </th>
-                <th className="col-actions"></th>
-              </tr>
-            </thead>
-            <tbody>
-              {accounts.map((a) => {
-                const isOpen = openMap[a.id]
-                const proxyMissing =
-                  a.proxyId !== PROXY_LOCAL &&
-                  a.proxyId !== PROXY_RANDOM &&
-                  !proxies.some((p) => p.id === a.proxyId)
-                const isSelected = selectedIds.has(a.id)
-                // Tài khoản có lịch đang bật (enabled) -> hiện nhãn "Đang lên lịch"
-                const hasEnabledSchedule = schedules.some((s) => s.accountId === a.id && s.enabled)
-                return (
-                  <tr key={a.id} className={isSelected ? 'row-selected' : ''}>
-                    <td className="col-check">
-                      <input
-                        type="checkbox"
-                        checked={isSelected}
-                        onChange={() => toggleSelect(a.id)}
-                      />
-                    </td>
-                    <td className="cell-label">
-                      <div className="cell-label-main">{a.label}</div>
-                      <div className="row-tags">
-                        {hasEnabledSchedule && (
-                          <span className="badge-mini schedule-mini" title="Tài khoản đang được lên lịch chạy">
-                            <Clock size={11} /> Lên lịch
-                          </span>
-                        )}
-                        {a.headless && <span className="badge-mini">Ngầm</span>}
-                        {a.hashtag && <span className="badge-mini hashtag-mini">{a.hashtag}</span>}
-                      </div>
-                    </td>
-                    <td>
-                      {a.handle ? (
-                        <span className="username-cell">
-                          {a.handle ? a.handle.replace(/^@/, '') : '—'}
-                          <button
-                            className="btn icon-only ghost x-link"
-                            title={a.handle ? `Mở x.com/${a.handle.replace(/^@/, '')}` : 'Mở profile'}
-                            onClick={() =>
-                              window.open(`https://x.com/${(a.handle ?? '').replace(/^@/, '')}`, '_blank')
-                            }
-                          >
-                            <ExternalLinkIcon size={13} />
-                          </button>
-                        </span>
-                      ) : '—'}
-                    </td>
-                    <td className="small muted">
-                      {a.followers === null && a.following === null && a.statusesCount === null ? (
-                        '—'
-                      ) : (
-                        <div className="row-tags">
-                          <span className="badge-mini stat-followers">
-                            {a.followers === null ? '—' : a.followers.toLocaleString()}
-                          </span>
-                          <span className="badge-mini stat-following">
-                            {a.following === null ? '—' : a.following.toLocaleString()}
-                          </span>
-                          <span className="badge-mini stat-posts">
-                            {a.statusesCount === null ? '—' : a.statusesCount.toLocaleString()}
-                          </span>
-                        </div>
-                      )}
-                    </td>
-                    <td>
-                      <select
-                        className="proxy-select"
-                        value={a.proxyId}
-                        disabled={proxyBusy === a.id}
-                        title={
-                          proxyMissing
-                            ? 'Proxy đã bị xoá khỏi kho — chọn lại Local/Random/proxy khác'
-                            : 'Đổi proxy cho tài khoản'
-                        }
-                        onChange={(e) => handleProxyChange(a, e.target.value)}
-                      >
-                        <option value={PROXY_LOCAL}>Local (IP máy)</option>
-                        <option value={PROXY_RANDOM}>
-                          Random{proxies.length === 0 ? ' (chưa có proxy)' : ''}
-                        </option>
-                        {proxies.length > 0 && (
-                          <optgroup label="Proxy đã thêm">
-                            {proxies.map((p) => (
-                              <option key={p.id} value={p.id}>
-                                {p.label}
-                                {p.kind ? ` (${p.kind})` : ''}
-                              </option>
-                            ))}
-                          </optgroup>
-                        )}
-                        {proxyMissing && (
-                          <option value={a.proxyId} disabled>
-                            {`(đã xoá) ${a.proxyId}`}
-                          </option>
-                        )}
-                      </select>
-                    </td>
-                    <td>
-                      <span className={`badge ${isOpen ? 'on' : `st-${a.status}`}`}>
-                        <span className="dot" />
-                        {isOpen ? 'Đang mở' : STATUS_LABEL[a.status]}
-                      </span>
-                    </td>
-                    <td className="actions">
-                      {isOpen ? (
-                        <button
-                          className="btn icon-only"
-                          title="Đóng profile"
-                          disabled={busy === a.id}
-                          onClick={() => handleClose(a)}
-                        >
-                          {busy === a.id ? <Loader2 size={16} className="spin" /> : <PowerOff size={16} />}
-                        </button>
-                      ) : (
-                        <button
-                          className="btn icon-only"
-                          title="Mở profile"
-                          disabled={busy === a.id}
-                          onClick={() => handleOpen(a)}
-                        >
-                          {busy === a.id ? <Loader2 size={16} className="spin" /> : <Power size={16} />}
-                        </button>
-                      )}
-                      <button
-                        className={`btn icon-only ${a.headless ? 'accent' : ''}`}
-                        title={
-                          a.headless
-                            ? 'Đang chạy ngầm (ẩn cửa sổ) — bấm để chuyển sang hiện cửa sổ. Áp dụng cho lần mở kế tiếp.'
-                            : 'Đang hiện cửa sổ — bấm để chuyển sang chạy ngầm. Áp dụng cho lần mở kế tiếp.'
-                        }
-                        disabled={busy === a.id}
-                        onClick={() => handleToggleHeadless(a)}
-                      >
-                        {busy === a.id ? (
-                          <Loader2 size={16} className="spin" />
-                        ) : a.headless ? (
-                          <EyeOff size={16} />
-                        ) : (
-                          <Eye size={16} />
-                        )}
-                      </button>
-                      <button
-                        className="btn icon-only accent"
-                        title="Đăng bài (tự mở profile nếu chưa mở)"
-                        disabled={posting === a.id}
-                        onClick={() => handlePostNow(a)}
-                      >
-                        {posting === a.id ? <Loader2 size={16} className="spin" /> : <Send size={16} />}
-                      </button>
-                      <button
-                        className="btn icon-only"
-                        title="Test webhook (gửi kèm assetUrl của profile)"
-                        disabled={testing === a.id}
-                        onClick={() => handleTestWebhook(a)}
-                      >
-                        {testing === a.id ? <Loader2 size={16} className="spin" /> : <Zap size={16} />}
-                      </button>
-                      <button
-                        className="btn icon-only"
-                        title="Sửa"
-                        onClick={() => {
+                  <span
+                    className={`avatar-status ${statusKey}`}
+                    title={isOpen ? 'Đang mở' : STATUS_LABEL[a.status]}
+                  >
+                    {a.avatarUrl ? (
+                      <img src={a.avatarUrl} alt="" loading="lazy" referrerPolicy="no-referrer" />
+                    ) : (
+                      <span className="avatar-fallback">{initial}</span>
+                    )}
+                  </span>
+                  <span className="account-name" title={a.label}>{a.label}</span>
+                  <ActionMenu
+                    items={[
+                      {
+                        icon: a.headless ? <EyeOff size={15} /> : <Eye size={15} />,
+                        label: a.headless ? 'Tắt chạy ngầm' : 'Bật chạy ngầm',
+                        title: a.headless
+                          ? 'Đang chạy ngầm — chuyển sang hiện cửa sổ (lần mở kế tiếp)'
+                          : 'Đang hiện cửa sổ — chuyển sang chạy ngầm (lần mở kế tiếp)',
+                        disabled: isBusy,
+                        onClick: () => handleToggleHeadless(a)
+                      },
+                      {
+                        icon: <Zap size={15} />,
+                        label: 'Test webhook',
+                        title: 'Test webhook (gửi kèm assetUrl của profile)',
+                        disabled: testing === a.id,
+                        onClick: () => handleTestWebhook(a)
+                      },
+                      {
+                        icon: <Pencil size={15} />,
+                        label: 'Sửa',
+                        title: 'Sửa tài khoản',
+                        onClick: () => {
                           setEditing(a)
                           setShowForm(true)
-                        }}
-                      >
-                        <Pencil size={16} />
-                      </button>
+                        }
+                      },
+                      {
+                        icon: <Trash2 size={15} />,
+                        label: 'Xoá',
+                        title: 'Xoá tài khoản',
+                        danger: true,
+                        onClick: () => handleDelete(a)
+                      }
+                    ]}
+                  />
+                </div>
+
+                {/* ---- Thông tin phụ: handle + badges ---- */}
+                <div className="account-card-sub">
+                  {a.handle ? (
+                    <span className="username-cell">
+                      <span className="muted small">@{a.handle.replace(/^@/, '')}</span>
                       <button
-                        className="btn icon-only danger"
-                        title="Xóa"
-                        onClick={() => handleDelete(a)}
+                        className="btn icon-only ghost x-link"
+                        title={`Mở x.com/${a.handle.replace(/^@/, '')}`}
+                        onClick={() =>
+                          window.open(`https://x.com/${(a.handle ?? '').replace(/^@/, '')}`, '_blank')
+                        }
                       >
-                        <Trash2 size={16} />
+                        <ExternalLinkIcon size={13} />
                       </button>
-                    </td>
-                  </tr>
-                )
-              })}
-            </tbody>
-          </table>
+                    </span>
+                  ) : (
+                    <span className="muted small">chưa có username</span>
+                  )}
+                  <span className={`badge badge-sm ${isOpen ? 'on' : `st-${a.status}`}`}>
+                    <span className="dot" />
+                    {isOpen ? 'Đang mở' : STATUS_LABEL[a.status]}
+                  </span>
+                </div>
+
+                {(hasEnabledSchedule || a.headless || a.hashtag) && (
+                  <div className="row-tags">
+                    {hasEnabledSchedule && (
+                      <span className="badge-mini schedule-mini" title="Tài khoản đang được lên lịch chạy">
+                        <Clock size={11} /> Lên lịch
+                      </span>
+                    )}
+                    {a.headless && <span className="badge-mini" title="Chế độ chạy ngầm (ẩn cửa sổ browser)">Ngầm</span>}
+                    {a.hashtag && (
+                      <span className="badge-mini hashtag-mini" title={`Hashtag tự chèn: ${a.hashtag}`}>
+                        {a.hashtag}
+                      </span>
+                    )}
+                  </div>
+                )}
+
+                {/* ---- Thống kê X với icon + tooltip ---- */}
+                {hasStats ? (
+                  <div className="account-stats">
+                    <span className="stat-item stat-followers-icon" title="Followers — người theo dõi">
+                      <UsersIcon size={14} />
+                      {a.followers === null ? '—' : a.followers.toLocaleString()}
+                    </span>
+                    <span className="stat-sep">·</span>
+                    <span className="stat-item stat-following-icon" title="Following — đang theo dõi">
+                      <UserCheck size={14} />
+                      {a.following === null ? '—' : a.following.toLocaleString()}
+                    </span>
+                    <span className="stat-sep">·</span>
+                    <span className="stat-item stat-posts-icon" title="Bài viết — tổng số tweet">
+                      <FileText size={14} />
+                      {a.statusesCount === null ? '—' : a.statusesCount.toLocaleString()}
+                    </span>
+                  </div>
+                ) : (
+                  <div className="account-stats muted small">chưa có thống kê X</div>
+                )}
+
+                {/* ---- Proxy ---- */}
+                <div className="account-proxy-row">
+                  <span className="small muted proxy-label">Proxy</span>
+                  <select
+                    className="proxy-select"
+                    value={a.proxyId}
+                    disabled={proxyBusy === a.id}
+                    title={
+                      proxyMissing
+                        ? 'Proxy đã bị xoá khỏi kho — chọn lại Local/Random/proxy khác'
+                        : 'Đổi proxy cho tài khoản'
+                    }
+                    onChange={(e) => handleProxyChange(a, e.target.value)}
+                  >
+                    <option value={PROXY_LOCAL}>Local (IP máy)</option>
+                    <option value={PROXY_RANDOM}>
+                      Random{proxies.length === 0 ? ' (chưa có proxy)' : ''}
+                    </option>
+                    {proxies.length > 0 && (
+                      <optgroup label="Proxy đã thêm">
+                        {proxies.map((p) => (
+                          <option key={p.id} value={p.id}>
+                            {p.label}
+                            {p.kind ? ` (${p.kind})` : ''}
+                          </option>
+                        ))}
+                      </optgroup>
+                    )}
+                    {proxyMissing && (
+                      <option value={a.proxyId} disabled>
+                        {`(đã xoá) ${a.proxyId}`}
+                      </option>
+                    )}
+                  </select>
+                </div>
+
+                {/* ---- Actions chính: Mở/Đóng + Đăng ---- */}
+                <div className="account-actions">
+                  <button
+                    className={`btn icon-label ${isOpen ? '' : 'accent'}`}
+                    title={isOpen ? 'Đóng profile' : 'Mở profile'}
+                    disabled={isBusy}
+                    onClick={() => (isOpen ? handleClose(a) : handleOpen(a))}
+                  >
+                    {isBusy ? (
+                      <Loader2 size={15} className="spin" />
+                    ) : isOpen ? (
+                      <PowerOff size={15} />
+                    ) : (
+                      <Power size={15} />
+                    )}
+                    {isOpen ? 'Đóng' : 'Mở profile'}
+                  </button>
+                  <button
+                    className="btn icon-label primary"
+                    title="Đăng bài (tự mở profile nếu chưa mở)"
+                    disabled={posting === a.id}
+                    onClick={() => handlePostNow(a)}
+                  >
+                    {posting === a.id ? <Loader2 size={15} className="spin" /> : <Send size={15} />}
+                    Đăng bài
+                  </button>
+                </div>
+              </div>
+            )
+          })}
         </div>
       )}
 
@@ -920,5 +964,81 @@ function BulkSetProxyModal(props: {
         </div>
       </div>
     </div>
+  )
+}
+
+type MenuItem = {
+  icon: JSX.Element
+  label: string
+  title: string
+  disabled?: boolean
+  danger?: boolean
+  onClick: () => void
+}
+
+function ActionMenu({ items }: { items: MenuItem[] }): JSX.Element {
+  const [open, setOpen] = useState(false)
+  const ref = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!open) return
+    const onMouseDown = (e: MouseEvent): void => {
+      if (ref.current && !ref.current.contains(e.target as Node)) {
+        setOpen(false)
+      }
+    }
+    const onEsc = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape') setOpen(false)
+    }
+    document.addEventListener('mousedown', onMouseDown)
+    document.addEventListener('keydown', onEsc)
+    return () => {
+      document.removeEventListener('mousedown', onMouseDown)
+      document.removeEventListener('keydown', onEsc)
+    }
+  }, [open])
+
+  return (
+    <div className="action-menu" ref={ref}>
+      <button
+        className="btn icon-only ghost"
+        title="Thêm tác vụ"
+        onClick={() => setOpen((v) => !v)}
+      >
+        <MoreVertical size={16} />
+      </button>
+      {open && (
+        <div className="action-menu-dropdown">
+          {items.map((item, i) => (
+            <button
+              key={i}
+              className={`action-menu-item${item.danger ? ' danger' : ''}`}
+              title={item.title}
+              disabled={item.disabled}
+              onClick={() => {
+                setOpen(false)
+                item.onClick()
+              }}
+            >
+              {item.icon}
+              <span>{item.label}</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function FilterChip(props: {
+  active: boolean
+  onClick: () => void
+  children: React.ReactNode
+}): JSX.Element {
+  const { active, onClick, children } = props
+  return (
+    <button className={`filter-chip${active ? ' active' : ''}`} onClick={onClick}>
+      {children}
+    </button>
   )
 }

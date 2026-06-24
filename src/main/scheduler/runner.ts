@@ -1,6 +1,6 @@
 import { app, BrowserWindow } from 'electron'
 import { join } from 'path'
-import { rm } from 'fs/promises'
+import { rm, readdir, stat } from 'fs/promises'
 import {
   IpcChannels,
   type Account,
@@ -25,6 +25,44 @@ import { insertLog, pruneLogs } from '../db/logs'
 export function emitProgress(p: ProgressPayload): void {
   for (const win of BrowserWindow.getAllWindows()) {
     win.webContents.send(IpcChannels.taskProgress, p)
+  }
+}
+
+// Dọn download job dirs cũ (>24h) — xử lý rò rỉ khi app crash giữa chừng hoặc
+// khi đăng FAIL không xoá được. Quét downloadsRoot/<accountId>/job_*, xoá dir
+// nào có mtime > 24h. Chạy 1 lần khi khởi động app.
+const DOWNLOAD_RETENTION_HOURS = 24
+export async function cleanupOldDownloads(): Promise<void> {
+  const { downloadsDir } = getAllSettings()
+  const downloadsRoot =
+    downloadsDir && downloadsDir.trim() ? downloadsDir : join(app.getPath('userData'), 'downloads')
+  const cutoff = Date.now() - DOWNLOAD_RETENTION_HOURS * 3_600_000
+  let accountDirs: string[]
+  try {
+    accountDirs = await readdir(downloadsRoot)
+  } catch {
+    return // dir chưa tồn tại
+  }
+  for (const acctId of accountDirs) {
+    const acctPath = join(downloadsRoot, acctId)
+    let jobDirs: string[]
+    try {
+      jobDirs = await readdir(acctPath)
+    } catch {
+      continue
+    }
+    for (const job of jobDirs) {
+      if (!job.startsWith('job_')) continue
+      const jobPath = join(acctPath, job)
+      try {
+        const st = await stat(jobPath)
+        if (st.mtimeMs < cutoff) {
+          await rm(jobPath, { recursive: true, force: true })
+        }
+      } catch {
+        /* ignore */
+      }
+    }
   }
 }
 
@@ -210,9 +248,9 @@ export async function runPostForAccount(
         (message) => emitProgress({ accountId, accountLabel: label, stage: 'post', message, busy: true })
       )
     } finally {
-      if (result?.ok) {
-        await rm(jobDir, { recursive: true, force: true }).catch(() => {})
-      }
+      // Luôn xoá jobDir — screenshot lỗi đã được lưu riêng trong logs, không cần
+      // giữ media download (10-100MB) lại để tránh rò rỉ ổ đĩa.
+      await rm(jobDir, { recursive: true, force: true }).catch(() => {})
     }
 
     // Lưu nhật ký (DB) + prune. fullCaption (có hashtag) để user thấy đúng nội dung đã đăng.

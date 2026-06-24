@@ -7,6 +7,9 @@ import { browserManager } from './browser/BrowserManager'
 import { initUpdater, checkForUpdates, installUpdate } from './updater'
 import { pruneLogs } from './db/logs'
 import { startScheduler, stopScheduler } from './scheduler'
+import { cleanupOldDownloads } from './scheduler/runner'
+import { startAnalyticsScheduler, stopAnalyticsScheduler } from './analytics/scheduler'
+import { pruneAnalytics } from './db/analytics'
 import { createTray, getIsQuitting, setIsQuitting } from './tray'
 import { getAutoStart, setAutoStart } from './autostart'
 
@@ -124,9 +127,19 @@ app.whenReady().then(() => {
   // các event listener của autoUpdater có thể broadcast về renderer.
   initUpdater()
 
-  // #5: dọn nhật ký cũ theo retention ngay khi khởi động app.
+  // #5: dọn nhật ký cũ + download job cũ + analytics cũ theo retention ngay khi khởi động.
   try {
     pruneLogs()
+  } catch {
+    /* ignore */
+  }
+  try {
+    void cleanupOldDownloads()
+  } catch {
+    /* ignore */
+  }
+  try {
+    pruneAnalytics()
   } catch {
     /* ignore */
   }
@@ -134,6 +147,13 @@ app.whenReady().then(() => {
   // Khởi động bộ lập lịch đăng bài (tick 30s). Phải sau khi registerIpc để DB sẵn sàng.
   try {
     startScheduler()
+  } catch {
+    /* ignore */
+  }
+
+  // Khởi động scheduler analytics (fetch 1 lần/ngày, tick 30 phút kiểm tra).
+  try {
+    startAnalyticsScheduler()
   } catch {
     /* ignore */
   }
@@ -152,6 +172,7 @@ app.whenReady().then(() => {
 app.on('before-quit', async (e) => {
   // dừng scheduler + đảm bảo các profile chromium đóng sạch trước khi quit
   stopScheduler()
+  stopAnalyticsScheduler()
   if (browserManager.openCount() > 0) {
     e.preventDefault()
     await browserManager.closeAll()

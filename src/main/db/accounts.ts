@@ -19,6 +19,7 @@ interface AccountRow {
   followers: number | null
   following: number | null
   statuses: number | null
+  avatar_url: string | null
   created_at: number
   updated_at: number
 }
@@ -38,6 +39,7 @@ function toAccount(r: AccountRow): Account {
     followers: r.followers ?? null,
     following: r.following ?? null,
     statusesCount: r.statuses ?? null,
+    avatarUrl: r.avatar_url ?? null,
     createdAt: r.created_at,
     updatedAt: r.updated_at
   }
@@ -112,13 +114,21 @@ export function updateAccount(id: string, input: Partial<AccountInput>): Account
 // Cập nhật thống kê hồ sơ X (cache sau khi fetch). Không đụng tới các cột khác.
 export function updateAccountStats(
   id: string,
-  stats: { followers: number | null; following: number | null; statuses: number | null }
+  stats: { followers: number | null; following: number | null; statuses: number | null; avatarUrl?: string | null }
 ): void {
-  getDb()
-    .prepare(
-      'UPDATE accounts SET followers = ?, following = ?, statuses = ?, updated_at = ? WHERE id = ?'
-    )
-    .run(stats.followers, stats.following, stats.statuses, Date.now(), id)
+  if (stats.avatarUrl !== undefined) {
+    getDb()
+      .prepare(
+        'UPDATE accounts SET followers = ?, following = ?, statuses = ?, avatar_url = ?, updated_at = ? WHERE id = ?'
+      )
+      .run(stats.followers, stats.following, stats.statuses, stats.avatarUrl, Date.now(), id)
+  } else {
+    getDb()
+      .prepare(
+        'UPDATE accounts SET followers = ?, following = ?, statuses = ?, updated_at = ? WHERE id = ?'
+      )
+      .run(stats.followers, stats.following, stats.statuses, Date.now(), id)
+  }
 }
 
 // Chuẩn hoá proxyId: rỗng/null -> '__local' (IP máy, mặc định).

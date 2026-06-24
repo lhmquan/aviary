@@ -23,6 +23,8 @@ export interface Account {
   followers: number | null
   following: number | null
   statusesCount: number | null
+  // Avatar X (URL từ pbs.twimg.com). null = chưa fetch hoặc account không có handle.
+  avatarUrl: string | null
   createdAt: number
   updatedAt: number
 }
@@ -82,6 +84,7 @@ export interface XProfileInfo {
   followers: number | null
   following: number | null
   posts: number | null // số bài (statuses_count)
+  avatarUrl?: string | null // URL avatar từ pbs.twimg.com
   error?: string
 }
 
@@ -131,6 +134,8 @@ export interface AppSettings {
   downloadsDir: string
   concurrency: number
   logRetentionDays: number
+  // Bật/tắt fetch analytics tự động 1 lần/ngày (tắt khi đang dev để không fetch liên tục).
+  analyticsAutoFetch: boolean
 }
 
 // Asset n8n trả về để đăng bài.
@@ -285,7 +290,12 @@ export const IpcChannels = {
   updateInstall: 'update:install',
   updateStatus: 'update:status',
   autoStartGet: 'app:autoStart:get',
-  autoStartSet: 'app:autoStart:set'
+  autoStartSet: 'app:autoStart:set',
+  analyticsFetchNow: 'analytics:fetchNow',
+  analyticsFetchOne: 'analytics:fetchOne',
+  analyticsList: 'analytics:list',
+  analyticsDelete: 'analytics:delete',
+  analyticsStorageStats: 'analytics:storageStats'
 } as const
 
 // API mà preload expose ra window.aviary cho renderer.
@@ -352,4 +362,74 @@ export interface AviaryApi {
     get: () => Promise<boolean>
     set: (enabled: boolean) => Promise<void>
   }
+  analytics: {
+    fetchNow: () => Promise<AnalyticsFetchResult>
+    fetchOne: (accountId: string) => Promise<{ ok: boolean; error?: string; skipped?: boolean }>
+    list: (accountId?: string, days?: number) => Promise<AnalyticsData>
+    remove: (accountId?: string) => Promise<void>
+    storageStats: () => Promise<AnalyticsStorageStats>
+  }
+}
+
+// ---- Analytics ----
+
+// 1 điểm dữ liệu theo ngày (snapshot thống kê X).
+export interface DailyStats {
+  accountId: string
+  day: number
+  capturedAt: number
+  followers: number | null
+  following: number | null
+  statusesCount: number | null
+  name: string | null
+}
+
+// Delta tăng trưởng cho 1 khoảng thời gian (1d/7d/30d).
+export interface GrowthDelta {
+  followers: number | null
+  following: number | null
+  posts: number | null
+}
+
+// Tăng trưởng đầy đủ cho 1 tài khoản.
+export interface AccountGrowth {
+  accountId: string
+  accountLabel: string
+  handle: string | null
+  avatarUrl: string | null
+  current: {
+    followers: number | null
+    following: number | null
+    posts: number | null
+    name: string | null
+  }
+  delta1d: GrowthDelta
+  delta7d: GrowthDelta
+  delta30d: GrowthDelta
+  series: DailyStats[]
+  // Lỗi fetch gần nhất (nếu có) — hiển thị trên UI để user kiểm tra.
+  lastError: string | null
+}
+
+// Kết quả 1 lần fetch tất cả tài khoản.
+export interface AnalyticsFetchResult {
+  total: number
+  success: number
+  failed: number
+  skipped: number
+  errors: { accountId: string; accountLabel: string; error: string }[]
+}
+
+// Dữ liệu trả về cho analytics:list.
+export interface AnalyticsData {
+  accounts: AccountGrowth[]
+  lastFetchAt: number | null
+}
+
+// Thống kê dung lượng analytics.
+export interface AnalyticsStorageStats {
+  rowCount: number
+  accountCount: number
+  estimatedBytes: number
+  retentionDays: number
 }

@@ -61,6 +61,8 @@ function migrate(d: Database.Database): void {
   addColumnIfMissing(d, 'accounts', 'followers', 'INTEGER')
   addColumnIfMissing(d, 'accounts', 'following', 'INTEGER')
   addColumnIfMissing(d, 'accounts', 'statuses', 'INTEGER')
+  // Avatar X (URL pbs.twimg.com). null = chưa fetch hoặc không có handle.
+  addColumnIfMissing(d, 'accounts', 'avatar_url', 'TEXT')
 
   // Bảng kho proxy chung (tab Proxy).
   d.exec(`
@@ -114,6 +116,23 @@ function migrate(d: Database.Database): void {
   addColumnIfMissing(d, 'schedules', 'delete_count', 'INTEGER NOT NULL DEFAULT 1')
   // Cờ đang chạy (semaphore hàng đợi scheduler). Reset về 0 khi khởi động app.
   addColumnIfMissing(d, 'schedules', 'running', 'INTEGER NOT NULL DEFAULT 0')
+
+  // Bảng Analytics: snapshot thống kê X theo ngày cho từng tài khoản.
+  // 1 row/account/day (upsert qua unique index). Retention 30 ngày.
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS account_stats_daily (
+      id              INTEGER PRIMARY KEY AUTOINCREMENT,
+      account_id      TEXT NOT NULL,
+      day             INTEGER NOT NULL,
+      captured_at     INTEGER NOT NULL,
+      followers       INTEGER,
+      following       INTEGER,
+      statuses_count  INTEGER,
+      name            TEXT
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_stats_acct_day ON account_stats_daily (account_id, day);
+    CREATE INDEX IF NOT EXISTS idx_stats_day ON account_stats_daily (day);
+  `)
 }
 
 function addColumnIfMissing(d: Database.Database, table: string, col: string, decl: string): void {

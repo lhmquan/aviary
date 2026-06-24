@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback, useRef, memo } from 'react'
 import {
   Users,
   Clock,
-  FileText,
+  ListOrdered,
   ScrollText,
   Settings,
   Feather,
@@ -12,7 +12,6 @@ import {
   RefreshCw,
   RotateCcw,
   Download,
-  AlertCircle,
   Loader2,
   CheckCircle2,
   Circle,
@@ -22,7 +21,8 @@ import {
   TerminalSquare,
   Trash2,
   Minimize2,
-  Maximize2
+  Maximize2,
+  BarChart3
 } from 'lucide-react'
 import type { AppInfo, UpdateStatusPayload, ProgressPayload } from '@shared/types'
 import AccountsView from './views/AccountsView'
@@ -30,8 +30,10 @@ import SettingsView from './views/SettingsView'
 import LogsView from './views/LogsView'
 import ProxiesView from './views/ProxiesView'
 import ScheduleView from './views/ScheduleView'
+import QueueView from './views/QueueView'
+import AnalyticsView from './views/AnalyticsView'
 
-type Section = 'accounts' | 'proxies' | 'schedule' | 'content' | 'logs' | 'settings'
+type Section = 'accounts' | 'proxies' | 'schedule' | 'queue' | 'analytics' | 'logs' | 'settings'
 type ThemeMode = 'system' | 'light' | 'dark'
 
 type TerminalLine = {
@@ -90,7 +92,8 @@ const NAV: { id: Section; label: string; icon: typeof Users }[] = [
   { id: 'accounts', label: 'Tài khoản', icon: Users },
   { id: 'proxies', label: 'Proxy', icon: Globe },
   { id: 'schedule', label: 'Lên lịch', icon: Clock },
-  { id: 'content', label: 'Nội dung', icon: FileText },
+  { id: 'queue', label: 'Hàng đợi', icon: ListOrdered },
+  { id: 'analytics', label: 'Analytics', icon: BarChart3 },
   { id: 'logs', label: 'Nhật ký', icon: ScrollText },
   { id: 'settings', label: 'Cài đặt', icon: Settings }
 ]
@@ -99,13 +102,10 @@ const SUBTITLE: Record<Section, string> = {
   accounts: 'Quản lý tài khoản và profile Chromium',
   proxies: 'Kho proxy chung — gán cho từng tài khoản',
   schedule: 'Lên lịch đăng bài tự động',
-  content: 'Hàng đợi nội dung từ n8n',
+  queue: 'Hàng đợi scheduler — tài khoản đang chạy, chờ slot và sắp tới',
+  analytics: 'Theo dõi tăng trưởng followers, following, bài viết theo ngày',
   logs: 'Theo dõi lịch sử đăng bài và lỗi',
   settings: 'Cấu hình webhook, thư mục và hiệu năng'
-}
-
-const PLACEHOLDER: Record<'content', string> = {
-  content: 'Hàng đợi nội dung lấy từ n8n. (Giai đoạn 4)'
 }
 
 const THEME_ICON: Record<ThemeMode, typeof Monitor> = {
@@ -369,12 +369,8 @@ export default function App(): JSX.Element {
         {active === 'schedule' && <ScheduleView />}
         {active === 'settings' && <SettingsView />}
         {active === 'logs' && <LogsView />}
-        {active === 'content' && (
-          <div className="placeholder">
-            <AlertCircle size={28} />
-            <p>{PLACEHOLDER[active]}</p>
-          </div>
-        )}
+        {active === 'queue' && <QueueView />}
+        {active === 'analytics' && <AnalyticsView />}
       </main>
       </div>
 
