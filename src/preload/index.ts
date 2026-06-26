@@ -8,7 +8,9 @@ import {
   type ScheduleInput,
   type UpdateStatusPayload,
   type ProgressPayload,
-  type LogListParams
+  type LogListParams,
+  type CommentResult,
+  type CommentTestResult
 } from '../shared/types'
 
 const api: AviaryApi = {
@@ -60,7 +62,9 @@ const api: AviaryApi = {
     save: (patch: Partial<AppSettings>) => ipcRenderer.invoke(IpcChannels.settingsSave, patch)
   },
   webhook: {
-    test: (accountId?: string) => ipcRenderer.invoke(IpcChannels.webhookTest, accountId)
+    test: (accountId?: string) => ipcRenderer.invoke(IpcChannels.webhookTest, accountId),
+    testComments: (handle: string, sourceUrl?: string | null) =>
+      ipcRenderer.invoke(IpcChannels.webhookTestComments, handle, sourceUrl) as Promise<CommentTestResult>
   },
   post: {
     runNow: (accountId: string) => ipcRenderer.invoke(IpcChannels.postRunNow, accountId),
@@ -74,6 +78,10 @@ const api: AviaryApi = {
       ipcRenderer.on(IpcChannels.queueChanged, listener)
       return () => ipcRenderer.removeListener(IpcChannels.queueChanged, listener)
     }
+  },
+  comments: {
+    runNow: (accountId: string) =>
+      ipcRenderer.invoke(IpcChannels.commentRunNow, accountId) as Promise<CommentResult>
   },
   logs: {
     list: (params?: LogListParams) => ipcRenderer.invoke(IpcChannels.logsList, params),

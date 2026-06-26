@@ -24,7 +24,9 @@ import {
 } from './db/accounts'
 import { getAllSettings, saveSettings } from './db/settings'
 import {
-  testWebhook
+  testWebhook,
+  sendAnalyticsData,
+  testCommentWebhook
 } from './n8n/N8nConnector'
 import {
   listProxies,
@@ -48,7 +50,8 @@ import {
 import { browserManager } from './browser/BrowserManager'
 import { listLogs, clearLogs, deleteLogsByAccount } from './db/logs'
 import { deleteAnalyticsByAccount, clearAllAnalytics, pruneAnalytics, getAnalyticsStorageStats } from './db/analytics'
-import { runPostForAccount, emitProgress } from './scheduler/runner'
+import { deleteCommentHistoryByAccount } from './db/comment_history'
+import { runPostForAccount, runCommentForAccount, emitProgress } from './scheduler/runner'
 import { acquireSlot, releaseSlot } from './scheduler/index'
 import { fetchXProfile, downloadAvatarAsDataUrl } from './x/FetchProfile'
 import { fetchAllAccountsStats, fetchAccountStats } from './analytics/fetcher'
@@ -75,10 +78,11 @@ export function registerIpc(): void {
   ipcMain.handle(IpcChannels.accountsDelete, async (_e, id: string) => {
     await browserManager.closeProfile(id)
     const acc = getAccount(id)
-    // Xoá schedules + logs + analytics trước khi xoá row (tránh mồ côi).
+    // Xoá schedules + logs + analytics + comment history trước khi xoá row (tránh mồ côi).
     deleteSchedulesByAccount(id)
     deleteLogsByAccount(id)
     deleteAnalyticsByAccount(id)
+    deleteCommentHistoryByAccount(id)
     deleteAccount(id)
     // Xoá profile_dir trên ổ đĩa (50-200MB mỗi account) — làm sau khi xoá DB để
     // ngay cả nếu rmSync fail, row DB đã mất và không tạo schedule mồ côi.
@@ -177,6 +181,12 @@ export function registerIpc(): void {
     return testWebhook(accountId, account?.assetUrl ?? null)
   })
 
+  // Test webhook bình luận — gửi handle + sourceUrl, trả nội dung bình luận n8n phản hồi.
+  ipcMain.handle(IpcChannels.webhookTestComments, (_e, handle: string, sourceUrl?: string | null) => {
+    const clean = handle.trim().replace(/^@+/, '')
+    return testCommentWebhook(clean, sourceUrl ?? null)
+  })
+
   ipcMain.handle(IpcChannels.logsList, (_e, params?: LogListParams) => listLogs(params))
   ipcMain.handle(IpcChannels.logsClear, () => {
     clearLogs()
@@ -199,6 +209,24 @@ export function registerIpc(): void {
     await acquireSlot(accountId)
     try {
       return await runPostForAccount(accountId, { source: 'manual' })
+    } finally {
+      releaseSlot(accountId)
+    }
+  })
+
+  // Nút "Bình luận" thủ công (tab Tài khoản) — chạy pipeline bình luận với cài đặt
+  // mặc định (1 bài/lần, interval 60s). Chiếm slot semaphore giống post.
+  ipcMain.handle(IpcChannels.commentRunNow, async (_e, accountId: string) => {
+    emitProgress({
+      accountId,
+      accountLabel: getAccount(accountId)?.label ?? accountId,
+      stage: 'queue',
+      message: 'Đang chờ slot trống để chạy bình luận…',
+      busy: true
+    })
+    await acquireSlot(accountId)
+    try {
+      return await runCommentForAccount(accountId, { source: 'manual' })
     } finally {
       releaseSlot(accountId)
     }
@@ -266,10 +294,17 @@ export function registerIpc(): void {
   })
 
   // ---- Analytics (tab Analytics) ----
-  // Fetch thủ công toàn bộ tài khoản.
+  // Fetch thủ công toàn bộ tài khoản. CHỈ luồng thủ công (nút "Fetch ngay") mới gửi
+  // dữ liệu về n8n qua webhook event 'data_acc' — scheduler auto không gửi (tránh spam).
   ipcMain.handle(IpcChannels.analyticsFetchNow, async () => {
     const result = await fetchAllAccountsStats()
     pruneAnalytics()
+    // Gửi snapshot về n8n nếu có ít nhất 1 record fetch thành công. Lỗi webhook không
+    // làm fail toàn bộ fetch — chỉ log cảnh báo để user biết.
+    if (result.records.length > 0) {
+      const r = await sendAnalyticsData(result.records)
+      if (!r.ok) console.warn('[analytics] gửi data_acc về n8n thất bại:', r.error)
+    }
     return result
   })
 

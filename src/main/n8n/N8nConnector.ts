@@ -4,9 +4,21 @@ import { join } from 'path'
 import { Readable } from 'stream'
 import { pipeline } from 'stream/promises'
 import { app } from 'electron'
-import type { PostPayload, WebhookTestResult } from '../../shared/types'
+import type { PostPayload, WebhookTestResult, AnalyticsFetchRecord, CommentPayload, CommentTestResult } from '../../shared/types'
 import { getAllSettings } from '../db/settings'
 import { muxVideoAudio, muxFromManifest } from '../media/ffmpeg'
+
+// Decode HTML entities trong URL (VD "&amp;" -> "&"). n8n/Reddit đôi khi trả URL
+// đã escape theo HTML -> fetch bị 403/404. Decode trước khi tải để tránh báo nhầm link hỏng.
+function decodeUrlEntities(u: string): string {
+  return u
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'")
+    .replace(/&#x27;/gi, "'")
+}
 
 // Dạng response Aviary chuẩn hóa. Chấp nhận cả Reddit-style của workflow user.
 function normalizePayload(raw: unknown): PostPayload {
@@ -21,11 +33,19 @@ function normalizePayload(raw: unknown): PostPayload {
     if (typeof proceed === 'string' && proceed.trim().toUpperCase() === 'SKIP') {
       const title = o.Title ?? o.title ?? o.caption
       const skipId = typeof o.id === 'string' ? o.id : undefined
+      const skipPermalink = o.permalink ?? o.redditUrl ?? o.sourceUrl
+      const skipSourceUrl =
+        typeof skipPermalink === 'string' && skipPermalink.trim()
+          ? skipPermalink.trim().startsWith('http')
+            ? skipPermalink.trim()
+            : `https://www.reddit.com${skipPermalink.trim()}`
+          : null
       return {
         caption: typeof title === 'string' ? title : '',
         assets: [],
         skip: true,
-        id: skipId
+        id: skipId,
+        sourceUrl: skipSourceUrl
       }
     }
   }
@@ -40,6 +60,18 @@ function normalizePayload(raw: unknown): PostPayload {
   for (const o of items) {
     if (typeof o.id === 'string' && o.id.trim()) {
       id = o.id.trim()
+      break
+    }
+  }
+
+  // URL reddit gốc (permalink) — đính kèm markdone để n8n ghi vào sheet.
+  // n8n node Code cần thêm field `permalink` vào output. Build URL đầy đủ nếu chỉ có path.
+  let sourceUrl: string | null = null
+  for (const o of items) {
+    const p = o.permalink ?? o.redditUrl ?? o.sourceUrl
+    if (typeof p === 'string' && p.trim()) {
+      const raw = p.trim()
+      sourceUrl = raw.startsWith('http') ? raw : `https://www.reddit.com${raw}`
       break
     }
   }
@@ -60,25 +92,28 @@ function normalizePayload(raw: unknown): PostPayload {
     if (t === 'video' && typeof o.videoUrl === 'string') {
       const audios: string[] = []
       if (Array.isArray(o.audioUrls)) {
-        for (const a of o.audioUrls) if (typeof a === 'string') audios.push(a)
+        for (const a of o.audioUrls) if (typeof a === 'string') audios.push(decodeUrlEntities(a))
       }
-      if (typeof o.audioUrl1 === 'string') audios.push(o.audioUrl1)
-      if (typeof o.audioUrl2 === 'string') audios.push(o.audioUrl2)
+      if (typeof o.audioUrl1 === 'string') audios.push(decodeUrlEntities(o.audioUrl1))
+      if (typeof o.audioUrl2 === 'string') audios.push(decodeUrlEntities(o.audioUrl2))
       const dedup = [...new Set(audios)]
-      assets.push({ url: o.videoUrl as string, type: 'video' })
+      const vUrl = decodeUrlEntities(o.videoUrl as string)
+      assets.push({ url: vUrl, type: 'video' })
       videoSpecs.push({
-        videoUrl: o.videoUrl as string,
+        videoUrl: vUrl,
         audioUrls: dedup,
-        dashUrl: typeof o.dashUrl === 'string' ? o.dashUrl : undefined,
-        hlsUrl: typeof o.hlsUrl === 'string' ? o.hlsUrl : undefined
+        dashUrl: typeof o.dashUrl === 'string' ? decodeUrlEntities(o.dashUrl) : undefined,
+        hlsUrl: typeof o.hlsUrl === 'string' ? decodeUrlEntities(o.hlsUrl) : undefined
       })
       continue
     }
 
-    // 2) Reddit: type = 'single_image'.
+    // 2) Reddit: type = 'single_image'. Ưu tiên originalUrl (i.redd.it — URL thô,
+    //    không HTML entity, không query param preview) thay vì imageUrl (preview.redd.it
+    //    thường có ?auto=webp&s=... dễ bị 403 nếu entity không được decode).
     if (t === 'single_image' || t === 'image') {
-      const url = (o.imageUrl ?? o.originalUrl ?? o.url) as string | undefined
-      if (typeof url === 'string') assets.push({ url, type: 'image' })
+      const url = (o.originalUrl ?? o.imageUrl ?? o.url) as string | undefined
+      if (typeof url === 'string') assets.push({ url: decodeUrlEntities(url), type: 'image' })
       continue
     }
 
@@ -88,7 +123,7 @@ function normalizePayload(raw: unknown): PostPayload {
       const imgs = (o.images as Record<string, unknown>[]).slice(0, 4)
       for (const img of imgs) {
         const url = img.highResImage ?? img.url ?? img.src
-        if (typeof url === 'string') assets.push({ url, type: 'image' })
+        if (typeof url === 'string') assets.push({ url: decodeUrlEntities(url), type: 'image' })
       }
       // Lấy caption từ title của gallery nếu chưa có.
       if (!caption && typeof o.title === 'string' && o.title.trim()) {
@@ -101,25 +136,25 @@ function normalizePayload(raw: unknown): PostPayload {
     const rawAssets = o.assets ?? o.media ?? o.urls
     if (Array.isArray(rawAssets)) {
       for (const a of rawAssets) {
-        if (typeof a === 'string') assets.push({ url: a })
+        if (typeof a === 'string') assets.push({ url: decodeUrlEntities(a) })
         else if (a && typeof a === 'object') {
           const x = a as Record<string, unknown>
           const url = x.url ?? x.src ?? x.link
           if (typeof url === 'string') {
             const type = x.type === 'video' || x.type === 'image' ? x.type : undefined
-            assets.push({ url, type })
+            assets.push({ url: decodeUrlEntities(url), type })
           }
         }
       }
       continue
     }
-    if (typeof o.url === 'string') assets.push({ url: o.url })
+    if (typeof o.url === 'string') assets.push({ url: decodeUrlEntities(o.url) })
   }
 
-  return { caption, assets, videoSpecs: videoSpecs.length ? videoSpecs : undefined, id }
+  return { caption, assets, videoSpecs: videoSpecs.length ? videoSpecs : undefined, id, sourceUrl }
 }
 
-type WebhookEvent = 'publishpost' | 'markdone'
+type WebhookEvent = 'publishpost' | 'markdone' | 'data_acc' | 'comments'
 
 // POST body webhook chung: có event để n8n rẽ nhánh (publishpost | markdone).
 function webhookBody(
@@ -170,13 +205,14 @@ export async function fetchPostPayload(
 
 // #3: báo về n8n rằng 1 bài đã xử lý xong -> n8n update sheet đánh dấu video done.
 // reason: 'posted' = đăng thành công; 'broken' = link hỏng (403/SKIP) cần đánh dấu để
-// không lấy lại. Gửi kèm id (ổn định nhất), title, accountId, assetUrl, postUrl để n8n
-// tìm đúng dòng sheet (ưu tiên khớp theo id, fallback title).
+// không lấy lại. Gửi kèm id (ổn định nhất), title, accountId, assetUrl, postUrl (URL tweet X),
+// url (URL reddit gốc) để n8n tìm đúng dòng sheet (ưu tiên khớp theo id, fallback title/url).
 export async function markDone(p: {
   accountId: string
   assetUrl: string | null
   title: string
   postUrl: string | null
+  url?: string | null
   reason?: 'posted' | 'broken'
   id?: string | null
 }): Promise<{ ok: boolean; error?: string }> {
@@ -188,6 +224,7 @@ export async function markDone(p: {
         id: p.id ?? null,
         title: p.title,
         postUrl: p.postUrl,
+        url: p.url ?? null,
         reason: p.reason ?? 'posted'
       })
     )
@@ -198,6 +235,104 @@ export async function markDone(p: {
     return { ok: true }
   } catch (e) {
     return { ok: false, error: (e as Error).message }
+  }
+}
+
+// #4: gửi dữ liệu analytics đã fetch về n8n (event 'data_acc') — chỉ khi user bấm
+// "Fetch ngay" thủ công. n8n tự xử lý & cập nhật Google Sheet. Gửi kèm danh sách
+// records (snapshot followers/following/posts/name/handle/status tại thời điểm fetch).
+// Không chặn luồng fetch — báo lỗi nhưng không ném ra ngoài.
+export async function sendAnalyticsData(
+  records: AnalyticsFetchRecord[]
+): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const res = await postWebhook(
+      webhookBody('data_acc', {
+        fetchedAt: Date.now(),
+        count: records.length,
+        records
+      })
+    )
+    if (!res.ok) {
+      const body = await res.text().catch(() => '')
+      return { ok: false, error: `Webhook data_acc HTTP ${res.status}${body ? ': ' + body.slice(0, 200) : ''}` }
+    }
+    return { ok: true }
+  } catch (e) {
+    return { ok: false, error: (e as Error).message }
+  }
+}
+
+// #5: lấy nội dung bình luận cho 1 tài khoản (event 'comments'). App gửi handle + URL
+// nguồn (Google Sheet) -> n8n lọc sheet theo handle -> trả nội dung bình luận.
+// Chuẩn hoá nhiều dạng response: {comment} | {text} | {comments:[...]} | [{comment}].
+// Mỗi tài khoản 1 nội dung cố định (trước mắt). Trống/skip -> app bỏ qua lần chạy.
+export async function fetchCommentPayload(
+  handle: string,
+  sourceUrl?: string | null
+): Promise<CommentPayload> {
+  const res = await postWebhook(
+    webhookBody('comments', {
+      handle,
+      sourceUrl: sourceUrl ?? null
+    })
+  )
+  if (!res.ok) {
+    const body = await res.text().catch(() => '')
+    throw new Error(`Webhook comments HTTP ${res.status}${body ? ': ' + body.slice(0, 200) : ''}`)
+  }
+  const json = await res.json().catch(() => {
+    throw new Error('Webhook comments không trả JSON hợp lệ')
+  })
+  return normalizeCommentPayload(json, handle)
+}
+
+function normalizeCommentPayload(raw: unknown, handle: string): CommentPayload {
+  const arr = Array.isArray(raw) ? raw : [raw]
+  const items = arr.filter((x) => x && typeof x === 'object') as Record<string, unknown>[]
+  if (items.length === 0) return { handle, comment: '' }
+
+  // n8n báo SKIP -> không có nội dung, bỏ qua lần chạy.
+  const proceed = items[0]['XProceed?'] ?? items[0]['XProceed'] ?? items[0].proceed
+  if (typeof proceed === 'string' && proceed.trim().toUpperCase() === 'SKIP') {
+    return { handle, comment: '', skip: true }
+  }
+
+  // Tìm key không phân biệt hoa-thường: comment | comments | text | content.
+  // Google Sheet thường đặt cột "Comments" (viết hoa, có "s") -> phải khớp cả dạng đó.
+  // Giá trị có thể là string ("That's crazy!!!") hoặc array (["...", ...]) -> lấy string đầu.
+  const fieldKeys = ['comment', 'comments', 'text', 'content']
+  for (const o of items) {
+    for (const k of Object.keys(o)) {
+      const lower = k.toLowerCase()
+      if (!fieldKeys.includes(lower)) continue
+      const v = o[k]
+      if (typeof v === 'string' && v.trim()) {
+        return { handle, comment: v.trim() }
+      }
+      if (Array.isArray(v) && typeof v[0] === 'string' && v[0].trim()) {
+        return { handle, comment: (v[0] as string).trim() }
+      }
+    }
+  }
+  return { handle, comment: '' }
+}
+
+// Test webhook bình luận — gửi handle mẫu + sourceUrl, hiển thị nội dung trả về.
+export async function testCommentWebhook(
+  handle: string,
+  sourceUrl?: string | null
+): Promise<CommentTestResult> {
+  try {
+    const payload = await fetchCommentPayload(handle, sourceUrl)
+    return {
+      ok: !payload.skip && !!payload.comment,
+      handle,
+      comment: payload.comment || '(trống)',
+      error: payload.skip ? 'n8n trả SKIP — không có nội dung' : undefined
+    }
+  } catch (e) {
+    return { ok: false, handle, error: (e as Error).message }
   }
 }
 

@@ -6,20 +6,29 @@ import {
   type Account,
   type PostResult,
   type DeleteResult,
+  type CommentResult,
   type ProgressPayload,
   type DeleteMode
 } from '../../shared/types'
-import { getAccount, setAccountStatus } from '../db/accounts'
+import { getAccount, setAccountStatus, decodeCaptionPrefix } from '../db/accounts'
 import { getAllSettings } from '../db/settings'
 import {
   fetchPostPayload,
   downloadAssets,
   markDone,
+  fetchCommentPayload,
   BrokenMediaError
 } from '../n8n/N8nConnector'
 import { browserManager } from '../browser/BrowserManager'
-import { postTweet, deleteTweetsFromProfile } from '../actions/XActions'
+import { postTweet, deleteTweetsFromProfile, scrollProfileCollectTweetUrls, commentOnTweet } from '../actions/XActions'
 import { insertLog, pruneLogs } from '../db/logs'
+import {
+  insertCollectedLinks,
+  updateLinkStatus,
+  listUnprocessedLinks,
+  countCommentsToday,
+  pruneCommentHistory
+} from '../db/comment_history'
 
 // Broadcast tiến trình tới mọi renderer window (dùng chung cho manual + schedule).
 export function emitProgress(p: ProgressPayload): void {
@@ -76,7 +85,8 @@ export async function handleBrokenAndReport(
   title: string,
   reason: string,
   eventType: 'post' | 'run' = 'post',
-  id?: string | null
+  id?: string | null,
+  sourceUrl?: string | null
 ): Promise<void> {
   emitProgress({
     accountId: account.id,
@@ -91,6 +101,7 @@ export async function handleBrokenAndReport(
     id,
     title,
     postUrl: null,
+    url: sourceUrl ?? null,
     reason: 'broken'
   })
 
@@ -226,18 +237,21 @@ export async function runPostForAccount(
       // Link Reddit hỏng (403/404 khi tải/ffmpeg) mà N8N không phát hiện -> app mới biết.
       // Đây là case markdone: báo n8n mark link đó trong sheet, log, đóng profile.
       if (e instanceof BrokenMediaError) {
-        await handleBrokenAndReport(account, payload.caption ?? '', e.message, logEventType, payload.id)
+        await handleBrokenAndReport(account, payload.caption ?? '', e.message, logEventType, payload.id, payload.sourceUrl)
         return { ok: false, skipped: true, error: `Bài bị bỏ qua: ${e.message}` }
       }
       throw e
     }
 
-    // Post lên X, xoá file tạm sau khi đăng thành công. Hashtag ghép vào cuối caption KHI
+    // Post lên X, xoá file tạm sau khi đăng. Tiền tố + hashtag ghép vào caption KHI
     // ĐĂNG — KHÔNG đưa vào webhook (markDone/fetchPostPayload dùng caption gốc) để n8n
     // nhận diện đúng dòng sheet.
-    const fullCaption = account.hashtag
-      ? `${payload.caption}\n${account.hashtag}`.trim()
-      : payload.caption
+    // Thứ tự: [captionPrefix] + caption + [\n hashtag]
+    let fullCaption = payload.caption ?? ''
+    const prefix = decodeCaptionPrefix(account.captionPrefix)
+    if (prefix) fullCaption = prefix + fullCaption
+    if (account.hashtag) fullCaption = `${fullCaption}\n${account.hashtag}`.trim()
+    fullCaption = fullCaption.trim()
     emitProgress({ accountId, accountLabel: label, stage: 'post', message: 'Đang đăng bài lên X…', busy: true })
     try {
       result = await postTweet(
@@ -270,8 +284,8 @@ export async function runPostForAccount(
     pruneLogs()
 
     if (result?.ok) {
-      // Báo n8n đánh dấu video đã đăng (markdone) kèm title + postUrl. title = caption GỐC
-      // (không hashtag) để n8n khớp đúng dòng sheet.
+      // Báo n8n đánh dấu video đã đăng (markdone) kèm title + postUrl + url reddit.
+      // title = caption GỐC (không prefix/hashtag) để n8n khớp đúng dòng sheet.
       emitProgress({ accountId, accountLabel: label, stage: 'markdone', message: 'Đang báo n8n đánh dấu done…', busy: true })
       const md = await markDone({
         accountId,
@@ -279,6 +293,7 @@ export async function runPostForAccount(
         id: payload.id,
         title: payload.caption ?? '',
         postUrl: result.url ?? null,
+        url: payload.sourceUrl ?? null,
         reason: 'posted'
       })
 
@@ -415,6 +430,339 @@ export async function runDeleteForAccount(
       })
     }
     return result
+  } finally {
+    // Luôn đóng profile nếu do pipeline tự mở.
+    if (openedByUs) {
+      await browserManager.closeProfile(accountId).catch(() => {})
+    }
+  }
+}
+
+// Sleep helper — delay giữa các lần bình luận trong 1 tác vụ.
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+// Pipeline bình luận trên bài của chính tài khoản (trang profile). Dùng chung cho
+// nút "Bình luận" (manual) và scheduler (schedule).
+// source để phân biệt nguồn khi ghi log (eventType: schedule->'run_comment', manual->'comment').
+export async function runCommentForAccount(
+  accountId: string,
+  opts?: {
+    source?: 'manual' | 'schedule'
+    commentCount?: number
+    commentIntervalSeconds?: number
+    commentSourceUrl?: string | null
+  }
+): Promise<CommentResult> {
+  const account = getAccount(accountId)
+  if (!account) throw new Error(`Account không tồn tại: ${accountId}`)
+  const logEventType = opts?.source === 'schedule' ? 'run_comment' : 'comment'
+  const label = account.label
+
+  const commentCount = Math.max(1, opts?.commentCount ?? 1)
+  const commentIntervalSeconds = Math.max(5, opts?.commentIntervalSeconds ?? 60)
+  const sourceUrl = opts?.commentSourceUrl ?? null
+  const dailyLimit = getAllSettings().commentDailyLimit
+
+  emitProgress({ accountId, accountLabel: label, stage: 'prepare', message: 'Đang kiểm tra profile…', busy: true })
+
+  // 1. Kiểm tra limit comment/ngày — chạm -> báo, dừng, mai chạy tiếp.
+  const countToday = countCommentsToday(accountId)
+  if (countToday >= dailyLimit) {
+    emitProgress({
+      accountId,
+      accountLabel: label,
+      stage: 'done',
+      message: `Đã chạm limit ${dailyLimit} comment/ngày — tạm dừng, mai chạy tiếp.`,
+      busy: false
+    })
+    insertLog({
+      accountId,
+      accountLabel: label,
+      ts: Date.now(),
+      ok: true,
+      caption: `Bỏ qua — đã chạm limit ${dailyLimit} comment/ngày`,
+      url: null,
+      error: null,
+      step: 'limit',
+      screenshot: null,
+      eventType: logEventType
+    })
+    return {
+      ok: true,
+      commentedCount: 0,
+      urls: [],
+      step: 'limit',
+      limitReached: true
+    }
+  }
+  // Nếu count + commentCount > limit -> chỉ comment số còn lại được phép.
+  const allowedThisRun = Math.min(commentCount, dailyLimit - countToday)
+
+  // 2. Lấy nội dung bình luận từ n8n.
+  if (!account.handle) {
+    emitProgress({ accountId, accountLabel: label, stage: 'error', message: 'Tài khoản chưa có username X.', busy: false })
+    return {
+      ok: false,
+      commentedCount: 0,
+      urls: [],
+      error: 'Tài khoản chưa có username X — không thể vào profile để bình luận.',
+      step: 'prepare'
+    }
+  }
+  const handle = account.handle.replace(/^@+/, '')
+
+  emitProgress({ accountId, accountLabel: label, stage: 'fetch', message: 'Đang lấy nội dung bình luận từ n8n…', busy: true })
+  let payload
+  try {
+    payload = await fetchCommentPayload(handle, sourceUrl)
+  } catch (e) {
+    insertLog({
+      accountId,
+      accountLabel: label,
+      ts: Date.now(),
+      ok: false,
+      caption: 'Lấy nội dung bình luận lỗi',
+      url: null,
+      error: (e as Error).message,
+      step: 'fetch',
+      screenshot: null,
+      eventType: logEventType
+    })
+    emitProgress({ accountId, accountLabel: label, stage: 'error', message: `Lỗi: ${(e as Error).message}`, busy: false })
+    return { ok: false, commentedCount: 0, urls: [], error: (e as Error).message, step: 'fetch' }
+  }
+  if (payload.skip || !payload.comment) {
+    emitProgress({
+      accountId,
+      accountLabel: label,
+      stage: 'done',
+      message: 'Không có nội dung bình luận (n8n trả SKIP/trống) — bỏ qua lần chạy.',
+      busy: false
+    })
+    insertLog({
+      accountId,
+      accountLabel: label,
+      ts: Date.now(),
+      ok: true,
+      caption: 'Bỏ qua — không có nội dung bình luận',
+      url: null,
+      error: null,
+      step: 'no_content',
+      screenshot: null,
+      eventType: logEventType
+    })
+    return { ok: true, commentedCount: 0, urls: [], step: 'no_content' }
+  }
+  const commentText = payload.comment
+
+  // 3. Mở profile nếu chưa mở.
+  let openedByUs = false
+  let context = browserManager.getContext(accountId)
+  if (!context) {
+    emitProgress({ accountId, accountLabel: label, stage: 'open', message: 'Đang mở profile…', busy: true })
+    await browserManager.openProfile(account)
+    setAccountStatus(accountId, 'logged_in')
+    context = browserManager.getContext(accountId)
+    openedByUs = true
+  }
+  if (!context) throw new Error('Không mở được profile.')
+
+  const commentedUrls: string[] = []
+  let commentedCount = 0
+
+  try {
+    // 4. Check link chưa xử lý (status='collected') trong cache từ lần trước.
+    //    Nếu còn đủ → KHÔNG cần cuộn profile → xử lý thẳng (tiết kiệm thời gian).
+    //    Nếu không đủ → cuộn profile collect thêm → cache → xử lý.
+    let unprocessed = listUnprocessedLinks(accountId, 50)
+
+    if (unprocessed.length < allowedThisRun) {
+      // 5. Cuộn profile thu thập link bài (collect 20 link, không early-stop).
+      const collectCount = 20
+      emitProgress({
+        accountId,
+        accountLabel: label,
+        stage: 'collect',
+        message: `Cache còn ${unprocessed.length} link, cần thêm — đang cuộn profile…`,
+        busy: true
+      })
+      const collected = await scrollProfileCollectTweetUrls(
+        context,
+        handle,
+        collectCount,
+        accountId,
+        (message) => emitProgress({ accountId, accountLabel: label, stage: 'collect', message, busy: true })
+      )
+      if (collected.error) {
+        insertLog({
+          accountId,
+          accountLabel: label,
+          ts: Date.now(),
+          ok: false,
+          caption: 'Thu thập link bài lỗi',
+          url: null,
+          error: collected.error,
+          step: 'collect',
+          screenshot: collected.screenshot ?? null,
+          eventType: logEventType
+        })
+        emitProgress({ accountId, accountLabel: label, stage: 'error', message: `Lỗi: ${collected.error}`, busy: false })
+        return { ok: false, commentedCount: 0, urls: [], error: collected.error, step: 'collect', screenshot: collected.screenshot }
+      }
+
+      // 6. Cache TẤT CẢ link vừa thu thập (status='collected'). Link trùng → IGNORE.
+      if (collected.urls.length > 0) {
+        insertCollectedLinks(accountId, collected.urls)
+      }
+
+      // 7. Lấy lại danh sách chưa xử lý (gồm link mới + link cũ còn dư).
+      unprocessed = listUnprocessedLinks(accountId, 50)
+    } else {
+      emitProgress({
+        accountId,
+        accountLabel: label,
+        stage: 'collect',
+        message: `Cache còn ${unprocessed.length} link chưa xử lý — bỏ qua cuộn profile.`,
+        busy: true
+      })
+    }
+
+    if (unprocessed.length === 0) {
+      emitProgress({
+        accountId,
+        accountLabel: label,
+        stage: 'done',
+        message: 'Không có link mới phù hợp (tất cả đã xử lý trước đó) — bỏ qua lần chạy.',
+        busy: false
+      })
+      insertLog({
+        accountId,
+        accountLabel: label,
+        ts: Date.now(),
+        ok: true,
+        caption: 'Bỏ qua — không có link mới (tất cả đã xử lý)',
+        url: null,
+        error: null,
+        step: 'no_match',
+        screenshot: null,
+        eventType: logEventType
+      })
+      return { ok: true, commentedCount: 0, urls: [], step: 'no_match' }
+    }
+
+    emitProgress({
+      accountId,
+      accountLabel: label,
+      stage: 'comment',
+      message: `Có ${unprocessed.length} link chờ xử lý. Cần bình luận ${allowedThisRun} bài (đã comment ${countToday}/${dailyLimit} hôm nay).`,
+      busy: true
+    })
+
+    // 8. Duyệt tuần tự từng link chưa xử lý. Mở tweet -> check reply/gốc -> comment.
+    //    Dừng khi đủ target HOẶC hết link. Reply -> update status='reply_skip'.
+    //    Gốc -> comment -> update 'commented'. Lỗi -> update 'fail' (thử lại lần sau).
+    let failCount = 0
+    let processedIndex = 0
+    while (commentedCount < allowedThisRun && processedIndex < unprocessed.length) {
+      const url = unprocessed[processedIndex]
+      processedIndex++
+      const isLast = processedIndex >= unprocessed.length || commentedCount + 1 >= allowedThisRun
+      emitProgress({
+        accountId,
+        accountLabel: label,
+        stage: 'comment',
+        message: `Đang kiểm tra bài ${processedIndex}/${unprocessed.length} (đã comment ${commentedCount}/${allowedThisRun})…`,
+        busy: true
+      })
+      const r = await commentOnTweet(
+        context,
+        url,
+        commentText,
+        accountId,
+        (message) => emitProgress({ accountId, accountLabel: label, stage: 'comment', message, busy: true })
+      )
+      if (r.ok) {
+        commentedCount++
+        commentedUrls.push(url)
+        updateLinkStatus(accountId, url, 'commented')
+      } else if (r.skipped) {
+        updateLinkStatus(accountId, url, 'reply_skip')
+        emitProgress({
+          accountId,
+          accountLabel: label,
+          stage: 'comment',
+          message: `Bài ${processedIndex} là reply — bỏ qua, thử bài kế…`,
+          busy: true
+        })
+      } else {
+        failCount++
+        updateLinkStatus(accountId, url, 'fail')
+        insertLog({
+          accountId,
+          accountLabel: label,
+          ts: Date.now(),
+          ok: false,
+          caption: `Bình luận bài ${processedIndex} lỗi`,
+          url,
+          error: r.error ?? 'Lỗi không xác định',
+          step: r.step ?? 'comment',
+          screenshot: r.screenshot ?? null,
+          eventType: logEventType
+        })
+      }
+      // Delay giữa các bài (trừ bài cuối hoặc đã đủ target).
+      if (!isLast && commentedCount < allowedThisRun) {
+        emitProgress({
+          accountId,
+          accountLabel: label,
+          stage: 'comment',
+          message: `Chờ ${commentIntervalSeconds}s trước bài kế…`,
+          busy: true
+        })
+        await sleep(commentIntervalSeconds * 1000)
+      }
+    }
+
+    // 9. Prune history, ghi log tổng, báo status.
+    pruneCommentHistory(accountId)
+    const ok = failCount === 0
+    const caption =
+      commentedCount > 0
+        ? `Đã bình luận ${commentedCount}/${allowedThisRun} bài${failCount > 0 ? ` (${failCount} lỗi)` : ''}`
+        : `Bình luận lỗi — 0 bài thành công`
+    insertLog({
+      accountId,
+      accountLabel: label,
+      ts: Date.now(),
+      ok,
+      caption,
+      url: commentedUrls[0] ?? null,
+      error: ok ? null : `${failCount} bài bình luận lỗi`,
+      step: ok ? 'done' : 'partial',
+      screenshot: null,
+      eventType: logEventType,
+      urls: commentedUrls
+    })
+    pruneLogs()
+
+    emitProgress({
+      accountId,
+      accountLabel: label,
+      stage: ok ? 'done' : 'error',
+      message: ok
+        ? `Hoàn thành — đã bình luận ${commentedCount} bài`
+        : `Hoàn thành (${commentedCount} thành công, ${failCount} lỗi)`,
+      busy: false
+    })
+    return {
+      ok,
+      commentedCount,
+      urls: commentedUrls,
+      step: ok ? 'done' : 'partial',
+      limitReached: countToday + commentedCount >= dailyLimit
+    }
   } finally {
     // Luôn đóng profile nếu do pipeline tự mở.
     if (openedByUs) {

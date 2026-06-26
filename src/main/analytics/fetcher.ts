@@ -1,22 +1,26 @@
 import { fetchXProfile, downloadAvatarAsDataUrl } from '../x/FetchProfile'
-import { getAccount, updateAccountStats } from '../db/accounts'
+import { getAccount, updateAccountStats, listAccounts } from '../db/accounts'
 import { resolveProxyString } from '../db/proxies'
 import { upsertDailyStats, setLastFetchDay } from '../db/analytics'
-import { listAccounts } from '../db/accounts'
 import { emitProgress } from '../scheduler/runner'
-import type { AnalyticsFetchResult } from '../../shared/types'
+import type { AnalyticsFetchResult, AnalyticsFetchRecord } from '../../shared/types'
 
 // Fetch thống kê X (followers/following/posts/name) cho toàn bộ tài khoản có handle.
-// Chạy với concurrency 3 (không dùng slot của post scheduler — đây là job nhẹ, riêng).
-// Mỗi fetch thành công: upsert vào account_stats_daily + update accounts cache.
-// Trả về kết quả tổng hợp (success/failed/skipped + danh sách lỗi).
+// Chạy tuần tự (concurrency 1) + delay giữa mỗi lần fetch để tránh bị X rate-limit
+// (429) khi user có nhiều tài khoản. Mỗi fetch thành công: upsert vào
+// account_stats_daily + update accounts cache. Trả về kết quả tổng hợp.
+// (success/failed/skipped + danh sách lỗi + records đã fetch.)
 
-const CONCURRENCY = 3
+const CONCURRENCY = 1
+// Độ trễ (ms) giữa 2 lần fetch liên tiếp. Đủ lớn để X không đánh giá là bot spam,
+// vừa đủ ngắn để user không chờ quá lâu khi có nhiều tài khoản.
+const FETCH_DELAY_MS = 2500
 
 export async function fetchAllAccountsStats(): Promise<AnalyticsFetchResult> {
   const accounts = listAccounts().filter((a) => a.handle)
   const total = accounts.length
   const errors: AnalyticsFetchResult['errors'] = []
+  const records: AnalyticsFetchRecord[] = []
   let success = 0
   let failed = 0
   let skipped = 0
@@ -40,9 +44,12 @@ export async function fetchAllAccountsStats(): Promise<AnalyticsFetchResult> {
         running++
         void fetchAccountStats(acc.id)
           .then((r) => {
-            if (r.skipped) skipped++
-            else if (r.ok) success++
-            else {
+            if (r.skipped) {
+              skipped++
+            } else if (r.ok) {
+              success++
+              if (r.record) records.push(r.record)
+            } else {
               failed++
               errors.push({
                 accountId: acc.id,
@@ -60,7 +67,12 @@ export async function fetchAllAccountsStats(): Promise<AnalyticsFetchResult> {
               busy: true
             })
             if (done >= total) resolveAll()
-            else startNext()
+            else if (FETCH_DELAY_MS > 0) {
+              // Delay giữa các lần fetch để tránh X rate-limit (429).
+              setTimeout(startNext, FETCH_DELAY_MS)
+            } else {
+              startNext()
+            }
           })
       }
     }
@@ -77,7 +89,7 @@ export async function fetchAllAccountsStats(): Promise<AnalyticsFetchResult> {
     busy: false
   })
 
-  return { total, success, failed, skipped, errors }
+  return { total, success, failed, skipped, errors, records }
 }
 
 // Kết quả fetch 1 tài khoản.
@@ -85,6 +97,8 @@ export interface AccountFetchResult {
   ok: boolean
   error?: string
   skipped?: boolean
+  // Dữ liệu đã fetch (chỉ khi ok=true) — dùng để gửi về n8n qua webhook data_acc.
+  record?: AnalyticsFetchRecord
 }
 
 // Fetch 1 tài khoản. Dùng cho cả fetchAll (concurrency) và nút fetch riêng trong UI.
@@ -150,7 +164,21 @@ export async function fetchAccountStats(accountId: string): Promise<AccountFetch
       message: `Fetch ${acc.label} OK — ${info.followers ?? '?'} followers, ${info.posts ?? '?'} bài`,
       busy: false
     })
-    return { ok: true }
+    return {
+      ok: true,
+      record: {
+        accountId,
+        label: acc.label,
+        handle: acc.handle,
+        name: info.name,
+        followers: info.followers,
+        following: info.following,
+        posts: info.posts,
+        avatarUrl: info.avatarUrl ?? null,
+        status: acc.status,
+        fetchedAt: now
+      }
+    }
   } catch (e) {
     emitProgress({
       accountId,

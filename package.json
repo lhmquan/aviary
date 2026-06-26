@@ -1,6 +1,6 @@
 {
   "name": "aviary",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Quản lý nhiều tài khoản X qua profile chromium anti-detect, hẹn giờ đăng bài, tích hợp n8n",
   "private": true,
   "author": "",

@@ -732,6 +732,13 @@ nav {
   border-color: color-mix(in srgb, var(--danger) 28%, transparent);
 }
 
+/* Lịch: Bình luận — tím (accent-2) */
+.badge.action-comment {
+  background: color-mix(in srgb, var(--accent-2) 14%, transparent);
+  color: var(--accent-2);
+  border-color: color-mix(in srgb, var(--accent-2) 30%, transparent);
+}
+
 .badge.st-checkpoint {
   background: var(--warn-soft);
   color: var(--warn);
@@ -779,6 +786,20 @@ nav {
   background: var(--warn-soft);
   color: var(--warn);
   border-color: color-mix(in srgb, var(--warn) 28%, transparent);
+}
+
+/* Bình luận thủ công — tím (accent-2) */
+.badge.ev-comment {
+  background: color-mix(in srgb, var(--accent-2) 14%, transparent);
+  color: var(--accent-2);
+  border-color: color-mix(in srgb, var(--accent-2) 30%, transparent);
+}
+
+/* Lịch: Bình luận — tím đậm hơn (comment tự động theo lịch) */
+.badge.ev-run-comment {
+  background: color-mix(in srgb, var(--accent-2) 22%, transparent);
+  color: var(--accent-2);
+  border-color: color-mix(in srgb, var(--accent-2) 40%, transparent);
 }
 
 /* Hệ thống: tím (sự kiện hệ thống/lịch) */
@@ -898,6 +919,41 @@ nav {
   flex-direction: column;
   gap: 6px;
   margin-bottom: 14px;
+}
+
+/* Ô input + nút cạnh nhau (VD: nguồn bình luận + nút Test Webhook) */
+.field-row {
+  display: flex;
+  gap: 8px;
+  align-items: stretch;
+}
+.field-row input {
+  flex: 1;
+  min-width: 0;
+}
+.field-row .btn {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+/* 2 field cạnh nhau trên 1 hàng (VD: số bài + thời gian giữa mỗi bình luận) */
+.field-row-2 {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+.field-row-2 .field {
+  margin-bottom: 0;
+  /* Chiều rộng tự động theo label — field dài hơn sẽ rộng hơn */
+  flex: 0 1 auto;
+}
+.field-row-2 .field span {
+  white-space: nowrap;
+}
+.field-row-2 .field input,
+.field-row-2 .field select {
+  width: 100%;
+  min-width: 80px;
 }
 
 .field span {
@@ -1139,7 +1195,7 @@ nav {
 }
 
 .terminal-panel.collapsed {
-  height: 40px !important;
+  height: 26px !important;
 }
 
 .terminal-resize-handle {
@@ -1171,9 +1227,9 @@ nav {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
-  padding: 6px 10px 6px 12px;
-  min-height: 33px;
+  gap: 10px;
+  padding: 1px 10px 1px 12px;
+  min-height: 24px;
   background: var(--term-head);
   border-bottom: 1px solid var(--term-line);
   flex-shrink: 0;

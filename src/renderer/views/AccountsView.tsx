@@ -675,6 +675,7 @@ function AccountForm(props: {
   const [proxies, setProxies] = useState<Proxy[]>([])
   const [assetUrl, setAssetUrl] = useState(account?.assetUrl ?? '')
   const [hashtag, setHashtag] = useState(account?.hashtag ?? '')
+  const [captionPrefix, setCaptionPrefix] = useState(account?.captionPrefix ?? '')
   const [headless, setHeadless] = useState(account?.headless ?? false)
   const [saving, setSaving] = useState(false)
   // Thông tin X tự fetch từ username.
@@ -727,6 +728,7 @@ function AccountForm(props: {
       proxyId,
       assetUrl: assetUrl.trim() || null,
       hashtag: hashtag.trim() || null,
+      captionPrefix: captionPrefix || null,
       headless
     }
     try {
@@ -808,6 +810,14 @@ function AccountForm(props: {
             value={assetUrl}
             onChange={(e) => setAssetUrl(e.target.value)}
             placeholder="https://docs.google.com/spreadsheets/d/..."
+          />
+        </label>
+        <label className="field">
+          <span>Tiền tố caption (tự chèn vào ĐẦU caption khi đăng — không gửi vào webhook). Hỗ trợ escape: \n, \t, \\</span>
+          <input
+            value={captionPrefix}
+            onChange={(e) => setCaptionPrefix(e.target.value)}
+            placeholder="VD: 🔥 Bài viết hấp dẫn:  hoặc  [HOT]\n  — để trống nếu không dùng"
           />
         </label>
         <label className="field">

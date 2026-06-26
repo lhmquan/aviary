@@ -16,6 +16,7 @@ interface AccountRow {
   asset_url: string | null
   headless: number
   hashtag: string | null
+  caption_prefix: string | null
   followers: number | null
   following: number | null
   statuses: number | null
@@ -36,6 +37,7 @@ function toAccount(r: AccountRow): Account {
     assetUrl: r.asset_url,
     headless: !!r.headless,
     hashtag: r.hashtag,
+    captionPrefix: r.caption_prefix ?? null,
     followers: r.followers ?? null,
     following: r.following ?? null,
     statusesCount: r.statuses ?? null,
@@ -65,8 +67,8 @@ export function createAccount(input: AccountInput): Account {
   const profileDir = join(app.getPath('userData'), 'profiles', id)
   getDb()
     .prepare(
-      `INSERT INTO accounts (id, label, handle, proxy_id, profile_dir, fingerprint, status, asset_url, headless, hashtag, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, NULL, 'new', ?, ?, ?, ?, ?)`
+      `INSERT INTO accounts (id, label, handle, proxy_id, profile_dir, fingerprint, status, asset_url, headless, hashtag, caption_prefix, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, NULL, 'new', ?, ?, ?, ?, ?, ?)`
     )
     .run(
       id,
@@ -77,6 +79,7 @@ export function createAccount(input: AccountInput): Account {
       input.assetUrl ?? null,
       input.headless ? 1 : 0,
       normalizeHashtag(input.hashtag),
+      input.captionPrefix ?? null,
       now,
       now
     )
@@ -92,11 +95,12 @@ export function updateAccount(id: string, input: Partial<AccountInput>): Account
     proxyId: input.proxyId !== undefined ? input.proxyId : existing.proxyId,
     assetUrl: input.assetUrl !== undefined ? input.assetUrl : existing.assetUrl,
     headless: input.headless !== undefined ? input.headless : existing.headless,
-    hashtag: input.hashtag !== undefined ? input.hashtag : existing.hashtag
+    hashtag: input.hashtag !== undefined ? input.hashtag : existing.hashtag,
+    captionPrefix: input.captionPrefix !== undefined ? input.captionPrefix : existing.captionPrefix
   }
   getDb()
     .prepare(
-      'UPDATE accounts SET label = ?, handle = ?, proxy_id = ?, asset_url = ?, headless = ?, hashtag = ?, updated_at = ? WHERE id = ?'
+      'UPDATE accounts SET label = ?, handle = ?, proxy_id = ?, asset_url = ?, headless = ?, hashtag = ?, caption_prefix = ?, updated_at = ? WHERE id = ?'
     )
     .run(
       next.label,
@@ -105,6 +109,7 @@ export function updateAccount(id: string, input: Partial<AccountInput>): Account
       next.assetUrl,
       next.headless ? 1 : 0,
       normalizeHashtag(next.hashtag),
+      next.captionPrefix ?? null,
       Date.now(),
       id
     )
@@ -148,6 +153,39 @@ export function normalizeHashtag(raw: string | null | undefined): string | null 
   if (tokens.length === 0) return null
   const cleaned = tokens.map((t) => (t.startsWith('#') ? t : `#${t}`))
   return cleaned.join(' ')
+}
+
+// Giải mã escape sequence trong tiền tố caption: \n -> newline, \t -> tab, \\ -> \.
+// Giữ nguyên dấu cách đầu/cuối (KHÔNG trim) để user chủ động định dạng khoảng cách
+// giữa prefix và caption khi ghép. Trả về null nếu rỗng/sau khi decode trắng.
+export function decodeCaptionPrefix(raw: string | null | undefined): string | null {
+  if (!raw) return null
+  let out = ''
+  for (let i = 0; i < raw.length; i++) {
+    const ch = raw[i]
+    if (ch !== '\\' || i === raw.length - 1) {
+      out += ch
+      continue
+    }
+    const next = raw[++i]
+    switch (next) {
+      case 'n':
+        out += '\n'
+        break
+      case 't':
+        out += '\t'
+        break
+      case 'r':
+        out += '\r'
+        break
+      case '\\':
+        out += '\\'
+        break
+      default:
+        out += '\\' + next
+    }
+  }
+  return out.length > 0 ? out : null
 }
 
 export function setAccountStatus(id: string, status: AccountStatus): void {

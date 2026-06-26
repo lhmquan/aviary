@@ -2,10 +2,11 @@ import type { BrowserContext, Page, Locator } from 'patchright'
 import { existsSync, mkdirSync } from 'fs'
 import { join } from 'path'
 import { app } from 'electron'
-import type { PostResult, DeleteResult, DeleteMode } from '../../shared/types'
+import type { PostResult, DeleteResult, DeleteMode, CommentResult } from '../../shared/types'
 
 export type { PostResult }
 export type { DeleteResult }
+export type { CommentResult }
 
 // Callback báo tiến trình chi tiết của thao tác browser ra ngoài (statusbar terminal).
 // Chỉ cần message — runner.ts sẽ bọc thêm accountId/accountLabel/stage khi emit.
@@ -572,6 +573,371 @@ export async function deleteTweetsFromProfile(
       urls: deletedUrls,
       error: err.message,
       step: 'delete',
+      screenshot: existsSync(shot) ? shot : undefined
+    }
+  } finally {
+    if (page && !page.isClosed()) {
+      await page.close().catch(() => {})
+    }
+  }
+}
+
+// ---- Bình luận trên bài viết của chính tài khoản (trang profile) ----
+
+// Giới hạn an toàn: số lần cuộn LIÊN TIẾP không thấy href mới (chạm đáy timeline profile).
+const MAX_EMPTY_SCROLLS_COLLECT = 20
+
+/**
+ * Cuộn trang profile của chính tài khoản để thu thập link permalink của `count` bài viết.
+ * Bỏ qua repost (bài đăng lại) và bài ghim — chỉ lấy bài gốc của tài khoản.
+ *
+ * @param context  Browser context đã mở (có session X)
+ * @param handle   Username X (không kèm @)
+ * @param count    Số link bài cần thu thập
+ * @param accountId  ID tài khoản (dùng cho screenshot nếu lỗi)
+ * @returns Danh sách URL đầy đủ (https://x.com/<handle>/status/<id>)
+ */
+export async function scrollProfileCollectTweetUrls(
+  context: BrowserContext,
+  handle: string,
+  count: number,
+  accountId?: string,
+  report: StepReporter = noop,
+  // Danh sách link đã xử lý (cache). Khi cuộn thấy 1 link đã có trong cache -> coi như
+  // đã chạm vùng bài cũ -> DỪNG thu thập sớm (không cần cuộn thêm). Tiết kiệm thời gian
+  // vì profile sắp xếp mới->cũ: gặp link cũ = phần còn lại đều cũ.
+  knownUrls?: Set<string>
+): Promise<{ urls: string[]; error?: string; screenshot?: string }> {
+  const acc = accountId ?? 'unknown'
+  const cleanHandle = normalizeHandle(handle)
+  let page: Page | null = null
+  const urls: string[] = []
+  const seenHrefs = new Set<string>()
+  const cache = knownUrls ?? new Set<string>()
+
+  try {
+    page = await context.newPage()
+    report(`Đang mở trang profile @${cleanHandle}…`)
+    await page.goto(`https://x.com/${cleanHandle}`, {
+      waitUntil: 'domcontentloaded',
+      timeout: 30_000
+    })
+    await sleep(2000)
+
+    // Session hết hạn => bị đẩy về login
+    if (page.url().includes('/login') || page.url().includes('/i/flow/login')) {
+      const shot = screenshotPath(acc, 'comment_collect')
+      await page.screenshot({ path: shot }).catch(() => {})
+      return {
+        urls: [],
+        error: 'Session hết hạn — bị chuyển về trang đăng nhập. Hãy mở profile và đăng nhập lại.',
+        screenshot: existsSync(shot) ? shot : undefined
+      }
+    }
+
+    // Selector link permalink của chính tài khoản (case-insensitive).
+    const statusHref = `a[href*="/${cleanHandle}/status/" i]`
+    const tweetSelector = `article[data-testid="tweet"]:visible:has(${statusHref})`
+
+    // Phát hiện repost (bỏ qua — không bình luận lên bài đăng lại).
+    async function isRepostArticle(a: Locator): Promise<boolean> {
+      const socialContext = a.locator('[data-testid="socialContext"]').first()
+      const hasContext = await socialContext.isVisible().catch(() => false)
+      if (!hasContext) return false
+      const ctx = await socialContext.textContent({ timeout: 300 }).catch(() => null)
+      return ctx ? /repost|reposted|đăng lại|retweet/i.test(ctx) : false
+    }
+
+    // Phát hiện bài ghim ("Pinned by you" / "Đã ghim") — bỏ qua.
+    async function isPinnedArticle(a: Locator): Promise<boolean> {
+      const socialContext = a.locator('[data-testid="socialContext"]').first()
+      const hasContext = await socialContext.isVisible().catch(() => false)
+      if (!hasContext) return false
+      const ctx = await socialContext.textContent({ timeout: 300 }).catch(() => null)
+      return ctx ? /pinned|đã ghim|ghim/i.test(ctx) : false
+    }
+
+    let stuckScrolls = 0
+    let iterations = 0
+    const MAX_ITERATIONS_COLLECT = 500
+
+    while (urls.length < count && iterations < MAX_ITERATIONS_COLLECT) {
+      iterations++
+      const articles = await page.locator(tweetSelector).all()
+      let foundNew = false
+
+      for (const a of articles) {
+        if (urls.length >= count) break
+        const href = await a
+          .locator(statusHref)
+          .first()
+          .getAttribute('href')
+          .catch(() => null)
+        if (!href || seenHrefs.has(href)) continue
+        seenHrefs.add(href)
+
+        const fullUrl = href.startsWith('http') ? href : `https://x.com${href}`
+
+        // Gặp link đã có trong cache -> phần còn lại đều bài cũ -> DỪNG sớm.
+        if (cache.has(fullUrl)) {
+          report(`Gặp link cũ trong cache — dừng thu thập (${urls.length} link mới).`)
+          return { urls }
+        }
+
+        // Bỏ qua repost và bài ghim — KHÔNG lọc reply ở đây vì trên trang profile
+        // tất cả article đều có tabindex="0" (không phân biệt được gốc/reply).
+        // Reply sẽ bị phát hiện khi mở từng tweet để bình luận (commentOnTweet).
+        if (await isRepostArticle(a)) continue
+        if (await isPinnedArticle(a)) continue
+
+        urls.push(fullUrl)
+        foundNew = true
+        report(`Đã thu thập ${urls.length}/${count} link bài…`)
+      }
+
+      if (urls.length >= count) break
+
+      // Cuộn thêm để nạp bài cũ hơn
+      const hBefore = await page
+        .evaluate<number>('document.documentElement.scrollHeight')
+        .catch(() => 0)
+      const seenBefore = seenHrefs.size
+      report(`Đang cuộn tìm thêm bài… (đáy ${stuckScrolls}/${MAX_EMPTY_SCROLLS_COLLECT})`)
+      await scrollDown(page)
+      await sleep(1200)
+      const hAfter = await page
+        .evaluate<number>('document.documentElement.scrollHeight')
+        .catch(() => 0)
+      const grew = hAfter > hBefore + 4
+      const revealed = seenHrefs.size > seenBefore
+      if (grew || revealed || foundNew) {
+        stuckScrolls = 0
+      } else {
+        stuckScrolls++
+        if (stuckScrolls >= MAX_EMPTY_SCROLLS_COLLECT) {
+          report('Đã chạm đáy timeline profile — không còn bài mới.')
+          break
+        }
+      }
+    }
+
+    return { urls }
+  } catch (e) {
+    const shot = screenshotPath(acc, 'comment_collect')
+    await page?.screenshot({ path: shot }).catch(() => {})
+    return {
+      urls,
+      error: (e as Error).message,
+      screenshot: existsSync(shot) ? shot : undefined
+    }
+  } finally {
+    if (page && !page.isClosed()) {
+      await page.close().catch(() => {})
+    }
+  }
+}
+
+/**
+ * Bình luận trên 1 tweet cụ thể. Mở URL tweet, tìm reply box, gõ nội dung, bấm Reply.
+ *
+ * @param context  Browser context đã mở (có session X)
+ * @param tweetUrl  URL đầy đủ của tweet cần bình luận
+ * @param text   Nội dung bình luận
+ * @param accountId  ID tài khoản (dùng cho screenshot nếu lỗi)
+ * @returns CommentResult với ok + url của tweet đã bình luận
+ */
+export async function commentOnTweet(
+  context: BrowserContext,
+  tweetUrl: string,
+  text: string,
+  accountId?: string,
+  report: StepReporter = noop
+): Promise<CommentResult> {
+  const acc = accountId ?? 'unknown'
+  let page: Page | null = null
+
+  try {
+    page = await context.newPage()
+    report(`Đang mở bài viết ${tweetUrl}…`)
+    await page.goto(tweetUrl, { waitUntil: 'domcontentloaded', timeout: 30_000 })
+    await sleep(2000)
+
+    // Session hết hạn => bị đẩy về login
+    if (page.url().includes('/login') || page.url().includes('/i/flow/login')) {
+      const shot = screenshotPath(acc, 'comment')
+      await page.screenshot({ path: shot }).catch(() => {})
+      return {
+        ok: false,
+        commentedCount: 0,
+        urls: [],
+        error: 'Session hết hạn — bị chuyển về trang đăng nhập. Hãy mở profile và đăng nhập lại.',
+        step: 'goto',
+        screenshot: existsSync(shot) ? shot : undefined
+      }
+    }
+
+    // Phát hiện reply: trên trang tweet detail, bài chính có tabindex="-1".
+    // Nếu có article nào nằm TRƯỚC bài tabindex="-1" trong DOM → tweet này là reply
+    // (tweet gốc hiện ở trên làm context). Bỏ qua, không bình luận lên reply.
+    const allArticles = page.locator('article[data-testid="tweet"]')
+    const mainTweet = page.locator('article[data-testid="tweet"][tabindex="-1"]').first()
+    const mainVisible = await mainTweet.waitFor({ timeout: 10_000, state: 'visible' }).then(() => true).catch(() => false)
+    if (mainVisible) {
+      const totalArticles = await allArticles.count()
+      // Đếm article trước bài chính: duyệt từng article, check tabindex.
+      let articlesBefore = 0
+      for (let i = 0; i < totalArticles; i++) {
+        const tab = await allArticles.nth(i).getAttribute('tabindex').catch(() => null)
+        if (tab === '-1') break // đến bài chính → dừng
+        articlesBefore++
+      }
+      if (articlesBefore > 0) {
+        report('Bài này là reply — bỏ qua.')
+        return {
+          ok: false,
+          commentedCount: 0,
+          urls: [],
+          error: 'Bài này là reply — bỏ qua không bình luận.',
+          step: 'skip_reply',
+          skipped: true
+        }
+      }
+    }
+
+    // Tìm reply box. X render nhiều textarea ẩn; neo vào [data-testid="tweetTextarea_0"]
+    // đang VISIBLE trong vùng reply. Trên trang tweet chi tiết, reply box đầu tiên có thể
+    // là ô collapsed (placeholder) -> click để mở rộng thành form đầy đủ có nút Reply.
+    report('Đang chờ ô bình luận hiển thị…')
+    const replyBox = page.locator('[data-testid="tweetTextarea_0"]:visible').first()
+    await replyBox.waitFor({ timeout: 15_000, state: 'visible' })
+    await replyBox.click()
+    await sleep(1000)
+    // Click lần nữa để chắc form reply đã mở rộng (X đôi khi cần 2 click).
+    await replyBox.click().catch(() => {})
+    await sleep(500)
+
+    // Gõ nội dung bình luận. Dùng fill() để trigger input event đúng cách X cần
+    // (keyboard.type đôi khi không kích hoạt state React -> nút Reply stayed disabled).
+    // Fallback keyboard.type nếu fill không được (textarea contenteditable).
+    report('Đang nhập nội dung bình luận…')
+    try {
+      await replyBox.fill(text, { timeout: 5_000 })
+    } catch {
+      await replyBox.click()
+      await page.keyboard.type(text, { delay: 50 })
+    }
+    await sleep(1200)
+
+    // Tìm nút Reply trên TOÀN PAGE (không giới hạn scope) — trên trang tweet chi tiết,
+    // nút Reply có data-testid="tweetButton" nhưng nằm ngoài form tổ tiên textarea.
+    // Lọc visible + không disabled, chọn nút phù hợp nhất.
+    report('Đang chờ nút Reply sẵn sàng…')
+    const replyBtnCandidates = page.locator(
+      '[data-testid="tweetButton"]:visible, [data-testid="tweetButtonInline"]:visible'
+    )
+    // Chờ ít nhất 1 nút visible.
+    await replyBtnCandidates.first().waitFor({ timeout: 15_000, state: 'visible' }).catch(() => {})
+
+    // Đếm số nút visible + chọn nút không disabled. Nút Post ở sidebar compose cũng khớp
+    // selector -> cần chọn nút KHÔNG disabled (nút Reply sau khi gõ text sẽ enabled).
+    const count = await replyBtnCandidates.count()
+    let replyBtn: Locator | null = null
+    for (let i = 0; i < count; i++) {
+      const btn = replyBtnCandidates.nth(i)
+      const disabled = await btn.getAttribute('aria-disabled').catch(() => null)
+      if (disabled !== 'true') {
+        replyBtn = btn
+        break
+      }
+    }
+    // Nếu tất cả đều disabled -> chờ thêm rồi thử lại (X đang xử lý input).
+    if (!replyBtn) {
+      report('Nút Reply đang disabled — chờ X xử lý nội dung…')
+      const pageRef = page
+      // Dùng string evaluation để tránh TS complain về document/HTMLElement (lib node).
+      await page
+        .waitForFunction(
+          `() => {
+            const btns = document.querySelectorAll('[data-testid="tweetButton"], [data-testid="tweetButtonInline"]');
+            for (const b of btns) {
+              if (b instanceof HTMLElement && b.offsetParent !== null && b.getAttribute('aria-disabled') !== 'true') {
+                return true;
+              }
+            }
+            return false;
+          }`,
+          { timeout: 15_000 }
+        )
+        .then(() => {
+          replyBtn = replyBtnCandidates
+            .filter({ hasNot: pageRef.locator('[aria-disabled="true"]') })
+            .first()
+        })
+        .catch(() => {})
+    }
+    if (!replyBtn) {
+      // Chụp screenshot để user xem lý do nút không tìm thấy.
+      const shot = screenshotPath(acc, 'comment_nobutton')
+      await page.screenshot({ path: shot }).catch(() => {})
+      return {
+        ok: false,
+        commentedCount: 0,
+        urls: [],
+        error:
+          'Không tìm thấy nút Reply enabled sau khi nhập nội dung. Có thể X chưa nhận text hoặc layout đổi. Xem screenshot để kiểm tra.',
+        step: 'reply_button',
+        screenshot: existsSync(shot) ? shot : undefined
+      }
+    }
+
+    // Bấm Reply — thử click thường trước, fallback dispatchEvent nếu overlay chặn.
+    try {
+      report('Đang bấm nút Reply…')
+      await replyBtn.click({ timeout: 8_000 })
+    } catch {
+      report('Nút Reply bị overlay che — bắn click trực tiếp…')
+      await replyBtn.dispatchEvent('click')
+    }
+    await sleep(2000)
+
+    // Tín hiệu thành công: dialog đóng (modal reply ẩn).
+    report('Đang chờ X xác nhận bình luận…')
+    const dialog = page.locator('[role="dialog"]:visible').first()
+    const done = await dialog
+      .waitFor({ state: 'hidden', timeout: 30_000 })
+      .then(() => true)
+      .catch(() => false)
+
+    if (done) {
+      report('Bình luận thành công ✓')
+      return { ok: true, commentedCount: 1, urls: [tweetUrl] }
+    }
+
+    // Fallback: nếu URL đổi sang /status/ (một số trường hợp X navigate).
+    if (page.url().includes('/status/')) {
+      report('Bình luận thành công ✓')
+      return { ok: true, commentedCount: 1, urls: [tweetUrl] }
+    }
+
+    // Không có tín hiệu thành công -> báo thất bại rõ.
+    return {
+      ok: false,
+      commentedCount: 0,
+      urls: [],
+      error:
+        'Đã bấm Reply nhưng modal chưa đóng sau thời gian chờ. Vui lòng kiểm tra lại trên X.',
+      step: 'comment'
+    }
+  } catch (e) {
+    const err = e as Error
+    const shot = screenshotPath(acc, 'comment')
+    await page?.screenshot({ path: shot }).catch(() => {})
+    return {
+      ok: false,
+      commentedCount: 0,
+      urls: [],
+      error: err.message,
+      step: 'comment',
       screenshot: existsSync(shot) ? shot : undefined
     }
   } finally {

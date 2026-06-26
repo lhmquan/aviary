@@ -3,8 +3,13 @@ import { listAccounts, getAccount } from '../db/accounts'
 import type { AccountGrowth, DailyStats, GrowthDelta, AnalyticsData } from '../../shared/types'
 
 // Tính delta: so sánh giá trị hiện tại (từ accounts cache, luôn mới nhất) với
-// dữ liệu N ngày trước trong analytics. Nếu chưa có data cũ enough → fallback
-// về row đầu tiên có sẵn (giúp setup mới vẫn thấy thay đổi ngay).
+// dữ liệu N ngày trước trong analytics.
+//
+// Logic tìm reference:
+// - Tìm row có day GẦN NHẤT với targetDay (N ngày trước). Ưu tiên day <= targetDay
+//   (data của ngày đó hoặc trước đó). Nếu không có → fallback về row đầu tiên.
+// - Quan trọng: mỗi mốc (1d, 7d, 30d) phải lấy reference KHÁC NHAU để delta khác nhau.
+//   delta7d phải >= delta1d (7 ngày bao gồm 1 ngày), delta30d phải >= delta7d.
 function computeDelta(
   series: DailyStats[],
   offsetDays: number,
@@ -17,7 +22,7 @@ function computeDelta(
   const todayMidnight = midnightOf(Date.now())
   const targetDay = todayMidnight - offsetDays * 86_400_000
 
-  // Tìm row có day <= targetDay (gần nhất trước ngày mục tiêu).
+  // Tìm row có day <= targetDay (gần nhất trước hoặc đúng ngày mục tiêu).
   let ref: DailyStats | null = null
   for (let i = series.length - 1; i >= 0; i--) {
     if (series[i].day <= targetDay) {
@@ -26,9 +31,9 @@ function computeDelta(
     }
   }
 
-  // Fallback: chưa đủ data cũ → dùng row đầu tiên (giá trị đầu ngày hôm nay
-  // hoặc sớm nhất có sẵn). Vd: fetch lần 1 được 397 bài, xoá bớt, fetch lần 2
-  // được 392 → delta1d = 392 - 397 = -5 (vì ref = row đầu tiên = 397).
+  // Fallback: chưa đủ data cũ → dùng row ĐẦU TIÊN (sớm nhất có sẵn).
+  // Vd: chỉ có 2 ngày data, delta7d không có data 7 ngày trước → dùng ngày đầu tiên.
+  // Nhờ đó delta7d > delta1d (vì ngày đầu tiên có giá trị cũ hơn).
   if (!ref) ref = series[0]
 
   return {

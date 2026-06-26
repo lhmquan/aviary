@@ -45,9 +45,11 @@ function midnightOf(ts: number): number {
   return d.getTime()
 }
 
-// Upsert: nếu đã có row cho (accountId, day) thì CHỈ cập nhật captured_at
-// (KHÔNG ghi đè metric) — giữ giá trị đầu ngày để delta so sánh chính xác.
-// Nếu chưa có row → INSERT giá trị mới.
+// Upsert: nếu đã có row cho (accountId, day) thì CẬP NHẬT toàn bộ stats
+// (followers, following, statuses_count, name) + captured_at.
+// Giữ giá trị MỚI NHẤT trong ngày để delta chính xác: delta1d = current - yesterday_latest,
+// delta7d = current - 7days_ago_latest. Nếu dùng giá trị đầu ngày, các ngày liên tiếp
+// có thể trùng giá trị -> 3 mốc delta đều bằng nhau (bug).
 export function upsertDailyStats(
   accountId: string,
   ts: number,
@@ -58,7 +60,12 @@ export function upsertDailyStats(
     .prepare(
       `INSERT INTO account_stats_daily (account_id, day, captured_at, followers, following, statuses_count, name)
        VALUES (?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT(account_id, day) DO UPDATE SET captured_at = excluded.captured_at`
+       ON CONFLICT(account_id, day) DO UPDATE SET
+         captured_at = excluded.captured_at,
+         followers = excluded.followers,
+         following = excluded.following,
+         statuses_count = excluded.statuses_count,
+         name = excluded.name`
     )
     .run(accountId, day, ts, stats.followers, stats.following, stats.statusesCount, stats.name)
 }

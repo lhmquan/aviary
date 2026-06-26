@@ -55,6 +55,8 @@ function migrate(d: Database.Database): void {
   addColumnIfMissing(d, 'accounts', 'asset_url', 'TEXT')
   addColumnIfMissing(d, 'accounts', 'headless', 'INTEGER NOT NULL DEFAULT 0')
   addColumnIfMissing(d, 'accounts', 'hashtag', 'TEXT')
+  // Tiền tố ghép vào đầu caption khi đăng (không gửi trong webhook).
+  addColumnIfMissing(d, 'accounts', 'caption_prefix', 'TEXT')
   // proxy_id: '__local' (mặc định, IP máy) | '__random' (random mỗi lần) | id proxy.
   addColumnIfMissing(d, 'accounts', 'proxy_id', "TEXT NOT NULL DEFAULT '__local'")
   // Thống kê hồ sơ X (tự fetch từ username): follower / following / số bài. Cũ = NULL.
@@ -116,6 +118,31 @@ function migrate(d: Database.Database): void {
   addColumnIfMissing(d, 'schedules', 'delete_count', 'INTEGER NOT NULL DEFAULT 1')
   // Cờ đang chạy (semaphore hàng đợi scheduler). Reset về 0 khi khởi động app.
   addColumnIfMissing(d, 'schedules', 'running', 'INTEGER NOT NULL DEFAULT 0')
+
+  // Cột mở rộng cho lịch bình luận (action='comment').
+  // comment_count: số bài bình luận trong 1 lần chạy.
+  // comment_interval_seconds: thời gian giữa các lần bình luận trong 1 lần chạy.
+  // comment_source_url: link Google Sheet chứa nội dung bình luận.
+  addColumnIfMissing(d, 'schedules', 'comment_count', 'INTEGER NOT NULL DEFAULT 1')
+  addColumnIfMissing(d, 'schedules', 'comment_interval_seconds', 'INTEGER NOT NULL DEFAULT 60')
+  addColumnIfMissing(d, 'schedules', 'comment_source_url', 'TEXT')
+
+  // Bảng cache link đã bình luận — để so sánh tránh bình luận trùng bài.
+  // Prune: chỉ giữ 10 lần chạy gần nhất (theo commented_at) cho mỗi account.
+  // status: 'commented' = đã comment thành công; 'reply_skip' = tweet là reply, đã bỏ qua.
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS comment_history (
+      id            INTEGER PRIMARY KEY AUTOINCREMENT,
+      account_id    TEXT NOT NULL,
+      tweet_url     TEXT NOT NULL,
+      commented_at  INTEGER NOT NULL,
+      status        TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_comment_history_account_time
+      ON comment_history (account_id, commented_at);
+  `)
+  // Migration cột status cho DB cũ (an toàn nếu đã tồn tại).
+  addColumnIfMissing(d, 'comment_history', 'status', 'TEXT')
 
   // Bảng Analytics: snapshot thống kê X theo ngày cho từng tài khoản.
   // 1 row/account/day (upsert qua unique index). Retention 30 ngày.

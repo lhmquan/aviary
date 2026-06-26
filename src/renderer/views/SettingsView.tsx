@@ -117,6 +117,21 @@ export default function SettingsView(): JSX.Element {
           />
           <small className="hint">Log và ảnh lỗi cũ hơn số ngày này sẽ tự xoá khi app khởi động / sau mỗi lần đăng.</small>
         </label>
+        <label className="field">
+          <span>Giới hạn số bình luận / ngày / tài khoản</span>
+          <input
+            type="number"
+            min={1}
+            max={500}
+            value={settings.commentDailyLimit}
+            onChange={(e) => update('commentDailyLimit', Number(e.target.value) || 1)}
+            style={{ width: 120 }}
+          />
+          <small className="hint">
+            Khi một tài khoản đạt đến giới hạn này trong ngày, lịch bình luận tự động tạm dừng
+            và chạy tiếp vào ngày hôm sau. Tránh bị X đánh dấu spam.
+          </small>
+        </label>
       </section>
 
       <section className="card">

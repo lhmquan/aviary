@@ -108,7 +108,8 @@ export default function AnalyticsView(): JSX.Element {
         success: 0,
         failed: 1,
         skipped: 0,
-        errors: [{ accountId: '', accountLabel: '', error: (e as Error).message }]
+        errors: [{ accountId: '', accountLabel: '', error: (e as Error).message }],
+        records: []
       })
     } finally {
       setFetching(false)

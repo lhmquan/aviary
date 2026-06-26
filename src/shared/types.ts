@@ -17,6 +17,8 @@ export interface Account {
   assetUrl: string | null
   headless: boolean
   hashtag: string | null
+  // Tiền tố ghép vào ĐẦU caption khi đăng bài (KHÔNG gửi trong webhook).
+  captionPrefix: string | null
   // '__local' (IP máy, mặc định) | '__random' (random mỗi lần chạy) | id proxy cụ thể.
   proxyId: string
   // Thống kê hồ sơ X (tự fetch từ username). null = chưa fetch.
@@ -36,6 +38,7 @@ export interface AccountInput {
   assetUrl?: string | null
   headless?: boolean
   hashtag?: string | null
+  captionPrefix?: string | null
 }
 
 // Proxy trong kho chung (tab Proxy).
@@ -88,9 +91,9 @@ export interface XProfileInfo {
   error?: string
 }
 
-// ---- Lên lịch đăng / xoá bài ----
+// ---- Lên lịch đăng / xoá bài / bình luận ----
 export type ScheduleKind = 'interval' | 'fixed'
-export type ScheduleAction = 'post' | 'delete'
+export type ScheduleAction = 'post' | 'delete' | 'comment'
 export type DeleteMode = 'newest' | 'by_date'
 
 export interface Schedule {
@@ -106,6 +109,10 @@ export interface Schedule {
   deleteMode: DeleteMode | null // action='delete': 'newest' | 'by_date'
   deleteBeforeDate: string | null // action='delete' + deleteMode='by_date': "YYYY-MM-DD"
   deleteCount: number // action='delete': số bài xoá mỗi lần (0 = xoá tất cả)
+  // action='comment' — bình luận trên bài của chính tài khoản (trang profile).
+  commentCount: number // số bài bình luận trong 1 lần chạy
+  commentIntervalSeconds: number // thời gian giữa các lần bình luận trong 1 lần chạy
+  commentSourceUrl: string | null // link Google Sheet chứa nội dung bình luận
   lastRunAt: number | null
   nextRunAt: number | null
   // Đang chạy (semaphore hàng đợi scheduler). Khi true: countdown dừng, đang chờ/đang chạy.
@@ -126,6 +133,9 @@ export interface ScheduleInput {
   deleteMode?: DeleteMode | null
   deleteBeforeDate?: string | null
   deleteCount?: number
+  commentCount?: number
+  commentIntervalSeconds?: number
+  commentSourceUrl?: string | null
 }
 
 export interface AppSettings {
@@ -136,6 +146,8 @@ export interface AppSettings {
   logRetentionDays: number
   // Bật/tắt fetch analytics tự động 1 lần/ngày (tắt khi đang dev để không fetch liên tục).
   analyticsAutoFetch: boolean
+  // Giới hạn số comment tối đa/ngày cho 1 tài khoản (chạm -> tạm dừng, mai chạy tiếp).
+  commentDailyLimit: number
 }
 
 // Asset n8n trả về để đăng bài.
@@ -155,6 +167,8 @@ export interface PostPayload {
   skip?: boolean
   // id link Reddit (ổn định hơn title để markdone khớp đúng dòng sheet).
   id?: string
+  // URL reddit gốc (permalink đầy đủ) — đính kèm markdone để n8n ghi vào sheet.
+  sourceUrl?: string | null
 }
 
 export interface WebhookTestResult {
@@ -165,6 +179,15 @@ export interface WebhookTestResult {
   hasAudioMerge?: boolean
   assetUrl?: string | null
   accountId?: string | null
+  error?: string
+}
+
+// Kết quả test webhook bình luận — hiển thị nội dung bình luận n8n trả về.
+export interface CommentTestResult {
+  ok: boolean
+  status?: number
+  handle?: string
+  comment?: string
   error?: string
 }
 
@@ -187,6 +210,29 @@ export interface DeleteResult {
   error?: string
   step?: string
   screenshot?: string
+}
+
+// Payload n8n trả về cho event 'comments' — nội dung bình luận theo handle.
+// Mỗi tài khoản 1 nội dung cố định (lấy từ Google Sheet qua n8n).
+export interface CommentPayload {
+  handle: string
+  // Nội dung bình luận dùng cho mọi bài trong lần chạy. Trống/skip -> bỏ qua lần chạy.
+  comment: string
+  skip?: boolean
+}
+
+// Kết quả bình luận trên X cho 1 lần chạy.
+export interface CommentResult {
+  ok: boolean
+  commentedCount: number
+  urls: string[]
+  error?: string
+  step?: string
+  screenshot?: string
+  // Đã chạm limit comment/ngày -> tạm dừng, mai chạy tiếp.
+  limitReached?: boolean
+  // Tweet là reply (không phải bài gốc) -> bỏ qua, không bình luận.
+  skipped?: boolean
 }
 
 // Một dòng nhật ký đăng bài (lưu DB, hiển thị ở tab Nhật ký).
@@ -279,7 +325,9 @@ export const IpcChannels = {
   settingsGet: 'settings:get',
   settingsSave: 'settings:save',
   webhookTest: 'webhook:test',
+  webhookTestComments: 'webhook:testComments',
   postRunNow: 'post:runNow',
+  commentRunNow: 'comment:runNow',
   browserStatusChanged: 'browser:statusChanged',
   taskProgress: 'task:progress',
   queueChanged: 'queue:changed',
@@ -342,12 +390,16 @@ export interface AviaryApi {
   }
   webhook: {
     test: (accountId?: string) => Promise<WebhookTestResult>
+    testComments: (handle: string, sourceUrl?: string | null) => Promise<CommentTestResult>
   }
   post: {
     runNow: (accountId: string) => Promise<PostResult>
     onProgress: (cb: (p: ProgressPayload) => void) => () => void
     // Báo hàng đợi scheduler thay đổi (để ScheduleView cập nhật "đang chờ/đang chạy").
     onQueueChanged: (cb: () => void) => () => void
+  }
+  comments: {
+    runNow: (accountId: string) => Promise<CommentResult>
   }
   logs: {
     list: (params?: LogListParams) => Promise<LogListResult>
@@ -411,6 +463,21 @@ export interface AccountGrowth {
   lastError: string | null
 }
 
+// 1 mẫu dữ liệu analytics đã fetch được cho 1 tài khoản (snapshot tại thời điểm fetch).
+// Dùng để gửi về n8n qua webhook event 'data_acc' khi user bấm "Fetch ngay".
+export interface AnalyticsFetchRecord {
+  accountId: string
+  label: string
+  handle: string | null
+  name: string | null
+  followers: number | null
+  following: number | null
+  posts: number | null
+  avatarUrl: string | null
+  status: string
+  fetchedAt: number
+}
+
 // Kết quả 1 lần fetch tất cả tài khoản.
 export interface AnalyticsFetchResult {
   total: number
@@ -418,6 +485,8 @@ export interface AnalyticsFetchResult {
   failed: number
   skipped: number
   errors: { accountId: string; accountLabel: string; error: string }[]
+  // Danh sách mẫu đã fetch thành công (chỉ những tài khoản OK) — gửi về n8n.
+  records: AnalyticsFetchRecord[]
 }
 
 // Dữ liệu trả về cho analytics:list.

@@ -3,6 +3,7 @@ import { insertLog } from '../db/logs'
 import {
   listDueSchedules,
   markRun,
+  setScheduleNextRun,
   ensureNextRun,
   describeSchedule,
   setScheduleRunning,
@@ -11,7 +12,7 @@ import {
 import { getAccount } from '../db/accounts'
 import { getAllSettings } from '../db/settings'
 import { IpcChannels } from '../../shared/types'
-import { runPostForAccount, runDeleteForAccount, emitProgress } from './runner'
+import { runPostForAccount, runDeleteForAccount, runCommentForAccount, emitProgress } from './runner'
 
 // Lấy tên tài khoản thật để ghi vào cột "Tài khoản" của nhật ký. Nếu account đã bị xoá,
 // fallback về một nhãn dễ hiểu thay vì để trống.
@@ -107,14 +108,18 @@ async function tick(): Promise<void> {
 // tick kế sẽ nhặt lại lịch này (double-run).
 async function runScheduledJob(s: ReturnType<typeof listDueSchedules>[number]): Promise<void> {
   const isDelete = s.action === 'delete'
+  const isComment = s.action === 'comment'
   const startedAt = Date.now()
   const label = accountLabelOf(s.accountId)
+  // Khi chạm limit comment/ngày -> ghi midnight hôm sau vào map -> dùng trong finally
+  // thay vì markRun (tính nextRun theo interval/fixed).
+  const limitNextRunMap = new Map<string, number>()
   try {
     emitProgress({
       accountId: s.accountId,
       accountLabel: label,
       stage: 'schedule',
-      message: `Lịch ${isDelete ? 'xoá' : 'đăng'} kích hoạt: ${describeSchedule(s)}${s.label ? ` (${s.label})` : ''}`,
+      message: `Lịch ${isDelete ? 'xoá' : isComment ? 'bình luận' : 'đăng'} kích hoạt: ${describeSchedule(s)}${s.label ? ` (${s.label})` : ''}`,
       busy: true
     })
     insertLog({
@@ -122,12 +127,12 @@ async function runScheduledJob(s: ReturnType<typeof listDueSchedules>[number]): 
       accountLabel: label,
       ts: startedAt,
       ok: true,
-      caption: `Lịch ${isDelete ? 'xoá' : 'đăng'} kích hoạt: ${describeSchedule(s)}${s.label ? ` (${s.label})` : ''}`,
+      caption: `Lịch ${isDelete ? 'xoá' : isComment ? 'bình luận' : 'đăng'} kích hoạt: ${describeSchedule(s)}${s.label ? ` (${s.label})` : ''}`,
       url: null,
       error: null,
       step: 'trigger',
       screenshot: null,
-      eventType: isDelete ? 'run_delete' : 'run'
+      eventType: isDelete ? 'run_delete' : isComment ? 'run_comment' : 'run'
     })
 
     if (isDelete) {
@@ -150,6 +155,33 @@ async function runScheduledJob(s: ReturnType<typeof listDueSchedules>[number]): 
           eventType: 'run_delete'
         })
       })
+    } else if (isComment) {
+      const result = await runCommentForAccount(s.accountId, {
+        source: 'schedule',
+        commentCount: s.commentCount,
+        commentIntervalSeconds: s.commentIntervalSeconds,
+        commentSourceUrl: s.commentSourceUrl
+      }).catch((e) => {
+        insertLog({
+          accountId: s.accountId,
+          accountLabel: accountLabelOf(s.accountId),
+          ts: Date.now(),
+          ok: false,
+          caption: `Lịch bình luận chạy lỗi: ${(e as Error).message}`,
+          url: null,
+          error: (e as Error).message,
+          step: 'scheduler',
+          screenshot: null,
+          eventType: 'run_comment'
+        })
+        return null
+      })
+      // Chạm limit comment/ngày -> dời nextRunAt sang midnight hôm sau.
+      if (result?.limitReached) {
+        const d = new Date()
+        const midnight = new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1, 0, 5, 0, 0).getTime()
+        limitNextRunMap.set(s.id, midnight)
+      }
     } else {
       await runPostForAccount(s.accountId, { source: 'schedule' }).catch((e) => {
         // Lỗi ngoài pipeline (vd account bị xoá giữa chừng) -> vẫn ghi log để user thấy.
@@ -168,8 +200,14 @@ async function runScheduledJob(s: ReturnType<typeof listDueSchedules>[number]): 
       })
     }
   } finally {
-    // markRun TRƯỚC khi clear running (xem ghi chú trên về double-run).
-    markRun(s.id, Date.now())
+    // Nếu chạm limit -> dời sang midnight. Không thì markRun bình thường.
+    const limitNext = limitNextRunMap.get(s.id)
+    if (limitNext !== undefined) {
+      setScheduleNextRun(s.id, limitNext)
+    } else {
+      // markRun TRƯỚC khi clear running (xem ghi chú trên về double-run).
+      markRun(s.id, Date.now())
+    }
     setScheduleRunning(s.id, false)
     releaseSlot(s.accountId)
     emitQueueChanged()

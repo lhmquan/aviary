@@ -17,6 +17,9 @@ interface ScheduleRow {
   delete_mode: string | null
   delete_before_date: string | null
   delete_count: number
+  comment_count: number
+  comment_interval_seconds: number
+  comment_source_url: string | null
   last_run_at: number | null
   next_run_at: number | null
   running: number
@@ -44,6 +47,9 @@ function toSchedule(r: ScheduleRow): Schedule {
     deleteMode: (r.delete_mode ?? null) as DeleteMode | null,
     deleteBeforeDate: r.delete_before_date,
     deleteCount: r.delete_count ?? 1,
+    commentCount: r.comment_count ?? 1,
+    commentIntervalSeconds: r.comment_interval_seconds ?? 60,
+    commentSourceUrl: r.comment_source_url ?? null,
     lastRunAt: r.last_run_at,
     nextRunAt: r.next_run_at,
     running: !!r.running,
@@ -113,12 +119,21 @@ export function createSchedule(input: ScheduleInput): Schedule {
   const deleteCount = action === 'delete'
     ? Math.max(0, input.deleteCount === undefined ? 1 : Number(input.deleteCount))
     : 1
+  // Tính giá trị cột comment
+  const commentCount = action === 'comment'
+    ? Math.max(1, input.commentCount === undefined ? 1 : Number(input.commentCount))
+    : 1
+  const commentIntervalSeconds = action === 'comment'
+    ? Math.max(5, input.commentIntervalSeconds === undefined ? 60 : Number(input.commentIntervalSeconds))
+    : 60
+  const commentSourceUrl = action === 'comment' ? (input.commentSourceUrl?.trim() || null) : null
 
   getDb()
     .prepare(
       `INSERT INTO schedules (id, account_id, label, enabled, action, kind, interval_minutes, times, jitter_seconds,
-        delete_mode, delete_before_date, delete_count, last_run_at, next_run_at, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)`
+        delete_mode, delete_before_date, delete_count, comment_count, comment_interval_seconds, comment_source_url,
+        last_run_at, next_run_at, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)`
     )
     .run(
       id,
@@ -133,6 +148,9 @@ export function createSchedule(input: ScheduleInput): Schedule {
       deleteMode,
       deleteBeforeDate,
       deleteCount,
+      commentCount,
+      commentIntervalSeconds,
+      commentSourceUrl,
       nextRunAt,
       now,
       now
@@ -162,6 +180,9 @@ export function updateSchedule(id: string, input: Partial<ScheduleInput>): Sched
     deleteMode: existing.deleteMode,
     deleteBeforeDate: existing.deleteBeforeDate,
     deleteCount: existing.deleteCount,
+    commentCount: existing.commentCount,
+    commentIntervalSeconds: existing.commentIntervalSeconds,
+    commentSourceUrl: existing.commentSourceUrl,
     ...input
   }
   validateInput(merged)
@@ -177,11 +198,20 @@ export function updateSchedule(id: string, input: Partial<ScheduleInput>): Sched
   const deleteCount = action === 'delete'
     ? Math.max(0, merged.deleteCount === undefined ? 1 : Number(merged.deleteCount))
     : 1
+  // Tính giá trị cột comment
+  const commentCount = action === 'comment'
+    ? Math.max(1, merged.commentCount === undefined ? 1 : Number(merged.commentCount))
+    : 1
+  const commentIntervalSeconds = action === 'comment'
+    ? Math.max(5, merged.commentIntervalSeconds === undefined ? 60 : Number(merged.commentIntervalSeconds))
+    : 60
+  const commentSourceUrl = action === 'comment' ? (merged.commentSourceUrl?.trim() || null) : null
 
   getDb()
     .prepare(
       `UPDATE schedules SET account_id = ?, label = ?, enabled = ?, action = ?, kind = ?, interval_minutes = ?,
        times = ?, jitter_seconds = ?, delete_mode = ?, delete_before_date = ?, delete_count = ?,
+       comment_count = ?, comment_interval_seconds = ?, comment_source_url = ?,
        next_run_at = ?, updated_at = ? WHERE id = ?`
     )
     .run(
@@ -196,6 +226,9 @@ export function updateSchedule(id: string, input: Partial<ScheduleInput>): Sched
       deleteMode,
       deleteBeforeDate,
       deleteCount,
+      commentCount,
+      commentIntervalSeconds,
+      commentSourceUrl,
       nextRunAt,
       now,
       id
@@ -259,6 +292,14 @@ export function markRun(id: string, now = Date.now()): void {
     .run(now, nextRunAt, now, id)
 }
 
+// Đặt next_run_at = thời điểm cụ thể (vd: midnight hôm sau khi chạm limit comment/ngày).
+// Không tính theo interval/fixed times — ghi đè thẳng.
+export function setScheduleNextRun(id: string, nextRunAt: number, now = Date.now()): void {
+  getDb()
+    .prepare('UPDATE schedules SET last_run_at = ?, next_run_at = ?, updated_at = ? WHERE id = ?')
+    .run(now, nextRunAt, now, id)
+}
+
 // Khôi phục next_run_at cho các lịch enabled mà next_run_at đang NULL (vd: do migrate).
 export function ensureNextRun(now = Date.now()): void {
   const rows = getDb()
@@ -276,7 +317,7 @@ function validateInput(input: ScheduleInput): void {
 
   // Validate tác vụ
   const action = input.action ?? 'post'
-  if (action !== 'post' && action !== 'delete') {
+  if (action !== 'post' && action !== 'delete' && action !== 'comment') {
     throw new Error('Loại tác vụ không hợp lệ')
   }
   if (action === 'delete') {
@@ -295,6 +336,25 @@ function validateInput(input: ScheduleInput): void {
       }
     }
   }
+  if (action === 'comment') {
+    const count = input.commentCount === undefined ? 1 : Number(input.commentCount)
+    if (!Number.isFinite(count) || count < 1) {
+      throw new Error('Số bài bình luận phải ≥ 1')
+    }
+    const interval = input.commentIntervalSeconds === undefined ? 60 : Number(input.commentIntervalSeconds)
+    if (!Number.isFinite(interval) || interval < 5) {
+      throw new Error('Thời gian giữa mỗi bình luận phải ≥ 5 giây')
+    }
+    const url = input.commentSourceUrl?.trim() ?? ''
+    if (!url) {
+      throw new Error('Phải nhập nguồn bình luận (link Google Sheet)')
+    }
+    if (!/^https?:\/\//i.test(url)) {
+      throw new Error('Nguồn bình luận phải là URL hợp lệ (http/https)')
+    }
+    // Ràng buộc thời gian: tổng thời gian thực thi + buffer ≤ khoảng cách giữa 2 tác vụ.
+    validateCommentTiming(input)
+  }
 
   // Validate thời gian
   if (input.kind === 'interval') {
@@ -305,6 +365,69 @@ function validateInput(input: ScheduleInput): void {
     if (times.length === 0) throw new Error('Phải nhập ít nhất 1 giờ (HH:MM)')
   } else {
     throw new Error('Mô hình lịch không hợp lệ')
+  }
+}
+
+// Khoảng cách nhỏ nhất (giây) giữa 2 lần chạy liên tiếp theo thiết lập lịch.
+// interval: intervalMinutes*60. fixed: khoảng cách nhỏ nhất giữa 2 times liên tiếp;
+// nếu chỉ 1 time thì là 24h (86400s).
+function minGapSeconds(input: ScheduleInput): number {
+  if (input.kind === 'interval') {
+    return Math.max(1, (Number(input.intervalMinutes) || 0) * 60)
+  }
+  // fixed
+  const times = sanitizeTimes(input.times)
+  if (times.length === 0) return 86400
+  if (times.length === 1) return 86400
+  const minutes = times
+    .map((t) => {
+      const [h, m] = t.split(':').map(Number)
+      return h * 60 + m
+    })
+    .sort((a, b) => a - b)
+  let minGap = (minutes[0] + 1440 - minutes[minutes.length - 1]) % 1440
+  for (let i = 1; i < minutes.length; i++) {
+    minGap = Math.min(minGap, minutes[i] - minutes[i - 1])
+  }
+  return Math.max(1, minGap * 60)
+}
+
+// Ràng buộc thời gian cho tác vụ bình luận: tổng thời gian thực thi (delay giữa các
+// comment) + buffer phải ≤ khoảng cách giữa 2 tác vụ. Tránh tác vụ chưa xong mà lịch
+// đã đến giờ chạy kế -> trùng/chen. Buffer 30s chừa cho mở profile, fetch webhook, cuộn.
+const COMMENT_BUFFER_SECONDS = 30
+export function validateCommentTiming(input: ScheduleInput): void {
+  if (input.action !== 'comment') return
+  const count = Math.max(1, Number(input.commentCount) || 1)
+  const interval = Math.max(5, Number(input.commentIntervalSeconds) || 0)
+  // Tổng thời gian thực thi ≈ (count-1)*interval (không tính comment đầu tiên).
+  const execTime = count > 1 ? (count - 1) * interval : 0
+  const gap = minGapSeconds(input)
+  if (execTime + COMMENT_BUFFER_SECONDS > gap) {
+    throw new Error(
+      `Tổng thời gian bình luận (${execTime}s) + buffer ${COMMENT_BUFFER_SECONDS}s > khoảng cách giữa 2 tác vụ (${gap}s). ` +
+      `Giảm số bài, giảm thời gian giữa mỗi bình luận, hoặc tăng khoảng cách lịch.`
+    )
+  }
+}
+
+// Trả về thông tin ràng buộc thời gian cho UI hiển thị cảnh báo realtime (không throw).
+export function commentTimingInfo(input: ScheduleInput): {
+  execTime: number
+  buffer: number
+  gap: number
+  ok: boolean
+} | null {
+  if (input.action !== 'comment') return null
+  const count = Math.max(1, Number(input.commentCount) || 1)
+  const interval = Math.max(5, Number(input.commentIntervalSeconds) || 0)
+  const execTime = count > 1 ? (count - 1) * interval : 0
+  const gap = minGapSeconds(input)
+  return {
+    execTime,
+    buffer: COMMENT_BUFFER_SECONDS,
+    gap,
+    ok: execTime + COMMENT_BUFFER_SECONDS <= gap
   }
 }
 
@@ -326,6 +449,13 @@ function buildScheduleObject(input: ScheduleInput): Schedule {
     deleteCount: action === 'delete'
       ? Math.max(0, input.deleteCount === undefined ? 1 : Number(input.deleteCount))
       : 1,
+    commentCount: action === 'comment'
+      ? Math.max(1, input.commentCount === undefined ? 1 : Number(input.commentCount))
+      : 1,
+    commentIntervalSeconds: action === 'comment'
+      ? Math.max(5, input.commentIntervalSeconds === undefined ? 60 : Number(input.commentIntervalSeconds))
+      : 60,
+    commentSourceUrl: action === 'comment' ? (input.commentSourceUrl?.trim() || null) : null,
     lastRunAt: null,
     nextRunAt: null,
     running: false,
@@ -375,17 +505,21 @@ export function computeNextRun(schedule: Pick<Schedule, 'kind' | 'intervalMinute
   return target.getTime() + jitterMs(schedule.jitterSeconds)
 }
 
-// Mô tả lịch dạng text cho log/UI. Bao gồm cả tác vụ (đăng/xoá).
-export function describeSchedule(s: Pick<Schedule, 'kind' | 'intervalMinutes' | 'times' | 'jitterSeconds'> & Partial<Pick<Schedule, 'action' | 'deleteMode' | 'deleteBeforeDate' | 'deleteCount'>>): string {
+// Mô tả lịch dạng text cho log/UI. Bao gồm cả tác vụ (đăng/xoá/bình luận).
+export function describeSchedule(s: Pick<Schedule, 'kind' | 'intervalMinutes' | 'times' | 'jitterSeconds'> & Partial<Pick<Schedule, 'action' | 'deleteMode' | 'deleteBeforeDate' | 'deleteCount' | 'commentCount'>>): string {
   const timing =
     s.kind === 'interval'
       ? `Mỗi ${s.intervalMinutes} phút${s.jitterSeconds ? ` ±${s.jitterSeconds}s` : ''}`
       : `${(s.times ?? []).join(', ')}${s.jitterSeconds ? ` ±${s.jitterSeconds}s` : ''}`
 
-  if ((s.action ?? 'post') === 'delete') {
+  const action = s.action ?? 'post'
+  if (action === 'delete') {
     const countText = (s.deleteCount ?? 1) === 0 ? 'tất cả bài khớp' : `${s.deleteCount ?? 1} bài`
     const modeText = s.deleteMode === 'by_date' ? `trước/đến ${s.deleteBeforeDate ?? '?'}` : 'mới nhất'
     return `Xoá ${countText} (${modeText}) · ${timing}`
+  }
+  if (action === 'comment') {
+    return `Bình luận ${s.commentCount ?? 1} bài · ${timing}`
   }
 
   return timing

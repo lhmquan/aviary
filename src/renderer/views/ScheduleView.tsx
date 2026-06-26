@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback } from 'react'
-import { Plus, Pencil, Trash2, RefreshCw, Loader2, Clock, CalendarClock, Trash } from 'lucide-react'
+import { Plus, Pencil, Trash2, RefreshCw, Loader2, Clock, CalendarClock, Trash, MessageSquare } from 'lucide-react'
 import type { Account, Schedule, ScheduleInput, ScheduleKind, ScheduleAction, DeleteMode } from '@shared/types'
 
 const REFRESH_MS = 15_000
@@ -59,7 +59,7 @@ export default function ScheduleView(): JSX.Element {
   }, [refresh, showForm])
 
   async function handleDelete(s: Schedule): Promise<void> {
-    const actionLabel = s.action === 'delete' ? 'xoá bài' : 'đăng bài'
+    const actionLabel = s.action === 'delete' ? 'xoá bài' : s.action === 'comment' ? 'bình luận' : 'đăng bài'
     if (!confirm(`Xóa lịch ${actionLabel} "${describe(s)}" cho ${accountLabel(s.accountId)}?`)) return
     await window.aviary.schedules.remove(s.id)
     await refresh()
@@ -132,8 +132,8 @@ export default function ScheduleView(): JSX.Element {
                     {s.label && <div className="small muted">{s.label}</div>}
                   </td>
                   <td>
-                    <span className={`badge ${s.action === 'delete' ? 'action-delete' : 'action-post'}`}>
-                      {s.action === 'delete' ? 'Xoá' : 'Đăng'}
+                    <span className={`badge ${s.action === 'delete' ? 'action-delete' : s.action === 'comment' ? 'action-comment' : 'action-post'}`}>
+                      {s.action === 'delete' ? 'Xoá' : s.action === 'comment' ? 'Bình luận' : 'Đăng'}
                     </span>
                   </td>
                   <td>{s.kind === 'interval' ? 'Khoảng' : 'Giờ cố định'}</td>
@@ -214,11 +214,79 @@ function ScheduleForm(props: {
   const [deleteMode, setDeleteMode] = useState<DeleteMode>(schedule?.deleteMode ?? 'newest')
   const [deleteBeforeDate, setDeleteBeforeDate] = useState(schedule?.deleteBeforeDate ?? '')
   const [deleteCount, setDeleteCount] = useState(String(schedule?.deleteCount ?? 1))
+  // Comment fields
+  const [commentCount, setCommentCount] = useState(String(schedule?.commentCount ?? 1))
+  const [commentIntervalSeconds, setCommentIntervalSeconds] = useState(String(schedule?.commentIntervalSeconds ?? 60))
+  const [commentSourceUrl, setCommentSourceUrl] = useState(schedule?.commentSourceUrl ?? '')
+  const [testingComment, setTestingComment] = useState(false)
+  const [commentTestResult, setCommentTestResult] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   function accountSelection(): string[] {
     return accountScope === 'all' ? accounts.map((a) => a.id) : selectedAccountIds
+  }
+
+  // Tính ràng buộc thời gian cho comment realtime (không throw, chỉ cảnh báo UI).
+  // Tổng thời gian thực thi (count-1)*interval + buffer 30s phải ≤ khoảng cách giữa 2 tác vụ.
+  function commentTimingWarning(): string | null {
+    if (action !== 'comment') return null
+    const count = Math.max(1, Number(commentCount) || 1)
+    const interval = Math.max(5, Number(commentIntervalSeconds) || 0)
+    const execTime = count > 1 ? (count - 1) * interval : 0
+    const buffer = 30
+    // Khoảng cách nhỏ nhất giữa 2 lần chạy theo kind.
+    let gap = 0
+    if (kind === 'interval') {
+      gap = Math.max(1, (Number(intervalMinutes) || 0) * 60)
+    } else {
+      const ts = times.split(/[,\n]+/).map((t) => t.trim()).filter(Boolean)
+      if (ts.length <= 1) gap = 86400
+      else {
+        const mins = ts
+          .map((t) => {
+            const m = t.match(/^(\d{1,2}):(\d{2})$/)
+            return m ? Number(m[1]) * 60 + Number(m[2]) : -1
+          })
+          .filter((m) => m >= 0)
+          .sort((a, b) => a - b)
+        if (mins.length <= 1) gap = 86400
+        else {
+          let mn = (mins[0] + 1440 - mins[mins.length - 1]) % 1440
+          for (let i = 1; i < mins.length; i++) mn = Math.min(mn, mins[i] - mins[i - 1])
+          gap = Math.max(1, mn * 60)
+        }
+      }
+    }
+    if (execTime + buffer > gap) {
+      return `Tổng thời gian bình luận (${execTime}s) + buffer ${buffer}s > khoảng cách giữa 2 tác vụ (${gap}s). Giảm số bài, giảm thời gian giữa mỗi bình luận, hoặc tăng khoảng cách lịch.`
+    }
+    return null
+  }
+
+  async function testCommentWebhook(): Promise<void> {
+    setTestingComment(true)
+    setCommentTestResult(null)
+    try {
+      // Lấy handle của tài khoản đầu tiên được chọn để test.
+      const ids = accountSelection()
+      const acc = accounts.find((a) => a.id === ids[0])
+      const handle = acc?.handle?.replace(/^@+/, '') ?? ''
+      if (!handle) {
+        setCommentTestResult('Tài khoản chưa có username X — không thể test.')
+        return
+      }
+      const r = await window.aviary.webhook.testComments(handle, commentSourceUrl.trim() || null)
+      if (r.ok) {
+        setCommentTestResult(`OK — nội dung: "${r.comment?.slice(0, 80) ?? ''}"`)
+      } else {
+        setCommentTestResult(`Lỗi: ${r.error ?? 'không xác định'}`)
+      }
+    } catch (e) {
+      setCommentTestResult(`Lỗi: ${(e as Error).message}`)
+    } finally {
+      setTestingComment(false)
+    }
   }
 
   async function save(): Promise<void> {
@@ -228,7 +296,14 @@ function ScheduleForm(props: {
       setError('Phải chọn ít nhất 1 tài khoản')
       return
     }
+    // Chặn lưu nếu vi phạm ràng buộc thời gian comment.
+    const warning = commentTimingWarning()
+    if (warning) {
+      setError(warning)
+      return
+    }
     const parsedDeleteCount = deleteCount.trim() === '' ? 1 : Number(deleteCount)
+    const parsedCommentCount = commentCount.trim() === '' ? 1 : Number(commentCount)
     const baseInput = {
       label: label.trim() || null,
       action,
@@ -248,7 +323,11 @@ function ScheduleForm(props: {
         action === 'delete' && deleteMode === 'by_date'
           ? deleteBeforeDate || null
           : null,
-      deleteCount: action === 'delete' ? Math.max(0, parsedDeleteCount) : 1
+      deleteCount: action === 'delete' ? Math.max(0, parsedDeleteCount) : 1,
+      commentCount: action === 'comment' ? Math.max(1, parsedCommentCount) : 1,
+      commentIntervalSeconds:
+        action === 'comment' ? Math.max(5, Number(commentIntervalSeconds) || 60) : 60,
+      commentSourceUrl: action === 'comment' ? commentSourceUrl.trim() || null : null
     } satisfies Omit<ScheduleInput, 'accountId'>
     setSaving(true)
     try {
@@ -342,6 +421,7 @@ function ScheduleForm(props: {
           <select value={action} onChange={(e) => setAction(e.target.value as ScheduleAction)}>
             <option value="post">Đăng bài</option>
             <option value="delete">Xoá bài</option>
+            <option value="comment">Bình luận</option>
           </select>
         </label>
 
@@ -381,6 +461,64 @@ function ScheduleForm(props: {
           </>
         )}
 
+        {action === 'comment' && (
+          <>
+            <div className="field-row-2">
+              <label className="field">
+                <span>Số bài bình luận / lần chạy *</span>
+                <input
+                  type="number"
+                  min={1}
+                  value={commentCount}
+                  onChange={(e) => setCommentCount(e.target.value)}
+                  placeholder="VD: 1"
+                />
+              </label>
+              {Number(commentCount) > 1 && (
+                <label className="field">
+                  <span>Thời gian giữa mỗi bình luận (giây) *</span>
+                  <input
+                    type="number"
+                    min={5}
+                    value={commentIntervalSeconds}
+                    onChange={(e) => setCommentIntervalSeconds(e.target.value)}
+                    placeholder="VD: 60"
+                  />
+                </label>
+              )}
+            </div>
+            <label className="field">
+              <span>Nguồn bình luận (link Google Sheet) *</span>
+              <div className="field-row">
+                <input
+                  type="url"
+                  value={commentSourceUrl}
+                  onChange={(e) => setCommentSourceUrl(e.target.value)}
+                  placeholder="https://docs.google.com/spreadsheets/d/..."
+                />
+                <button
+                  type="button"
+                  className="btn"
+                  disabled={testingComment || !commentSourceUrl.trim()}
+                  onClick={testCommentWebhook}
+                  title="Test webhook để xem nội dung bình luận n8n trả về"
+                >
+                  {testingComment ? <Loader2 size={15} className="spin" /> : <RefreshCw size={15} />}
+                  Test Webhook
+                </button>
+              </div>
+            </label>
+            {commentTestResult && (
+              <p className={`test-result ${commentTestResult.startsWith('OK') ? 'pass' : 'fail'}`}>
+                {commentTestResult}
+              </p>
+            )}
+            {commentTimingWarning() && (
+              <p className="test-result fail">{commentTimingWarning()}</p>
+            )}
+          </>
+        )}
+
         <label className="field">
           <span>Mô hình</span>
           <select value={kind} onChange={(e) => setKind(e.target.value as ScheduleKind)}>
@@ -390,7 +528,7 @@ function ScheduleForm(props: {
         </label>
         {kind === 'interval' ? (
           <label className="field">
-            <span>Số phút giữa mỗi lần {action === 'delete' ? 'xoá' : 'đăng'} *</span>
+            <span>Thời gian giữa mỗi tác vụ (phút) *</span>
             <input
               type="number"
               min={1}
@@ -401,7 +539,7 @@ function ScheduleForm(props: {
           </label>
         ) : (
           <label className="field">
-            <span>Giờ {action === 'delete' ? 'xoá' : 'đăng'} mỗi ngày * (HH:MM, cách nhau bởi dấu phẩy hoặc dòng)</span>
+            <span>Giờ chạy mỗi ngày * (HH:MM, cách nhau bởi dấu phẩy hoặc dòng)</span>
             <textarea
               value={times}
               onChange={(e) => setTimes(e.target.value)}
@@ -431,7 +569,7 @@ function ScheduleForm(props: {
             Hủy
           </button>
           <button className="btn primary" disabled={saving} onClick={save}>
-            {saving ? <Loader2 size={15} className="spin" /> : action === 'delete' ? <Trash size={15} /> : <CalendarClock size={15} />}
+            {saving ? <Loader2 size={15} className="spin" /> : action === 'delete' ? <Trash size={15} /> : action === 'comment' ? <MessageSquare size={15} /> : <CalendarClock size={15} />}
             {saving ? 'Đang lưu…' : 'Lưu'}
           </button>
         </div>
@@ -451,6 +589,9 @@ function describe(s: Schedule): string {
     const countText = s.deleteCount === 0 ? 'tất cả' : `${s.deleteCount} bài`
     const modeText = s.deleteMode === 'by_date' ? `trước/đến ${s.deleteBeforeDate ?? '?'}` : 'mới nhất'
     return `Xoá ${countText} (${modeText}) · ${timing}`
+  }
+  if (s.action === 'comment') {
+    return `Bình luận ${s.commentCount ?? 1} bài · ${timing}`
   }
 
   return timing
