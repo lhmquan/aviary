@@ -5,6 +5,42 @@ Mọi thay đổi đáng chú ý của Aviary được ghi tại đây.
 Định dạng theo [Keep a Changelog](https://keepachangelog.com/vi/1.0.0/),
 phiên bản theo [Semantic Versioning](https://semver.org/lang/vi/).
 
+## [0.5.0] - 2026-06-26
+
+### Added
+- **Tính năng Bình luận (comment)** — tác vụ mới cho scheduler (`action: post | delete | comment`):
+  - Webhook event `comments` gửi handle + URL nguồn → n8n lọc Google Sheet → trả nội dung bình luận.
+  - App cuộn trang profile thu thập link bài gốc, phát hiện reply qua `tabindex` trên trang tweet detail (bài gốc `tabindex="-1"`, reply `tabindex="0"`).
+  - Bình luận tuần tự với delay giữa mỗi lần. Cache link đã xử lý với 4 status: `collected` (chưa mở), `commented` (thành công), `reply_skip` (là reply), `fail` (lỗi, thử lại).
+  - Tối ưu: nếu cache còn đủ link chưa xử lý → bỏ qua cuộn profile (tiết kiệm thời gian).
+  - **Limit comment/ngày**: cài đặt global (`commentDailyLimit`, mặc định 30). Chạm limit → lịch dời `nextRunAt` sang midnight hôm sau.
+  - Cài đặt: số bài/lần chạy, thời gian giữa mỗi bình luận (chỉ hiện khi count > 1), nguồn Google Sheet + nút **Test Webhook**.
+  - Ràng buộc thời gian: tổng thời gian thực thi `(count-1) × interval + buffer 30s` phải ≤ khoảng cách giữa 2 tác vụ.
+  - Badge màu **tím** (`action-comment`, `ev-comment`, `ev-run-comment`).
+  - DB mới: bảng `comment_history` + cột `comment_count`, `comment_interval_seconds`, `comment_source_url` cho schedules.
+- **Webhook `data_acc`**: nút "Fetch ngay" trong Analytics gửi snapshot dữ liệu (followers/following/posts/name/handle) về n8n để cập nhật Google Sheet. Chỉ kích hoạt khi bấm thủ công (không gửi khi auto-fetch).
+- **Delay giữa mỗi lần fetch tài khoản**: giảm concurrency 3→1, thêm delay 2.5s giữa mỗi lần fetch tránh X rate-limit (429).
+- **Cài đặt `commentDailyLimit`** trong tab Settings.
+
+### Changed
+- Đổi label "Số phút giữa mỗi lần đăng" → "Thời gian giữa mỗi tác vụ" (áp dụng cả post/delete/comment).
+- Gộp "Số bài bình luận" + "Thời gian giữa mỗi bình luận" vào 1 hàng ngang (`.field-row-2`) để gọn UI.
+- Status bar header gọn hơn (padding 1px, min-height 24px).
+
+### Fixed
+- **Analytics delta sai**: `upsertDailyStats` cũ chỉ update `captured_at` khi cùng ngày → giữ giá trị đầu ngày → 3 mốc delta (1d/7d/30d) tham chiếu cùng giá trị → ra kết quả giống nhau. Giờ update toàn bộ stats (followers, following, statuses_count, name) → mỗi ngày giữ giá trị mới nhất.
+- **Tiền tố caption**: decode HTML entities (`&amp;` → `&`) + hỗ trợ escape `\n`, `\t`, `\\`. Bỏ `.trim()` để giữ dấu cách đầu/cuối.
+- **Link Reddit hỏng**: `originalUrl` (i.redd.it) ưu tiên trước `imageUrl` (preview.redd.it) cho `single_image` — URL thô, không HTML entity, không query param → ít lỗi 403 hơn.
+- **Nút Reply không bấm được**: tìm nút trên toàn page thay vì trong scope; dùng `fill()` thay `keyboard.type` để trigger input event đúng.
+
+## [0.4.0] - 2026-06-24
+
+### Added
+- **Analytics**: snapshot thống kê X (followers/following/posts) theo ngày cho từng tài khoản, biểu đồ tăng trưởng, delta 1d/7d/30d.
+- **Queue**: hàng đợi scheduler với giới hạn đồng thời (semaphore), cờ `running` bền vững khôi phục sau crash.
+- **Redesign UI**: bảng tài khoản kéo dãn cột, badge trạng thái màu sắc, terminal statusbar.
+- **Sửa rò rỉ dữ liệu**: `.gitignore` chặt chẽ hơn cho DB, `.env`, `.claude/`, session Chromium.
+
 ## [0.3.0] - 2026-06-23
 
 ### Added
