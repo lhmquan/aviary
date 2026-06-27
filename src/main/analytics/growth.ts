@@ -2,51 +2,74 @@ import { listStatsByAccount, listAllStats, getLastFetchDay } from '../db/analyti
 import { listAccounts, getAccount } from '../db/accounts'
 import type { AccountGrowth, DailyStats, GrowthDelta, AnalyticsData } from '../../shared/types'
 
-// Tính delta: so sánh giá trị hiện tại (từ accounts cache, luôn mới nhất) với
-// dữ liệu N ngày trước trong analytics.
+// Tính delta TRUNG THỰC: so sánh giá trị hiện tại (snapshot mới nhất) với
+// snapshot tham chiếu ở mốc N ngày trước.
 //
-// Logic tìm reference:
-// - Tìm row có day GẦN NHẤT với targetDay (N ngày trước). Ưu tiên day <= targetDay
-//   (data của ngày đó hoặc trước đó). Nếu không có → fallback về row đầu tiên.
-// - Quan trọng: mỗi mốc (1d, 7d, 30d) phải lấy reference KHÁC NHAU để delta khác nhau.
-//   delta7d phải >= delta1d (7 ngày bao gồm 1 ngày), delta30d phải >= delta7d.
+// Nguyên tắc:
+// - Neo theo `latestDay` (ngày snapshot mới nhất), KHÔNG neo theo "hôm nay".
+//   Nhờ vậy nếu lỡ vài ngày không fetch, delta vẫn so đúng giữa 2 lần fetch.
+// - targetDay = latestDay - offsetDays. Tìm snapshot có day GẦN targetDay nhất
+//   trong dung sai cho phép (tránh nhận nhầm điểm quá xa).
+// - Nếu KHÔNG có snapshot phù hợp ở mốc đó → trả về { available: false }.
+//   KHÔNG fallback bịa số. UI sẽ hiển thị "—" với tooltip giải thích.
+//
+// Dung sai: cho phép lệch tối đa ~ nửa khoảng (hoặc tối thiểu 1 ngày) để vẫn
+// bắt được điểm khi lịch fetch không đều, nhưng không vượt quá để khỏi sai lệch.
 function computeDelta(
   series: DailyStats[],
   offsetDays: number,
   current: { followers: number | null; following: number | null; posts: number | null }
 ): GrowthDelta {
-  if (series.length === 0) {
-    return { followers: null, following: null, posts: null }
-  }
+  const NA: GrowthDelta = { followers: null, following: null, posts: null, available: false }
+  if (series.length < 2) return NA
 
-  const todayMidnight = midnightOf(Date.now())
-  const targetDay = todayMidnight - offsetDays * 86_400_000
+  const latestDay = series[series.length - 1].day
+  const targetDay = latestDay - offsetDays * 86_400_000
 
-  // Tìm row có day <= targetDay (gần nhất trước hoặc đúng ngày mục tiêu).
+  // Dung sai: tối đa nửa offset, nhưng ít nhất 1 ngày. Vd 1d -> 1 ngày,
+  // 7d -> 3 ngày, 30d -> 15 ngày.
+  const tolerance = Math.max(1, Math.floor(offsetDays / 2)) * 86_400_000
+
+  // Tìm snapshot có |day - targetDay| nhỏ nhất, trong phạm vi tolerance,
+  // và phải CŨ HƠN snapshot mới nhất (day < latestDay) để delta có nghĩa.
   let ref: DailyStats | null = null
-  for (let i = series.length - 1; i >= 0; i--) {
-    if (series[i].day <= targetDay) {
-      ref = series[i]
-      break
+  let bestDiff = Infinity
+  for (const s of series) {
+    if (s.day >= latestDay) continue
+    const diff = Math.abs(s.day - targetDay)
+    if (diff <= tolerance && diff < bestDiff) {
+      bestDiff = diff
+      ref = s
     }
   }
 
-  // Fallback: chưa đủ data cũ → dùng row ĐẦU TIÊN (sớm nhất có sẵn).
-  // Vd: chỉ có 2 ngày data, delta7d không có data 7 ngày trước → dùng ngày đầu tiên.
-  // Nhờ đó delta7d > delta1d (vì ngày đầu tiên có giá trị cũ hơn).
-  if (!ref) ref = series[0]
+  if (!ref) return NA
 
   return {
     followers: subSafe(current.followers, ref.followers),
     following: subSafe(current.following, ref.following),
-    posts: subSafe(current.posts, ref.statusesCount)
+    posts: subSafe(current.posts, ref.statusesCount),
+    available: true
   }
 }
 
-function midnightOf(ts: number): number {
-  const d = new Date(ts)
-  d.setHours(0, 0, 0, 0)
-  return d.getTime()
+// Tổng thay đổi từ snapshot ĐẦU TIÊN (sớm nhất) tới hiện tại.
+// Luôn có ý nghĩa khi có >= 2 snapshot — đây là con số "an toàn" để show
+// khi các mốc 1d/7d/30d chưa đủ dữ liệu.
+function computeSinceStart(
+  series: DailyStats[],
+  current: { followers: number | null; following: number | null; posts: number | null }
+): GrowthDelta {
+  if (series.length < 2) {
+    return { followers: null, following: null, posts: null, available: false }
+  }
+  const first = series[0]
+  return {
+    followers: subSafe(current.followers, first.followers),
+    following: subSafe(current.following, first.following),
+    posts: subSafe(current.posts, first.statusesCount),
+    available: true
+  }
 }
 
 function subSafe(a: number | null, b: number | null): number | null {
@@ -82,6 +105,10 @@ function computeGrowth(
     delta1d: computeDelta(series, 1, current),
     delta7d: computeDelta(series, 7, current),
     delta30d: computeDelta(series, days, current),
+    sinceStart: computeSinceStart(series, current),
+    trackedDays: series.length,
+    firstDay: series.length > 0 ? series[0].day : null,
+    latestDay: latest?.day ?? null,
     series,
     lastError: null
   }

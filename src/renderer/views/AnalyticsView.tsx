@@ -41,6 +41,10 @@ function fmtBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(2)} MB`
 }
 
+function fmtDayShort(ts: number): string {
+  return new Date(ts).toLocaleDateString('vi-VN', { day: '2-digit', month: '2-digit' })
+}
+
 function fmtRelative(ts: number | null): string {
   if (!ts) return 'chưa fetch'
   const diff = Date.now() - ts
@@ -50,9 +54,26 @@ function fmtRelative(ts: number | null): string {
   return new Date(ts).toLocaleString('vi-VN', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })
 }
 
-// Pill hiển thị delta (+12 / -3 / —).
-function DeltaBadge({ delta, suffix }: { delta: number | null; suffix?: string }): JSX.Element {
-  if (delta === null) return <span className="delta-badge neutral"><Minus size={11} /> —</span>
+// Pill hiển thị delta. `available=false` -> mốc chưa đủ dữ liệu tham chiếu,
+// hiện "—" mờ (KHÁC với số 0 nghĩa là có data nhưng không đổi).
+function DeltaBadge({
+  delta,
+  available,
+  suffix,
+  unavailableHint
+}: {
+  delta: number | null
+  available: boolean
+  suffix?: string
+  unavailableHint?: string
+}): JSX.Element {
+  if (!available || delta === null) {
+    return (
+      <span className="delta-badge na" title={unavailableHint ?? 'Chưa đủ dữ liệu để tính mốc này'}>
+        <Minus size={11} /> —
+      </span>
+    )
+  }
   if (delta > 0) return <span className="delta-badge up"><TrendingUp size={11} /> +{fmtNum(delta)}{suffix}</span>
   if (delta < 0) return <span className="delta-badge down"><TrendingDown size={11} /> {fmtNum(delta)}{suffix}</span>
   return <span className="delta-badge neutral"><Minus size={11} /> 0</span>
@@ -141,8 +162,40 @@ export default function AnalyticsView(): JSX.Element {
     const totalFollowers = data.accounts.reduce((sum, a) => sum + (a.current.followers ?? 0), 0)
     const totalFollowing = data.accounts.reduce((sum, a) => sum + (a.current.following ?? 0), 0)
     const totalPosts = data.accounts.reduce((sum, a) => sum + (a.current.posts ?? 0), 0)
-    const weekFollowersGrowth = data.accounts.reduce((sum, a) => sum + (a.delta7d.followers ?? 0), 0)
-    return { totalFollowers, totalFollowing, totalPosts, weekFollowersGrowth, accountCount: data.accounts.length }
+
+    // Tăng trưởng followers/tuần: chỉ cộng các account thật sự có dữ liệu 7d.
+    // Nếu CHƯA account nào đủ 7 ngày → fallback sang "từ khi theo dõi" (sinceStart)
+    // để con số vẫn có nghĩa, kèm cờ để UI đổi nhãn cho đúng.
+    let weekGrowth = 0
+    let weekAvailable = false
+    let sinceStartGrowth = 0
+    let sinceStartAvailable = false
+    for (const a of data.accounts) {
+      if (a.delta7d.available && a.delta7d.followers !== null) {
+        weekGrowth += a.delta7d.followers
+        weekAvailable = true
+      }
+      if (a.sinceStart.available && a.sinceStart.followers !== null) {
+        sinceStartGrowth += a.sinceStart.followers
+        sinceStartAvailable = true
+      }
+    }
+
+    // Phạm vi số ngày đang theo dõi (chỉ tính account đã có data).
+    const tracked = data.accounts.map((a) => a.trackedDays).filter((n) => n > 0)
+    const maxTrackedDays = tracked.length > 0 ? Math.max(...tracked) : 0
+
+    return {
+      totalFollowers,
+      totalFollowing,
+      totalPosts,
+      weekGrowth,
+      weekAvailable,
+      sinceStartGrowth,
+      sinceStartAvailable,
+      maxTrackedDays,
+      accountCount: data.accounts.length
+    }
   }, [data])
 
   const accountsWithData = data?.accounts.filter((a) => a.series.length > 0) ?? []
@@ -283,13 +336,45 @@ export default function AnalyticsView(): JSX.Element {
               <div className="analytics-summary-card">
                 <TrendingUp size={18} className="summary-icon success" />
                 <div>
-                  <div className="summary-value">
-                    {overview.weekFollowersGrowth > 0 ? '+' : ''}
-                    {fmtNum(overview.weekFollowersGrowth)}
-                  </div>
-                  <div className="summary-label">followers tăng/tuần</div>
+                  {overview.weekAvailable ? (
+                    <>
+                      <div className="summary-value">
+                        {overview.weekGrowth > 0 ? '+' : ''}
+                        {fmtNum(overview.weekGrowth)}
+                      </div>
+                      <div className="summary-label">followers tăng/tuần</div>
+                    </>
+                  ) : overview.sinceStartAvailable ? (
+                    <>
+                      <div className="summary-value">
+                        {overview.sinceStartGrowth > 0 ? '+' : ''}
+                        {fmtNum(overview.sinceStartGrowth)}
+                      </div>
+                      <div className="summary-label" title="Chưa đủ 7 ngày dữ liệu — đang hiển thị tổng từ khi bắt đầu theo dõi">
+                        followers tăng từ đầu
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <div className="summary-value">—</div>
+                      <div className="summary-label" title="Cần ít nhất 2 ngày dữ liệu để tính tăng trưởng">
+                        followers tăng/tuần
+                      </div>
+                    </>
+                  )}
                 </div>
               </div>
+            </div>
+          )}
+
+          {/* Ghi chú khi dữ liệu còn mỏng (chưa đủ để các mốc 7d/30d có nghĩa) */}
+          {overview && overview.maxTrackedDays > 0 && overview.maxTrackedDays < 7 && (
+            <div className="analytics-thin-data-note">
+              <AlertCircle size={14} />
+              <span>
+                Đang theo dõi {overview.maxTrackedDays} ngày. Các mốc 7d/30d sẽ hiện khi
+                tích luỹ đủ dữ liệu — fetch đều mỗi ngày để biểu đồ và tăng trưởng chính xác.
+              </span>
             </div>
           )}
 
@@ -370,28 +455,44 @@ function AccountAnalyticsCard(props: {
     icon: JSX.Element
     label: string
     current: number | null
-    delta1d: number | null
-    delta7d: number | null
-    delta30d: number | null
+    delta1d: { value: number | null; available: boolean }
+    delta7d: { value: number | null; available: boolean }
+    delta30d: { value: number | null; available: boolean }
   }): JSX.Element {
     const { icon, label, current, delta1d, delta7d, delta30d } = props
+    const hint = (period: string, hasData: boolean): string =>
+      hasData
+        ? `So với ${period}`
+        : `Chưa đủ dữ liệu cho mốc ${period} — đang theo dõi ${g.trackedDays} ngày`
     return (
       <div className="analytics-metric-row">
         <span className="metric-icon">{icon}</span>
         <span className="metric-label">{label}</span>
         <span className="metric-value">{fmtNum(current)}</span>
         <div className="metric-deltas">
-          <span className="delta-group" title="So với dữ liệu gần nhất (trong ngày)">
+          <span className="delta-group" title={hint('hôm qua (1 ngày)', delta1d.available)}>
             <span className="delta-label">1d</span>
-            <DeltaBadge delta={delta1d} />
+            <DeltaBadge
+              delta={delta1d.value}
+              available={delta1d.available}
+              unavailableHint={hint('hôm qua (1 ngày)', false)}
+            />
           </span>
-          <span className="delta-group" title="So với 7 ngày trước">
+          <span className="delta-group" title={hint('7 ngày trước', delta7d.available)}>
             <span className="delta-label">7d</span>
-            <DeltaBadge delta={delta7d} />
+            <DeltaBadge
+              delta={delta7d.value}
+              available={delta7d.available}
+              unavailableHint={hint('7 ngày trước', false)}
+            />
           </span>
-          <span className="delta-group" title="So với 30 ngày trước">
+          <span className="delta-group" title={hint('30 ngày trước', delta30d.available)}>
             <span className="delta-label">30d</span>
-            <DeltaBadge delta={delta30d} />
+            <DeltaBadge
+              delta={delta30d.value}
+              available={delta30d.available}
+              unavailableHint={hint('30 ngày trước', false)}
+            />
           </span>
         </div>
       </div>
@@ -436,33 +537,56 @@ function AccountAnalyticsCard(props: {
         </div>
       )}
 
+      {/* Dòng thông tin: đang theo dõi bao lâu + từ ngày nào */}
+      <div className="analytics-track-info muted small" title="Số ngày đã có dữ liệu snapshot cho tài khoản này">
+        <Clock size={12} />
+        {g.trackedDays >= 1 && g.firstDay
+          ? `Đang theo dõi ${g.trackedDays} ngày · từ ${fmtDayShort(g.firstDay)}`
+          : 'Chưa có dữ liệu theo dõi'}
+      </div>
+
       {/* Metrics */}
       <div className="analytics-metrics">
         <MetricRow
           icon={<UsersIcon size={14} />}
           label="Followers"
           current={g.current.followers}
-          delta1d={g.delta1d.followers}
-          delta7d={g.delta7d.followers}
-          delta30d={g.delta30d.followers}
+          delta1d={{ value: g.delta1d.followers, available: g.delta1d.available }}
+          delta7d={{ value: g.delta7d.followers, available: g.delta7d.available }}
+          delta30d={{ value: g.delta30d.followers, available: g.delta30d.available }}
         />
         <MetricRow
           icon={<UserCheck size={14} />}
           label="Following"
           current={g.current.following}
-          delta1d={g.delta1d.following}
-          delta7d={g.delta7d.following}
-          delta30d={g.delta30d.following}
+          delta1d={{ value: g.delta1d.following, available: g.delta1d.available }}
+          delta7d={{ value: g.delta7d.following, available: g.delta7d.available }}
+          delta30d={{ value: g.delta30d.following, available: g.delta30d.available }}
         />
         <MetricRow
           icon={<FileText size={14} />}
           label="Bài viết"
           current={g.current.posts}
-          delta1d={g.delta1d.posts}
-          delta7d={g.delta7d.posts}
-          delta30d={g.delta30d.posts}
+          delta1d={{ value: g.delta1d.posts, available: g.delta1d.available }}
+          delta7d={{ value: g.delta7d.posts, available: g.delta7d.available }}
+          delta30d={{ value: g.delta30d.posts, available: g.delta30d.available }}
         />
       </div>
+
+      {/* Tổng tăng trưởng từ khi bắt đầu theo dõi (luôn có nghĩa khi >= 2 snapshot) */}
+      {g.sinceStart.available && (
+        <div className="analytics-since-start" title="Thay đổi so với lần fetch đầu tiên">
+          <span className="since-start-label">Từ khi theo dõi:</span>
+          <span className="since-start-metric">
+            <UsersIcon size={12} />
+            <DeltaBadge delta={g.sinceStart.followers} available suffix=" fl" />
+          </span>
+          <span className="since-start-metric">
+            <FileText size={12} />
+            <DeltaBadge delta={g.sinceStart.posts} available suffix=" bài" />
+          </span>
+        </div>
+      )}
 
       {/* Sparkline */}
       <div className="analytics-sparkline-row">

@@ -450,24 +450,31 @@ export default function AccountsView(): JSX.Element {
                     )}
                   </span>
                   <span className="account-name" title={a.label}>{a.label}</span>
+                  {/* Nút nhanh ngoài card: chạy ngầm + test webhook (icon + tooltip) */}
+                  <div className="card-quick-actions">
+                    <button
+                      className={`btn icon-only ghost${a.headless ? ' active' : ''}`}
+                      title={
+                        a.headless
+                          ? 'Đang chạy ngầm — bấm để hiện cửa sổ (lần mở kế tiếp)'
+                          : 'Đang hiện cửa sổ — bấm để chạy ngầm (lần mở kế tiếp)'
+                      }
+                      disabled={isBusy}
+                      onClick={() => handleToggleHeadless(a)}
+                    >
+                      {a.headless ? <EyeOff size={15} /> : <Eye size={15} />}
+                    </button>
+                    <button
+                      className="btn icon-only ghost"
+                      title="Test webhook (gửi kèm assetUrl của profile)"
+                      disabled={testing === a.id}
+                      onClick={() => handleTestWebhook(a)}
+                    >
+                      {testing === a.id ? <Loader2 size={15} className="spin" /> : <Zap size={15} />}
+                    </button>
+                  </div>
                   <ActionMenu
                     items={[
-                      {
-                        icon: a.headless ? <EyeOff size={15} /> : <Eye size={15} />,
-                        label: a.headless ? 'Tắt chạy ngầm' : 'Bật chạy ngầm',
-                        title: a.headless
-                          ? 'Đang chạy ngầm — chuyển sang hiện cửa sổ (lần mở kế tiếp)'
-                          : 'Đang hiện cửa sổ — chuyển sang chạy ngầm (lần mở kế tiếp)',
-                        disabled: isBusy,
-                        onClick: () => handleToggleHeadless(a)
-                      },
-                      {
-                        icon: <Zap size={15} />,
-                        label: 'Test webhook',
-                        title: 'Test webhook (gửi kèm assetUrl của profile)',
-                        disabled: testing === a.id,
-                        onClick: () => handleTestWebhook(a)
-                      },
                       {
                         icon: <Pencil size={15} />,
                         label: 'Sửa',

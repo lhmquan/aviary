@@ -436,11 +436,15 @@ export interface DailyStats {
   name: string | null
 }
 
-// Delta tăng trưởng cho 1 khoảng thời gian (1d/7d/30d).
+// Delta tăng trưởng cho 1 khoảng thời gian (1d/7d/30d/từ đầu).
+// `null` ở đây mang ý nghĩa CHÍNH XÁC: "chưa đủ dữ liệu để tính" (không có
+// snapshot tham chiếu ở mốc đó), KHÁC với số 0 (có dữ liệu nhưng không đổi).
+// `available` = true khi tìm được snapshot tham chiếu thật cho mốc này.
 export interface GrowthDelta {
   followers: number | null
   following: number | null
   posts: number | null
+  available: boolean
 }
 
 // Tăng trưởng đầy đủ cho 1 tài khoản.
@@ -458,6 +462,13 @@ export interface AccountGrowth {
   delta1d: GrowthDelta
   delta7d: GrowthDelta
   delta30d: GrowthDelta
+  // Tổng thay đổi từ snapshot đầu tiên (luôn có ý nghĩa khi >= 2 snapshot).
+  sinceStart: GrowthDelta
+  // Số ngày đã có snapshot (distinct days) — để UI cho biết theo dõi bao lâu.
+  trackedDays: number
+  // Ngày snapshot sớm nhất / mới nhất (ms, nửa đêm local). null nếu chưa có data.
+  firstDay: number | null
+  latestDay: number | null
   series: DailyStats[]
   // Lỗi fetch gần nhất (nếu có) — hiển thị trên UI để user kiểm tra.
   lastError: string | null

@@ -5,6 +5,29 @@ Mọi thay đổi đáng chú ý của Aviary được ghi tại đây.
 Định dạng theo [Keep a Changelog](https://keepachangelog.com/vi/1.0.0/),
 phiên bản theo [Semantic Versioning](https://semver.org/lang/vi/).
 
+## [0.6.0] - 2026-06-27
+
+### Added
+- **Hàng đợi — thiết kế lại "Live Queue Board"** (từ bảng phẳng → danh sách card sống động):
+  - Mỗi tài khoản là 1 card 3 cột: danh tính (avatar thật + tên + @handle + chip tác vụ), lịch + tiến trình, trạng thái + countdown.
+  - **Tiến trình realtime thật**: card đang chạy hiện shimmer bar + dòng stage sống ("Đang chờ X xác nhận…") lấy từ `onProgress.message` theo `accountId` (trước đây bỏ phí, chỉ dùng `busy` để refresh).
+  - **Thanh tiến trình** tới lần chạy kế (fill theo % thời gian trôi `lastRunAt → nextRunAt`, fallback theo chu kỳ interval).
+  - **Slot meter dạng pips** (●●○) trực quan thay badge chữ; nhãn "kế tiếp" cho item sắp chạy gần nhất; vòng sáng nhấp nháy quanh avatar khi đang chạy.
+  - Chip tác vụ đủ 3 màu: Đăng (xanh), Xoá (đỏ), **Bình luận (tím)** — bổ sung comment mà bản cũ thiếu.
+- **Analytics UI**:
+  - Mỗi card hiện dòng "Đang theo dõi N ngày · từ DD/MM" + dòng "Từ khi theo dõi: +X fl / +Y bài".
+  - Badge mốc chưa đủ dữ liệu hiển thị "—" mờ với tooltip giải thích (vd "Chưa đủ dữ liệu cho mốc 7 ngày trước — đang theo dõi 1 ngày").
+  - Card overview "followers tăng/tuần" tự fallback sang "tăng từ đầu" khi chưa account nào đủ 7 ngày.
+  - Ghi chú cảnh báo khi dữ liệu còn mỏng (< 7 ngày): nhắc fetch đều mỗi ngày để mốc 7d/30d chính xác.
+
+### Changed
+- **Analytics — hệ thống lại cách tính & hiển thị tăng trưởng (trung thực theo dữ liệu)**:
+  - `computeDelta` giờ **neo theo snapshot mới nhất** (không neo "hôm nay") và chỉ tính khi tìm được snapshot tham chiếu thật trong dung sai cho phép (1d→±1 ngày, 7d→±3 ngày, 30d→±15 ngày). **Bỏ fallback bịa số** (cũ lấy `series[0]` cho mọi mốc → khi chỉ có 1 snapshot, cả 1d/7d/30d đều ra +0 giống nhau).
+  - `GrowthDelta` thêm cờ `available`: `false` nghĩa là "chưa đủ dữ liệu để tính" (hiển thị "—" mờ + tooltip), **khác hẳn** số 0 (có data nhưng không đổi).
+  - Thêm `sinceStart` (tổng thay đổi từ snapshot đầu tiên), `trackedDays`, `firstDay`, `latestDay` vào `AccountGrowth`.
+- **Tài khoản**: đưa nút "Chạy ngầm" (Eye/EyeOff) + "Test webhook" (Zap) ra ngoài card dưới dạng icon-only (có tooltip), menu `⋮` chỉ còn "Sửa" + "Xoá".
+- **Terminal**: thu gọn chiều cao header (nút action 26→22px, bỏ min-height co giãn) để bớt chiếm khoảng trống.
+
 ## [0.5.0] - 2026-06-26
 
 ### Added
