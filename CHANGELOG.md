@@ -5,6 +5,15 @@ Mọi thay đổi đáng chú ý của Aviary được ghi tại đây.
 Định dạng theo [Keep a Changelog](https://keepachangelog.com/vi/1.0.0/),
 phiên bản theo [Semantic Versioning](https://semver.org/lang/vi/).
 
+## [0.7.0] - 2026-06-28
+
+### Added
+- **Tự tách thread khi caption quá dài**: caption vượt 280 ký tự (tính theo cách X — URL=23, emoji/CJK=2) tự động tách thành nhiều phần ≤280 và đăng bằng nút "+" (addButton) trong composer. **Giữ nguyên toàn bộ nội dung**, tách ở ranh giới từ; token siêu dài (URL/chuỗi không khoảng trắng) được cắt cứng an toàn. Media gắn ở tweet đầu (upload trước khi tách thread).
+
+### Fixed
+- **Lỗi "Đã bấm Post nhưng modal chưa đóng" do caption dài**: trước đây caption vượt giới hạn khiến X khoá nút Post (`aria-disabled`) vĩnh viễn → app vẫn click vào nút chết → chờ 45s → báo lỗi đổ cho "overlay/mạng chậm" (sai bản chất). Giờ: phát hiện nút Post còn bị khoá sau khi nhập → báo lỗi đúng nguyên nhân (độ dài ký tự cụ thể vs giới hạn) kèm screenshot, không click vô ích.
+- **Nút "+" thêm ô soạn thread không tìm thấy**: cải thiện `addThreadComposer` với 6 biến thể selector (bao gồm `data-testid="addButton"` và `aria-label="Thêm bài đăng"` tiếng Việt), scroll nút vào view, force-click 3 nấc. Khi thất bại in chẩn đoán DOM thật (liệt kê nút Add/Thêm khả nghi) ra terminal.
+
 ## [0.6.0] - 2026-06-27
 
 ### Added

@@ -44,8 +44,178 @@ function composeScope(page: Page): Locator {
     .last()
 }
 
+// Bấm nút "+" (thêm tweet vào thread) trong composer. expectedIndex = số thứ tự
+// ô soạn mới muốn có (1,2,3…). Trả về true nếu ô soạn mới xuất hiện.
+// `report` để bắn chẩn đoán khi không tìm thấy nút (X hay đổi giao diện).
+async function addThreadComposer(
+  page: Page,
+  expectedIndex: number,
+  report: StepReporter = noop
+): Promise<boolean> {
+  // Nhiều biến thể selector cho nút "+" thêm tweet vào thread (X đổi giao diện thường xuyên).
+  const selectors = [
+    '[data-testid="addButton"]',
+    'button[aria-label="Add post"]',
+    'button[aria-label="Add another post"]',
+    'button[aria-label="Thêm bài đăng"]',
+    'button[aria-label*="Add" i][aria-label*="post" i]',
+    'div[role="button"][aria-label*="Add" i][aria-label*="post" i]'
+  ]
+
+  const tryClick = async (loc: Locator): Promise<boolean> => {
+    const count = await loc.count().catch(() => 0)
+    if (count === 0) return false
+    const btn = loc.last()
+    await btn.scrollIntoViewIfNeeded({ timeout: 3_000 }).catch(() => {})
+    try {
+      await btn.click({ timeout: 5_000 })
+    } catch {
+      try {
+        await btn.click({ timeout: 3_000, force: true })
+      } catch {
+        await btn.dispatchEvent('click').catch(() => {})
+      }
+    }
+    const newBox = page.locator(`[data-testid="tweetTextarea_${expectedIndex}"]`).first()
+    return newBox
+      .waitFor({ timeout: 6_000, state: 'attached' })
+      .then(() => true)
+      .catch(() => false)
+  }
+
+  // Thử lần lượt từng selector.
+  for (const sel of selectors) {
+    if (await tryClick(page.locator(sel))) return true
+  }
+
+  // Chẩn đoán: liệt kê các nút khả nghi để biết X đang render gì.
+  // Dùng evaluate dạng STRING để TS không type-check biến trình duyệt (document/HTMLElement).
+  try {
+    const diag = (await page.evaluate(
+      `(() => {
+        const btns = Array.from(document.querySelectorAll('button, div[role="button"]'));
+        return btns
+          .filter((b) => {
+            const al = (b.getAttribute('aria-label') || '').toLowerCase();
+            const tid = b.getAttribute('data-testid') || '';
+            return al.includes('add') || al.includes('thêm') || tid.toLowerCase().includes('add');
+          })
+          .slice(0, 8)
+          .map((b) => {
+            const tid = b.getAttribute('data-testid') || '';
+            const al = b.getAttribute('aria-label') || '';
+            const vis = b.offsetParent !== null;
+            return '[testid="' + tid + '" aria="' + al + '" visible=' + vis + ']';
+          });
+      })()`
+    )) as string[]
+    report(
+      diag.length > 0
+        ? `Không thấy nút "+" quen thuộc. Nút khả nghi: ${diag.join(' ')}`
+        : 'Không thấy bất kỳ nút "Add/Thêm" nào trong composer.'
+    )
+  } catch {
+    /* bỏ qua nếu evaluate lỗi */
+  }
+  return false
+}
+
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+// ---- Đếm độ dài + tách thread theo chuẩn X ----
+// Giới hạn ký tự 1 tweet với tài khoản thường.
+const TWEET_LIMIT = 280
+
+// X tính "weighted length": URL luôn = 23 ký tự; ký tự CJK/emoji = 2; còn lại = 1.
+// Đây là bản xấp xỉ đủ chính xác cho mục đích chặn/tách (không cần lib ngoài).
+const URL_REGEX = /https?:\/\/[^\s]+/g
+
+function isWideCodePoint(cp: number): boolean {
+  return (
+    (cp >= 0x1100 && cp <= 0x115f) || // Hangul Jamo
+    (cp >= 0x2e80 && cp <= 0x9fff) || // CJK + bộ thủ
+    (cp >= 0xa000 && cp <= 0xa4cf) || // Yi
+    (cp >= 0xac00 && cp <= 0xd7a3) || // Hangul
+    (cp >= 0xf900 && cp <= 0xfaff) || // CJK Compatibility
+    (cp >= 0xff00 && cp <= 0xff60) || // Fullwidth forms
+    cp >= 0x1f000 // emoji + ký hiệu bổ sung
+  )
+}
+
+function countCharsWeighted(s: string): number {
+  let n = 0
+  for (const ch of s) {
+    const cp = ch.codePointAt(0) ?? 0
+    n += isWideCodePoint(cp) ? 2 : 1
+  }
+  return n
+}
+
+// Độ dài theo cách X tính (URL = 23).
+function weightedLength(text: string): number {
+  let len = 0
+  let last = 0
+  for (const m of text.matchAll(URL_REGEX)) {
+    const idx = m.index ?? 0
+    len += countCharsWeighted(text.slice(last, idx))
+    len += 23
+    last = idx + m[0].length
+  }
+  len += countCharsWeighted(text.slice(last))
+  return len
+}
+
+// Cắt cứng 1 token quá dài (vd URL dài bất thường, chuỗi không khoảng trắng)
+// thành nhiều mảnh ≤ limit theo code point.
+function hardSplit(token: string, limit: number): string[] {
+  const out: string[] = []
+  let cur = ''
+  for (const ch of token) {
+    const candidate = cur + ch
+    if (weightedLength(candidate) > limit) {
+      if (cur) out.push(cur)
+      cur = ch
+    } else {
+      cur = candidate
+    }
+  }
+  if (cur) out.push(cur)
+  return out
+}
+
+// Tách caption dài thành nhiều phần ≤ limit, GIỮ NGUYÊN nội dung (không cắt bớt).
+// Ưu tiên tách ở ranh giới khoảng trắng/xuống dòng để không vỡ giữa từ.
+export function splitForThread(text: string, limit = TWEET_LIMIT): string[] {
+  if (weightedLength(text) <= limit) return [text]
+
+  // Giữ cả separator để khôi phục đúng khoảng trắng/xuống dòng.
+  const tokens = text.split(/(\s+)/)
+  const parts: string[] = []
+  let cur = ''
+
+  for (const token of tokens) {
+    if (token === '') continue
+    const candidate = cur + token
+    if (weightedLength(candidate) <= limit) {
+      cur = candidate
+      continue
+    }
+    // token không vừa phần hiện tại.
+    if (cur.trim()) parts.push(cur.trimEnd())
+    if (weightedLength(token) > limit) {
+      // token đơn lẻ dài hơn limit -> cắt cứng.
+      const chunks = hardSplit(token, limit)
+      for (let i = 0; i < chunks.length - 1; i++) parts.push(chunks[i])
+      cur = chunks[chunks.length - 1]
+    } else {
+      cur = token.replace(/^\s+/, '')
+    }
+  }
+  if (cur.trim()) parts.push(cur.trimEnd())
+  return parts.length > 0 ? parts : [text]
 }
 
 // Cuộn timeline X xuống. X cuộn theo WINDOW (không phải container con) nên window.scrollBy
@@ -97,13 +267,26 @@ export async function postTweet(
     await composeBox.waitFor({ timeout: 15_000, state: 'visible' })
     await composeBox.click()
     await sleep(1000) // Delay sau khi click textarea
-    report('Đang nhập nội dung bài viết…')
-    await page.keyboard.type(caption, { delay: 50 }) // Tăng delay typing từ 5ms lên 50ms
+
+    // Tách caption thành thread nếu vượt giới hạn 280 ký tự (giữ NGUYÊN nội dung).
+    const parts = splitForThread(caption, TWEET_LIMIT)
+    if (parts.length > 1) {
+      report(`Caption dài ${weightedLength(caption)} ký tự — tự tách thành thread ${parts.length} phần…`)
+    }
+
+    // Nhập phần đầu tiên vào ô soạn hiện tại.
+    report(
+      parts.length > 1
+        ? `Đang nhập nội dung (1/${parts.length})…`
+        : 'Đang nhập nội dung bài viết…'
+    )
+    await page.keyboard.type(parts[0], { delay: 50 })
 
     // Scope chứa nút media + Post (tính sau khi textarea đã hiện)
     const scope = composeScope(page)
 
-    // 3. Upload media nếu có
+    // 3. Upload media — LÀM TRƯỚC khi tách thread để media gắn vào PHẦN 1.
+    // Lúc này mới chỉ có 1 ô soạn (tweetTextarea_0) nên media chắc chắn vào tweet đầu.
     if (mediaPaths && mediaPaths.length > 0) {
       const validPaths = mediaPaths.filter((p) => existsSync(p))
       if (validPaths.length === 0) {
@@ -158,6 +341,27 @@ export async function postTweet(
       await sleep(2000) // Delay sau khi upload media xong
     }
 
+    // Các phần còn lại: bấm nút "+" (addButton) để thêm ô soạn mới rồi nhập tiếp.
+    // (Sau khi media đã gắn vào phần 1.)
+    for (let i = 1; i < parts.length; i++) {
+      report(`Đang thêm ô soạn cho phần ${i + 1}/${parts.length}…`)
+      const added = await addThreadComposer(page, i, report)
+      if (!added) {
+        return {
+          ok: false,
+          error: `Không thêm được ô soạn thứ ${i + 1} để tách thread (X có thể đổi giao diện composer). Caption dài ${weightedLength(caption)} ký tự, vượt giới hạn ${TWEET_LIMIT}.`,
+          step: 'thread_add'
+        }
+      }
+      const box = page.locator(`[data-testid="tweetTextarea_${i}"]:visible`).first()
+      await box.waitFor({ timeout: 10_000, state: 'visible' }).catch(() => {})
+      await box.click().catch(() => {})
+      await sleep(400)
+      report(`Đang nhập nội dung (${i + 1}/${parts.length})…`)
+      await page.keyboard.type(parts[i], { delay: 50 })
+    }
+
+
     // 4. Bấm Post — nút trong modal là tweetButton, fallback tweetButtonInline
     report('Đang chờ nút Post sẵn sàng…')
     const postBtn = scope
@@ -176,6 +380,28 @@ export async function postTweet(
         { timeout: 120_000 }
       )
       .catch(() => {})
+
+    // Nếu nút Post VẪN bị khoá -> không click vô ích (sẽ treo 45s rồi báo lỗi sai).
+    // Báo đúng bản chất: caption vượt giới hạn ký tự là nguyên nhân phổ biến nhất.
+    const stillDisabled = await postBtn
+      .getAttribute('aria-disabled')
+      .then((v) => v === 'true')
+      .catch(() => false)
+    if (stillDisabled) {
+      const len = weightedLength(caption)
+      const shot = screenshotPath(acc, 'post')
+      await page.screenshot({ path: shot }).catch(() => {})
+      const reason =
+        len > TWEET_LIMIT
+          ? `Caption dài ${len} ký tự (giới hạn ${TWEET_LIMIT}). Việc tách thread đã thử nhưng nút Post vẫn bị X khoá — kiểm tra lại composer trên X.`
+          : `Nút Post bị X khoá (aria-disabled) dù caption chỉ ${len} ký tự. Có thể media chưa encode xong, tài khoản bị giới hạn, hoặc X báo lỗi nội dung.`
+      return {
+        ok: false,
+        error: reason,
+        step: 'post_disabled',
+        screenshot: existsSync(shot) ? shot : undefined
+      }
+    }
 
     // X thường phủ 1 <div> overlay lên nút Post (gradient/loading) chặn click chuột thật
     // ("subtree intercepts pointer events" -> timeout 30s), đặc biệt khi proxy chậm. Nên
