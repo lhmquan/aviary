@@ -2,6 +2,9 @@ import { randomUUID } from 'crypto'
 import { getDb } from './index'
 import { insertLog } from './logs'
 import { getAccount } from './accounts'
+import { getAllSettings } from './settings'
+import { getLastFetchDay } from './analytics'
+import { isAnalyticsRunning } from '../analytics/scheduler'
 import type { Schedule, ScheduleInput, ScheduleKind, ScheduleAction, DeleteMode } from '../../shared/types'
 
 interface ScheduleRow {
@@ -62,7 +65,10 @@ export function listSchedules(): Schedule[] {
   const rows = getDb()
     .prepare('SELECT * FROM schedules ORDER BY created_at ASC')
     .all() as ScheduleRow[]
-  return rows.map(toSchedule)
+  const schedules = rows.map(toSchedule)
+  // Thêm lịch ảo Analytics (tác vụ hệ thống) vào đầu danh sách.
+  schedules.unshift(buildAnalyticsSchedule())
+  return schedules
 }
 
 export function getSchedule(id: string): Schedule | null {
@@ -524,3 +530,65 @@ export function describeSchedule(s: Pick<Schedule, 'kind' | 'intervalMinutes' | 
 
   return timing
 }
+
+function midnightOf(ts: number): number {
+  const d = new Date(ts)
+  d.setHours(0, 0, 0, 0)
+  return d.getTime()
+}
+
+// Tính thời điểm 03:00 hôm nay.
+function todayFetchTime(): number {
+  const now = new Date()
+  const today3am = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 3, 0, 0, 0)
+  return today3am.getTime()
+}
+
+// Build lịch ảo Analytics (tác vụ hệ thống, không lưu DB).
+function buildAnalyticsSchedule(): Schedule {
+  const now = Date.now()
+  const fetch3am = todayFetchTime()
+  const last = getLastFetchDay()
+  const enabled = getAllSettings().analyticsAutoFetch
+  const running = isAnalyticsRunning()
+
+  // lastRunAt: lần fetch cuối (nếu có).
+  const lastRunAt = last ?? null
+
+  // nextRunAt: 03:00 hôm nay nếu chưa qua, hoặc 03:00 ngày mai nếu đã qua/đã fetch.
+  let nextRunAt: number
+  if (now < fetch3am && (last === null || midnightOf(last) < midnightOf(now))) {
+    // Chưa qua 03:00 hôm nay và chưa fetch hôm nay -> next = 03:00 hôm nay
+    nextRunAt = fetch3am
+  } else if (last !== null && midnightOf(last) >= midnightOf(now)) {
+    // Đã fetch hôm nay -> next = 03:00 ngày mai
+    nextRunAt = fetch3am + 86_400_000
+  } else {
+    // Đã qua 03:00 hôm nay nhưng chưa fetch -> next = 03:00 hôm nay (sẽ chạy sớm)
+    nextRunAt = fetch3am
+  }
+
+  return {
+    id: '__analytics__',
+    accountId: '__system__',
+    label: 'Tự động fetch thống kê X',
+    enabled,
+    action: 'post', // dùng 'post' để không trigger logic delete/comment trong UI
+    kind: 'fixed',
+    intervalMinutes: null,
+    times: ['03:00'],
+    jitterSeconds: 0,
+    deleteMode: null,
+    deleteBeforeDate: null,
+    deleteCount: 0,
+    commentCount: 0,
+    commentIntervalSeconds: 0,
+    commentSourceUrl: null,
+    lastRunAt,
+    nextRunAt,
+    running,
+    createdAt: 0,
+    updatedAt: 0
+  }
+}
+

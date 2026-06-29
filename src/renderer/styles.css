@@ -739,6 +739,22 @@ nav {
   border-color: color-mix(in srgb, var(--accent-2) 30%, transparent);
 }
 
+/* Lịch hệ thống: Analytics — cam (#ff9500) */
+.badge.action-system {
+  background: color-mix(in srgb, #ff9500 14%, transparent);
+  color: #ff9500;
+  border-color: color-mix(in srgb, #ff9500 30%, transparent);
+}
+
+.system-schedule {
+  background: color-mix(in srgb, #ff9500 4%, transparent);
+}
+
+.system-label {
+  font-weight: 600;
+  color: #ff9500;
+}
+
 .badge.st-checkpoint {
   background: var(--warn-soft);
   color: var(--warn);
@@ -1877,6 +1893,20 @@ nav {
 .qc-action.action-comment {
   background: color-mix(in srgb, var(--accent-2) 16%, transparent);
   color: var(--accent-2);
+}
+.qc-action.action-system {
+  background: color-mix(in srgb, #ff9500 16%, transparent);
+  color: #ff9500;
+}
+
+/* Card hàng đợi của tác vụ hệ thống (Analytics) — viền + nền cam nhạt để phân biệt */
+.queue-card.is-system {
+  border-color: color-mix(in srgb, #ff9500 35%, var(--border));
+  background: color-mix(in srgb, #ff9500 4%, var(--panel));
+}
+.qc-avatar-system {
+  background: color-mix(in srgb, #ff9500 16%, transparent) !important;
+  color: #ff9500 !important;
 }
 
 /* Cột giữa */

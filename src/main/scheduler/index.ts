@@ -65,7 +65,7 @@ function sleep(ms: number): Promise<void> {
 }
 
 // Báo renderer hàng đợi/đang-chạy thay đổi để ScheduleView cập nhật cột "Lần kế".
-function emitQueueChanged(): void {
+export function emitQueueChanged(): void {
   for (const win of BrowserWindow.getAllWindows()) {
     win.webContents.send(IpcChannels.queueChanged)
   }

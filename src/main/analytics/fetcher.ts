@@ -1,7 +1,7 @@
 import { fetchXProfile, downloadAvatarAsDataUrl } from '../x/FetchProfile'
 import { getAccount, updateAccountStats, listAccounts } from '../db/accounts'
 import { resolveProxyString } from '../db/proxies'
-import { upsertDailyStats, setLastFetchDay } from '../db/analytics'
+import { upsertDailyStats } from '../db/analytics'
 import { emitProgress } from '../scheduler/runner'
 import type { AnalyticsFetchResult, AnalyticsFetchRecord } from '../../shared/types'
 
@@ -27,6 +27,8 @@ export async function fetchAllAccountsStats(): Promise<AnalyticsFetchResult> {
   let done = 0
 
   emitProgress({
+    accountId: '__system__',
+    accountLabel: 'Hệ thống',
     stage: 'analytics',
     message: `Bắt đầu fetch analytics cho ${total} tài khoản…`,
     busy: true
@@ -62,6 +64,8 @@ export async function fetchAllAccountsStats(): Promise<AnalyticsFetchResult> {
             running--
             done++
             emitProgress({
+              accountId: '__system__',
+              accountLabel: 'Hệ thống',
               stage: 'analytics',
               message: `Analytics ${done}/${total} · OK ${success} · Lỗi ${failed} · Bỏ qua ${skipped}`,
               busy: true
@@ -80,10 +84,9 @@ export async function fetchAllAccountsStats(): Promise<AnalyticsFetchResult> {
     else startNext()
   })
 
-  // Lưu ngày fetch cuối (nửa đêm hôm nay).
-  setLastFetchDay(Date.now())
-
   emitProgress({
+    accountId: '__system__',
+    accountLabel: 'Hệ thống',
     stage: 'analytics',
     message: `Analytics xong: ${success}/${total} thành công${failed > 0 ? `, ${failed} lỗi` : ''}${skipped > 0 ? `, ${skipped} bỏ qua` : ''}`,
     busy: false

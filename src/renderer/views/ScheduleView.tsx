@@ -125,54 +125,78 @@ export default function ScheduleView(): JSX.Element {
               </tr>
             </thead>
             <tbody>
-              {schedules.map((s) => (
-                <tr key={s.id}>
-                  <td className="cell-label">
-                    {accountLabel(s.accountId)}
-                    {s.label && <div className="small muted">{s.label}</div>}
-                  </td>
-                  <td>
-                    <span className={`badge ${s.action === 'delete' ? 'action-delete' : s.action === 'comment' ? 'action-comment' : 'action-post'}`}>
-                      {s.action === 'delete' ? 'Xoá' : s.action === 'comment' ? 'Bình luận' : 'Đăng'}
-                    </span>
-                  </td>
-                  <td>{s.kind === 'interval' ? 'Khoảng' : 'Giờ cố định'}</td>
-                  <td className="small">{describe(s)}</td>
-                  <td className="mono small">{s.lastRunAt ? fmtTime(s.lastRunAt) : '—'}</td>
-                  <td className="mono small">{nextRunCell(s)}</td>
-                  <td>
-                    <button
-                      className={`badge ${s.enabled ? 'on' : 'st-disabled'}`}
-                      disabled={toggling === s.id}
-                      onClick={() => handleToggle(s)}
-                      title={s.enabled ? 'Đang bật — bấm để tắt' : 'Đang tắt — bấm để bật'}
-                      style={{ border: 'none', cursor: 'pointer' }}
-                    >
-                      {toggling === s.id ? <Loader2 size={13} className="spin" /> : <span className="dot" />}
-                      {s.enabled ? 'Bật' : 'Tắt'}
-                    </button>
-                  </td>
-                  <td className="actions">
-                    <button
-                      className="btn icon-only"
-                      title="Sửa"
-                      onClick={() => {
-                        setEditing(s)
-                        setShowForm(true)
-                      }}
-                    >
-                      <Pencil size={16} />
-                    </button>
-                    <button
-                      className="btn icon-only danger"
-                      title="Xóa"
-                      onClick={() => handleDelete(s)}
-                    >
-                      <Trash2 size={16} />
-                    </button>
-                  </td>
-                </tr>
-              ))}
+              {schedules.map((s) => {
+                const isSystem = s.accountId === '__system__'
+                return (
+                  <tr key={s.id} className={isSystem ? 'system-schedule' : ''}>
+                    <td className="cell-label">
+                      {isSystem ? (
+                        <span className="system-label">Hệ thống</span>
+                      ) : (
+                        <>
+                          {accountLabel(s.accountId)}
+                          {s.label && <div className="small muted">{s.label}</div>}
+                        </>
+                      )}
+                    </td>
+                    <td>
+                      {isSystem ? (
+                        <span className="badge action-system">Analytics</span>
+                      ) : (
+                        <span className={`badge ${s.action === 'delete' ? 'action-delete' : s.action === 'comment' ? 'action-comment' : 'action-post'}`}>
+                          {s.action === 'delete' ? 'Xoá' : s.action === 'comment' ? 'Bình luận' : 'Đăng'}
+                        </span>
+                      )}
+                    </td>
+                    <td>{s.kind === 'interval' ? 'Khoảng' : 'Giờ cố định'}</td>
+                    <td className="small">{describe(s)}</td>
+                    <td className="mono small">{s.lastRunAt ? fmtTime(s.lastRunAt) : '—'}</td>
+                    <td className="mono small">{nextRunCell(s)}</td>
+                    <td>
+                      {isSystem ? (
+                        <span className={`badge ${s.enabled ? 'on' : 'st-disabled'}`}>
+                          <span className="dot" />
+                          {s.enabled ? 'Bật' : 'Tắt'}
+                        </span>
+                      ) : (
+                        <button
+                          className={`badge ${s.enabled ? 'on' : 'st-disabled'}`}
+                          disabled={toggling === s.id}
+                          onClick={() => handleToggle(s)}
+                          title={s.enabled ? 'Đang bật — bấm để tắt' : 'Đang tắt — bấm để bật'}
+                          style={{ border: 'none', cursor: 'pointer' }}
+                        >
+                          {toggling === s.id ? <Loader2 size={13} className="spin" /> : <span className="dot" />}
+                          {s.enabled ? 'Bật' : 'Tắt'}
+                        </button>
+                      )}
+                    </td>
+                    <td className="actions">
+                      {!isSystem && (
+                        <>
+                          <button
+                            className="btn icon-only"
+                            title="Sửa"
+                            onClick={() => {
+                              setEditing(s)
+                              setShowForm(true)
+                            }}
+                          >
+                            <Pencil size={16} />
+                          </button>
+                          <button
+                            className="btn icon-only danger"
+                            title="Xóa"
+                            onClick={() => handleDelete(s)}
+                          >
+                            <Trash2 size={16} />
+                          </button>
+                        </>
+                      )}
+                    </td>
+                  </tr>
+                )
+              })}
             </tbody>
           </table>
         </div>

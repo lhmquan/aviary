@@ -8,7 +8,8 @@ import {
   MessageCircle,
   Clock,
   CalendarClock,
-  ArrowRight
+  ArrowRight,
+  BarChart3
 } from 'lucide-react'
 import type { Account, Schedule, AppSettings } from '@shared/types'
 
@@ -201,16 +202,21 @@ function QueueCard(props: {
 }): JSX.Element {
   const { schedule: s, status, account: acc, live, isNext } = props
   const meta = STATUS_META[status]
-  const label = acc?.label ?? '(đã xoá)'
+  const isSystem = s.accountId === '__system__'
+  const label = isSystem ? 'Hệ thống' : (acc?.label ?? '(đã xoá)')
   const initial = (label.charAt(0) || '?').toUpperCase()
   const pct = progressPercent(s, status)
 
   return (
-    <div className={`queue-card status-${status} ${isNext ? 'is-next' : ''}`}>
+    <div className={`queue-card status-${status} ${isNext ? 'is-next' : ''} ${isSystem ? 'is-system' : ''}`}>
       {/* Cột trái: avatar + danh tính + tác vụ */}
       <div className="qc-identity">
         <span className="qc-avatar" title={label}>
-          {acc?.avatarUrl ? (
+          {isSystem ? (
+            <span className="qc-avatar-fallback qc-avatar-system">
+              <BarChart3 size={18} />
+            </span>
+          ) : acc?.avatarUrl ? (
             <img src={acc.avatarUrl} alt="" loading="lazy" referrerPolicy="no-referrer" />
           ) : (
             <span className="qc-avatar-fallback">{initial}</span>
@@ -223,8 +229,12 @@ function QueueCard(props: {
             {isNext && <span className="qc-next-tag">kế tiếp</span>}
           </div>
           <div className="qc-sub">
-            {acc?.handle && <span className="qc-handle">@{acc.handle.replace(/^@/, '')}</span>}
-            <ActionChip action={s.action} schedule={s} />
+            {isSystem ? (
+              <span className="qc-handle">{s.label ?? 'Tự động fetch thống kê X'}</span>
+            ) : (
+              acc?.handle && <span className="qc-handle">@{acc.handle.replace(/^@/, '')}</span>
+            )}
+            <ActionChip action={s.action} schedule={s} isSystem={isSystem} />
           </div>
         </div>
       </div>
@@ -272,8 +282,15 @@ function QueueCard(props: {
   )
 }
 
-// Chip tác vụ — đúng màu: đăng (xanh), xoá (đỏ), bình luận (tím).
-function ActionChip({ action, schedule }: { action: Schedule['action']; schedule: Schedule }): JSX.Element {
+// Chip tác vụ — đúng màu: đăng (xanh), xoá (đỏ), bình luận (tím), analytics hệ thống (cam).
+function ActionChip({ action, schedule, isSystem }: { action: Schedule['action']; schedule: Schedule; isSystem?: boolean }): JSX.Element {
+  if (isSystem) {
+    return (
+      <span className="qc-action action-system" title="Tác vụ hệ thống — tự động fetch thống kê X">
+        <BarChart3 size={11} /> Analytics
+      </span>
+    )
+  }
   if (action === 'delete') {
     const detail = schedule.deleteCount === 0 ? 'tất cả' : `${schedule.deleteCount} bài`
     return (
