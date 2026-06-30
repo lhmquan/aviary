@@ -274,6 +274,19 @@ export function listDueSchedules(now = Date.now()): Schedule[] {
   return rows.map(toSchedule)
 }
 
+// Thời điểm (ms) sớm nhất mà một lịch enabled, chưa chạy sẽ tới giờ trong TƯƠNG LAI (> now).
+// Dùng để hẹn timer scheduler chính xác (thay vì tick cố định) -> lịch tới giờ được nhặt
+// gần như tức thì khi còn slot. Trả null nếu không có lịch tương lai nào.
+export function nextDueAt(now = Date.now()): number | null {
+  const row = getDb()
+    .prepare(
+      `SELECT MIN(next_run_at) AS next FROM schedules
+       WHERE enabled = 1 AND running = 0 AND next_run_at IS NOT NULL AND next_run_at > ?`
+    )
+    .get(now) as { next: number | null } | undefined
+  return row?.next ?? null
+}
+
 // Đặt cờ đang chạy (semaphore hàng đợi scheduler).
 export function setScheduleRunning(id: string, running: boolean): void {
   getDb()

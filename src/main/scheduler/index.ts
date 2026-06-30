@@ -2,6 +2,7 @@ import { BrowserWindow } from 'electron'
 import { insertLog } from '../db/logs'
 import {
   listDueSchedules,
+  nextDueAt,
   markRun,
   setScheduleNextRun,
   ensureNextRun,
@@ -26,6 +27,8 @@ function accountLabelOf(accountId: string): string {
 // hàng đợi) tới tick sau khi có slot trống. Mỗi tài khoản chỉ chạy 1 job 1 lúc.
 
 let timer: NodeJS.Timeout | null = null
+// Cờ dừng: chặn rescheduleTimer/kickNow tự hẹn lại sau khi stopScheduler được gọi.
+let stopped = true
 
 // Semaphore đồng thời: số job đang chạy + tập accountId đang chạy (chặn cùng 1 account
 // chạy 2 job song song). DB cột schedules.running là bản lưu bền (khôi phục sau crash).
@@ -52,12 +55,14 @@ export async function acquireSlot(accountId: string): Promise<void> {
   }
 }
 
-/** Trả slot sau khi chạy xong. */
+/** Trả slot sau khi chạy xong. Nhả xong -> đánh thức scheduler NGAY để nhặt lịch đang chờ
+ * slot (thay vì chờ tới tick kế). Nhờ vậy lịch due không bị kẹt "chờ slot trống" oan. */
 export function releaseSlot(accountId: string): void {
   if (activeAccountIds.has(accountId)) {
     activeAccountIds.delete(accountId)
     activeRunCount = Math.max(0, activeRunCount - 1)
   }
+  kickNow()
 }
 
 function sleep(ms: number): Promise<void> {
@@ -80,26 +85,60 @@ async function tick(): Promise<void> {
   ensureNextRun(now)
 
   let slots = availableSlots()
-  if (slots <= 0) return
+  if (slots > 0) {
+    const due = listDueSchedules(now) // đã lọc running=0, sắp xếp sớm nhất trước
+    for (const s of due) {
+      if (slots <= 0) break
+      // Bỏ qua nếu account này đang chạy job khác (giữ slot cho lịch của account khác).
+      if (activeAccountIds.has(s.accountId)) continue
 
-  const due = listDueSchedules(now) // đã lọc running=0, sắp xếp sớm nhất trước
-  if (due.length === 0) return
+      // Chiếm slot + đánh dấu running NGAY (đồng bộ) để tick kế / lần lặp kế không nhặt lại.
+      activeRunCount++
+      activeAccountIds.add(s.accountId)
+      setScheduleRunning(s.id, true)
+      slots--
+      emitQueueChanged()
 
-  for (const s of due) {
-    if (slots <= 0) break
-    // Bỏ qua nếu account này đang chạy job khác (giữ slot cho lịch của account khác).
-    if (activeAccountIds.has(s.accountId)) continue
-
-    // Chiếm slot + đánh dấu running NGAY (đồng bộ) để tick kế / lần lặp kế không nhặt lại.
-    activeRunCount++
-    activeAccountIds.add(s.accountId)
-    setScheduleRunning(s.id, true)
-    slots--
-    emitQueueChanged()
-
-    // Fire-and-forget: chạy job, không await trong vòng lặp để các job chạy song song.
-    void runScheduledJob(s)
+      // Fire-and-forget: chạy job, không await trong vòng lặp để các job chạy song song.
+      void runScheduledJob(s)
+    }
   }
+
+  // Hẹn lần thức kế chính xác = thời điểm lịch tương lai gần nhất. Nhờ vậy lịch tới giờ
+  // được nhặt gần như tức thì (không chờ tick cố định 30s -> hết cảnh "chờ slot trống" oan).
+  rescheduleTimer()
+}
+
+// Hẹn timer one-shot tới đúng thời điểm lịch tương lai gần nhất (nextDueAt). Chặn trên
+// MAX_TICK_MS để vẫn re-check định kỳ (đổi concurrency, account mới, lịch ảo Analytics).
+const MIN_TICK_MS = 250
+const MAX_TICK_MS = 30_000
+function rescheduleTimer(): void {
+  if (stopped) return
+  if (timer) {
+    clearTimeout(timer)
+    timer = null
+  }
+  const now = Date.now()
+  const next = nextDueAt(now)
+  let delay = MAX_TICK_MS
+  if (next !== null) {
+    delay = Math.min(MAX_TICK_MS, Math.max(MIN_TICK_MS, next - now))
+  }
+  timer = setTimeout(() => {
+    tick().catch(() => {})
+  }, delay)
+}
+
+// Đánh thức scheduler chạy tick gần như ngay (debounce 50ms gộp nhiều lần nhả slot liên tiếp).
+let kickTimer: NodeJS.Timeout | null = null
+function kickNow(): void {
+  if (stopped) return
+  if (kickTimer) return
+  kickTimer = setTimeout(() => {
+    kickTimer = null
+    tick().catch(() => {})
+  }, 50)
 }
 
 // Chạy 1 lịch đã được cấp slot. THỨ TỰ finally bắt buộc:
@@ -215,7 +254,8 @@ async function runScheduledJob(s: ReturnType<typeof listDueSchedules>[number]): 
 }
 
 export function startScheduler(): void {
-  if (timer) return
+  if (!stopped) return
+  stopped = false
   // Khôi phục sau crash: xoá mọi cờ running còn sót (không có job nào thực sự chạy lúc khởi động).
   resetAllRunning()
   insertLog({
@@ -230,16 +270,18 @@ export function startScheduler(): void {
     screenshot: null,
     eventType: 'schedule'
   })
-  // Tick ngay để tính next_run cho lịch mới/khôi phục, rồi 30s/lần.
+  // Tick ngay để tính next_run + nhặt lịch due; tick() tự hẹn lần thức kế (rescheduleTimer).
   tick().catch(() => {})
-  timer = setInterval(() => {
-    tick().catch(() => {})
-  }, 30_000)
 }
 
 export function stopScheduler(): void {
+  stopped = true
   if (timer) {
-    clearInterval(timer)
+    clearTimeout(timer)
     timer = null
+  }
+  if (kickTimer) {
+    clearTimeout(kickTimer)
+    kickTimer = null
   }
 }

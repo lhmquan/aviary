@@ -184,6 +184,7 @@ export default function QueueView(): JSX.Element {
               account={accountOf(s.accountId)}
               live={live[s.accountId]}
               isNext={s.id === nextUpId}
+              slotsFull={runningCount >= concurrency}
             />
           ))}
         </div>
@@ -199,9 +200,13 @@ function QueueCard(props: {
   account: Account | undefined
   live: LiveProgress | undefined
   isNext: boolean
+  slotsFull: boolean
 }): JSX.Element {
-  const { schedule: s, status, account: acc, live, isNext } = props
+  const { schedule: s, status, account: acc, live, isNext, slotsFull } = props
   const meta = STATUS_META[status]
+  // Phân biệt khi due nhưng chưa chạy: slot đầy -> "chờ slot trống"; slot còn trống ->
+  // "đang xếp hàng" (sắp được nhặt ngay, chỉ thoáng qua) -> tránh báo "chờ slot" sai.
+  const waitText = status === 'waiting' && !slotsFull ? 'Đang xếp hàng' : meta.text
   const isSystem = s.accountId === '__system__'
   const label = isSystem ? 'Hệ thống' : (acc?.label ?? '(đã xoá)')
   const initial = (label.charAt(0) || '?').toUpperCase()
@@ -274,9 +279,11 @@ function QueueCard(props: {
           ) : (
             <span className="dot" />
           )}
-          {meta.text}
+          {status === 'waiting' ? waitText : meta.text}
         </span>
-        <div className="qc-countdown">{nextRunDisplay(s, status)}</div>
+        {status !== 'running' && (
+          <div className="qc-countdown">{nextRunDisplay(s, status, slotsFull)}</div>
+        )}
       </div>
     </div>
   )
@@ -334,9 +341,12 @@ function progressPercent(s: Schedule, status: QueueStatus): number {
 }
 
 // Hiển thị "Lần kế" theo trạng thái.
-function nextRunDisplay(s: Schedule, status: QueueStatus): JSX.Element {
-  if (status === 'running') return <span className="qc-cd-running">đang chạy…</span>
-  if (status === 'waiting') return <span className="qc-cd-waiting">chờ slot trống</span>
+function nextRunDisplay(s: Schedule, status: QueueStatus, slotsFull: boolean): JSX.Element {
+  if (status === 'waiting') {
+    return (
+      <span className="qc-cd-waiting">{slotsFull ? 'chờ slot trống' : 'sắp chạy…'}</span>
+    )
+  }
   if (s.nextRunAt) return <Countdown nextRunAt={s.nextRunAt} />
   return <>—</>
 }
