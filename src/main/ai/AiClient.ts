@@ -20,26 +20,29 @@ function toneInstruction(tone: string): string {
   }
 }
 
-// Map preset ngôn ngữ -> chỉ dẫn.
+// Map preset ngôn ngữ -> chỉ dẫn BẮT BUỘC (đặt cuối system prompt để model coi trọng
+// nhất). Với 'vi'/'en' phải cấm rõ ngôn ngữ khác, nếu không model dễ "bắt chước" ngôn
+// ngữ của bài feed (vd bài tiếng Việt → comment tiếng Việt dù đã chọn English).
 function langInstruction(lang: string): string {
   switch (lang) {
     case 'vi':
-      return 'Viết bằng tiếng Việt.'
+      return 'BẮT BUỘC viết bình luận HOÀN TOÀN bằng tiếng Việt, dù bài viết dùng ngôn ngữ nào. Tuyệt đối không dùng ngôn ngữ khác.'
     case 'en':
-      return 'Write in English.'
+      return 'You MUST write the comment ENTIRELY in English, regardless of the language of the post. Never use Vietnamese or any other language.'
     case 'auto':
     default:
-      return 'Viết bằng đúng ngôn ngữ của bài viết.'
+      return 'Viết bình luận bằng đúng ngôn ngữ của bài viết.'
   }
 }
 
 // System prompt cho việc sinh 1 bình luận ngắn từ nội dung bài.
+// Yêu cầu ngôn ngữ đặt CUỐI CÙNG (recency) để model tuân thủ chắc nhất.
 function buildSystemPrompt(tone: string, lang: string): string {
   return [
     `Bạn viết một bình luận mạng xã hội ngắn (dưới 15 từ), ${toneInstruction(tone)}.`,
-    langInstruction(lang),
     'Không dùng hashtag, không emoji quá đà, không lặp lại nguyên văn nội dung bài.',
-    'Chỉ trả về đúng câu bình luận, không giải thích, không thêm dấu ngoặc kép.'
+    'Chỉ trả về đúng câu bình luận, không giải thích, không thêm dấu ngoặc kép.',
+    langInstruction(lang)
   ].join(' ')
 }
 
@@ -51,6 +54,19 @@ function resolveEndpoint(baseUrl: string): string {
     u = `${u}/chat/completions`
   }
   return u
+}
+
+// Nhắc lại ngôn ngữ ngay trong yêu cầu (user message) — củng cố cùng system prompt.
+function langReminder(lang: string): string {
+  switch (lang) {
+    case 'vi':
+      return ' Trả lời bằng tiếng Việt.'
+    case 'en':
+      return ' Reply in English.'
+    case 'auto':
+    default:
+      return ''
+  }
 }
 
 // Gọi AI sinh 1 bình luận từ nội dung bài. KHÔNG throw — caller (phiên tương tác) bỏ
@@ -81,7 +97,10 @@ export async function generateComment(
         temperature: 0.9,
         messages: [
           { role: 'system', content: buildSystemPrompt(s.aiCommentTone, s.aiCommentLang) },
-          { role: 'user', content: `Bài viết:\n"""${text.slice(0, 1500)}"""\n\nViết 1 bình luận.` }
+          {
+            role: 'user',
+            content: `Bài viết:\n"""${text.slice(0, 1500)}"""\n\nViết 1 bình luận.${langReminder(s.aiCommentLang)}`
+          }
         ]
       })
     })
