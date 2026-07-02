@@ -238,6 +238,9 @@ export async function postTweet(
 ): Promise<PostResult> {
   let page: Page | null = null
   const acc = accountId ?? 'unknown'
+  // Có media nặng (nhất là qua proxy) thì X cần upload full-res lên server sau khi bấm
+  // Post → modal đóng chậm. Dùng cờ này để nới các mốc chờ, KHÔNG hạ chất lượng media.
+  const hasMedia = !!(mediaPaths && mediaPaths.length > 0)
 
   try {
     page = await context.newPage()
@@ -423,12 +426,15 @@ export async function postTweet(
       return { ok: true, url: page.url() }
     }
 
-    // Tín hiệu đăng thành công: KHÔNG còn dialog nào hiện (modal compose đóng). Proxy
-    // chậm nên cho timeout dài (45s). :visible lọc sẵn dialog ẩn vốn tồn tại trong DOM.
+    // Tín hiệu đăng thành công: KHÔNG còn dialog nào hiện (modal compose đóng). Sau khi
+    // bấm Post, X upload media full-res lên server rồi mới đóng modal — có media nặng qua
+    // proxy chậm thì lâu hơn nhiều, nên nới timeout theo có media (không hạ chất lượng).
+    // :visible lọc sẵn dialog ẩn vốn tồn tại trong DOM.
+    const modalCloseTimeout = hasMedia ? 120_000 : 45_000
     report('Đang chờ X xác nhận đăng bài…')
     const dialog = page.locator('[role="dialog"]:visible').first()
     const posted = await dialog
-      .waitFor({ state: 'hidden', timeout: 45_000 })
+      .waitFor({ state: 'hidden', timeout: modalCloseTimeout })
       .then(() => true)
       .catch(() => false)
 
