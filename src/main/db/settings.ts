@@ -9,7 +9,13 @@ const DEFAULTS: AppSettings = {
   logRetentionDays: 30,
   analyticsAutoFetch: true,
   // Giới hạn số comment tối đa/ngày cho 1 tài khoản (chạm -> tạm dừng, mai chạy tiếp).
-  commentDailyLimit: 30
+  commentDailyLimit: 30,
+  // AI sinh bình luận (OpenAI-compatible). Trống = chưa cấu hình -> phiên tương tác bỏ qua comment.
+  aiBaseUrl: '',
+  aiApiKey: '',
+  aiModel: '',
+  aiCommentTone: 'friendly',
+  aiCommentLang: 'auto'
 }
 
 export function getAllSettings(): AppSettings {
@@ -31,7 +37,12 @@ export function getAllSettings(): AppSettings {
       : DEFAULTS.analyticsAutoFetch,
     commentDailyLimit: map.has('commentDailyLimit')
       ? Number(map.get('commentDailyLimit'))
-      : DEFAULTS.commentDailyLimit
+      : DEFAULTS.commentDailyLimit,
+    aiBaseUrl: map.get('aiBaseUrl') ?? DEFAULTS.aiBaseUrl,
+    aiApiKey: map.get('aiApiKey') ?? DEFAULTS.aiApiKey,
+    aiModel: map.get('aiModel') ?? DEFAULTS.aiModel,
+    aiCommentTone: map.get('aiCommentTone') ?? DEFAULTS.aiCommentTone,
+    aiCommentLang: map.get('aiCommentLang') ?? DEFAULTS.aiCommentLang
   }
 }
 

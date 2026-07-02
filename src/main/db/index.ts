@@ -127,6 +127,9 @@ function migrate(d: Database.Database): void {
   addColumnIfMissing(d, 'schedules', 'comment_interval_seconds', 'INTEGER NOT NULL DEFAULT 60')
   addColumnIfMissing(d, 'schedules', 'comment_source_url', 'TEXT')
 
+  // Cột cho lịch tương tác feed (action='interact'): thời lượng 1 phiên (phút).
+  addColumnIfMissing(d, 'schedules', 'interact_duration_minutes', 'INTEGER NOT NULL DEFAULT 15')
+
   // Bảng cache link đã bình luận — để so sánh tránh bình luận trùng bài.
   // Prune: chỉ giữ 10 lần chạy gần nhất (theo commented_at) cho mỗi account.
   // status: 'commented' = đã comment thành công; 'reply_skip' = tweet là reply, đã bỏ qua.

@@ -13,7 +13,7 @@ import {
 import { getAccount } from '../db/accounts'
 import { getAllSettings } from '../db/settings'
 import { IpcChannels } from '../../shared/types'
-import { runPostForAccount, runDeleteForAccount, runCommentForAccount, emitProgress } from './runner'
+import { runPostForAccount, runDeleteForAccount, runCommentForAccount, runInteractForAccount, emitProgress } from './runner'
 
 // Lấy tên tài khoản thật để ghi vào cột "Tài khoản" của nhật ký. Nếu account đã bị xoá,
 // fallback về một nhãn dễ hiểu thay vì để trống.
@@ -148,6 +148,9 @@ function kickNow(): void {
 async function runScheduledJob(s: ReturnType<typeof listDueSchedules>[number]): Promise<void> {
   const isDelete = s.action === 'delete'
   const isComment = s.action === 'comment'
+  const isInteract = s.action === 'interact'
+  const actionLabel = isDelete ? 'xoá' : isComment ? 'bình luận' : isInteract ? 'tương tác' : 'đăng'
+  const runEventType = isDelete ? 'run_delete' : isComment ? 'run_comment' : isInteract ? 'run_interact' : 'run'
   const startedAt = Date.now()
   const label = accountLabelOf(s.accountId)
   // Khi chạm limit comment/ngày -> ghi midnight hôm sau vào map -> dùng trong finally
@@ -158,7 +161,7 @@ async function runScheduledJob(s: ReturnType<typeof listDueSchedules>[number]): 
       accountId: s.accountId,
       accountLabel: label,
       stage: 'schedule',
-      message: `Lịch ${isDelete ? 'xoá' : isComment ? 'bình luận' : 'đăng'} kích hoạt: ${describeSchedule(s)}${s.label ? ` (${s.label})` : ''}`,
+      message: `Lịch ${actionLabel} kích hoạt: ${describeSchedule(s)}${s.label ? ` (${s.label})` : ''}`,
       busy: true
     })
     insertLog({
@@ -166,12 +169,12 @@ async function runScheduledJob(s: ReturnType<typeof listDueSchedules>[number]): 
       accountLabel: label,
       ts: startedAt,
       ok: true,
-      caption: `Lịch ${isDelete ? 'xoá' : isComment ? 'bình luận' : 'đăng'} kích hoạt: ${describeSchedule(s)}${s.label ? ` (${s.label})` : ''}`,
+      caption: `Lịch ${actionLabel} kích hoạt: ${describeSchedule(s)}${s.label ? ` (${s.label})` : ''}`,
       url: null,
       error: null,
       step: 'trigger',
       screenshot: null,
-      eventType: isDelete ? 'run_delete' : isComment ? 'run_comment' : 'run'
+      eventType: runEventType
     })
 
     if (isDelete) {
@@ -221,6 +224,24 @@ async function runScheduledJob(s: ReturnType<typeof listDueSchedules>[number]): 
         const midnight = new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1, 0, 5, 0, 0).getTime()
         limitNextRunMap.set(s.id, midnight)
       }
+    } else if (isInteract) {
+      await runInteractForAccount(s.accountId, {
+        source: 'schedule',
+        durationMinutes: s.interactDurationMinutes
+      }).catch((e) => {
+        insertLog({
+          accountId: s.accountId,
+          accountLabel: accountLabelOf(s.accountId),
+          ts: Date.now(),
+          ok: false,
+          caption: `Lịch tương tác chạy lỗi: ${(e as Error).message}`,
+          url: null,
+          error: (e as Error).message,
+          step: 'scheduler',
+          screenshot: null,
+          eventType: 'run_interact'
+        })
+      })
     } else {
       await runPostForAccount(s.accountId, { source: 'schedule' }).catch((e) => {
         // Lỗi ngoài pipeline (vd account bị xoá giữa chừng) -> vẫn ghi log để user thấy.

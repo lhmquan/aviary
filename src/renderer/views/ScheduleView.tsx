@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback } from 'react'
-import { Plus, Pencil, Trash2, RefreshCw, Loader2, Clock, CalendarClock, Trash, MessageSquare } from 'lucide-react'
+import { Plus, Pencil, Trash2, RefreshCw, Loader2, Clock, CalendarClock, Trash, MessageSquare, Activity } from 'lucide-react'
 import type { Account, Schedule, ScheduleInput, ScheduleKind, ScheduleAction, DeleteMode } from '@shared/types'
 
 const REFRESH_MS = 15_000
@@ -59,7 +59,7 @@ export default function ScheduleView(): JSX.Element {
   }, [refresh, showForm])
 
   async function handleDelete(s: Schedule): Promise<void> {
-    const actionLabel = s.action === 'delete' ? 'xoá bài' : s.action === 'comment' ? 'bình luận' : 'đăng bài'
+    const actionLabel = s.action === 'delete' ? 'xoá bài' : s.action === 'comment' ? 'bình luận' : s.action === 'interact' ? 'tương tác' : 'đăng bài'
     if (!confirm(`Xóa lịch ${actionLabel} "${describe(s)}" cho ${accountLabel(s.accountId)}?`)) return
     await window.aviary.schedules.remove(s.id)
     await refresh()
@@ -143,8 +143,8 @@ export default function ScheduleView(): JSX.Element {
                       {isSystem ? (
                         <span className="badge action-system">Analytics</span>
                       ) : (
-                        <span className={`badge ${s.action === 'delete' ? 'action-delete' : s.action === 'comment' ? 'action-comment' : 'action-post'}`}>
-                          {s.action === 'delete' ? 'Xoá' : s.action === 'comment' ? 'Bình luận' : 'Đăng'}
+                        <span className={`badge ${s.action === 'delete' ? 'action-delete' : s.action === 'comment' ? 'action-comment' : s.action === 'interact' ? 'action-interact' : 'action-post'}`}>
+                          {s.action === 'delete' ? 'Xoá' : s.action === 'comment' ? 'Bình luận' : s.action === 'interact' ? 'Tương tác' : 'Đăng'}
                         </span>
                       )}
                     </td>
@@ -242,6 +242,8 @@ function ScheduleForm(props: {
   const [commentCount, setCommentCount] = useState(String(schedule?.commentCount ?? 1))
   const [commentIntervalSeconds, setCommentIntervalSeconds] = useState(String(schedule?.commentIntervalSeconds ?? 60))
   const [commentSourceUrl, setCommentSourceUrl] = useState(schedule?.commentSourceUrl ?? '')
+  // Interact fields
+  const [interactDurationMinutes, setInteractDurationMinutes] = useState(String(schedule?.interactDurationMinutes ?? 15))
   const [testingComment, setTestingComment] = useState(false)
   const [commentTestResult, setCommentTestResult] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
@@ -351,7 +353,8 @@ function ScheduleForm(props: {
       commentCount: action === 'comment' ? Math.max(1, parsedCommentCount) : 1,
       commentIntervalSeconds:
         action === 'comment' ? Math.max(5, Number(commentIntervalSeconds) || 60) : 60,
-      commentSourceUrl: action === 'comment' ? commentSourceUrl.trim() || null : null
+      commentSourceUrl: action === 'comment' ? commentSourceUrl.trim() || null : null,
+      interactDurationMinutes: action === 'interact' ? Math.max(1, Number(interactDurationMinutes) || 15) : 15
     } satisfies Omit<ScheduleInput, 'accountId'>
     setSaving(true)
     try {
@@ -446,6 +449,7 @@ function ScheduleForm(props: {
             <option value="post">Đăng bài</option>
             <option value="delete">Xoá bài</option>
             <option value="comment">Bình luận</option>
+            <option value="interact">Tương tác</option>
           </select>
         </label>
 
@@ -543,6 +547,30 @@ function ScheduleForm(props: {
           </>
         )}
 
+        {action === 'interact' && (
+          <>
+            <label className="field">
+              <span>Thời lượng phiên (phút) *</span>
+              <input
+                type="number"
+                min={1}
+                value={interactDurationMinutes}
+                onChange={(e) => setInteractDurationMinutes(e.target.value)}
+                placeholder="VD: 15"
+              />
+            </label>
+            <p className="hint">
+              Mỗi lần lịch kích hoạt, app mở profile và mô phỏng người thật trên feed suốt thời lượng:
+              cuộn feed, thỉnh thoảng thả tim, bình luận (nội dung do AI sinh theo bài), thỉnh thoảng F5.
+              Số lượng mỗi hành vi tự nảy sinh theo thời lượng.
+            </p>
+            <p className="hint">
+              Bình luận cần cấu hình AI ở tab <b>Cài đặt → AI sinh bình luận</b>. Nếu chưa cấu hình,
+              phiên vẫn chạy nhưng bỏ qua bình luận. Bình luận tôn trọng giới hạn comment/ngày.
+            </p>
+          </>
+        )}
+
         <label className="field">
           <span>Mô hình</span>
           <select value={kind} onChange={(e) => setKind(e.target.value as ScheduleKind)}>
@@ -593,7 +621,7 @@ function ScheduleForm(props: {
             Hủy
           </button>
           <button className="btn primary" disabled={saving} onClick={save}>
-            {saving ? <Loader2 size={15} className="spin" /> : action === 'delete' ? <Trash size={15} /> : action === 'comment' ? <MessageSquare size={15} /> : <CalendarClock size={15} />}
+            {saving ? <Loader2 size={15} className="spin" /> : action === 'delete' ? <Trash size={15} /> : action === 'comment' ? <MessageSquare size={15} /> : action === 'interact' ? <Activity size={15} /> : <CalendarClock size={15} />}
             {saving ? 'Đang lưu…' : 'Lưu'}
           </button>
         </div>
@@ -616,6 +644,9 @@ function describe(s: Schedule): string {
   }
   if (s.action === 'comment') {
     return `Bình luận ${s.commentCount ?? 1} bài · ${timing}`
+  }
+  if (s.action === 'interact') {
+    return `Tương tác ${s.interactDurationMinutes ?? 15} phút · ${timing}`
   }
 
   return timing

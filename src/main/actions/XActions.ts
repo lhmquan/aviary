@@ -227,6 +227,7 @@ async function scrollDown(page: Page): Promise<void> {
     .evaluate('window.scrollBy(0, Math.round(window.innerHeight * 0.9))')
     .catch(() => {})
 }
+export { scrollDown }
 
 export async function postTweet(
   context: BrowserContext,

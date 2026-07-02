@@ -5,15 +5,19 @@ import {
   Gauge,
   Save,
   Loader2,
-  Monitor
+  Monitor,
+  Bot,
+  Sparkles
 } from 'lucide-react'
-import type { AppSettings } from '@shared/types'
+import type { AppSettings, AiTestResult } from '@shared/types'
 
 export default function SettingsView(): JSX.Element {
   const [settings, setSettings] = useState<AppSettings | null>(null)
   const [saving, setSaving] = useState(false)
   const [savedAt, setSavedAt] = useState<number | null>(null)
   const [autoStart, setAutoStart] = useState(false)
+  const [aiTesting, setAiTesting] = useState(false)
+  const [aiTestResult, setAiTestResult] = useState<AiTestResult | null>(null)
 
   useEffect(() => {
     window.aviary.settings.get().then(setSettings)
@@ -35,6 +39,23 @@ export default function SettingsView(): JSX.Element {
       setSavedAt(Date.now())
     } finally {
       setSaving(false)
+    }
+  }
+
+  async function testAi(): Promise<void> {
+    setAiTesting(true)
+    setAiTestResult(null)
+    try {
+      // Lưu cấu hình hiện tại trước để AiClient (main) đọc đúng base URL/key/model.
+      if (settings) await window.aviary.settings.save(settings)
+      const r = await window.aviary.ai.test(
+        'Hôm nay trời đẹp quá, vừa hoàn thành xong dự án lớn, cảm thấy rất vui!'
+      )
+      setAiTestResult(r)
+    } catch (e) {
+      setAiTestResult({ ok: false, error: (e as Error).message })
+    } finally {
+      setAiTesting(false)
     }
   }
 
@@ -132,6 +153,79 @@ export default function SettingsView(): JSX.Element {
             và chạy tiếp vào ngày hôm sau. Tránh bị X đánh dấu spam.
           </small>
         </label>
+      </section>
+
+      <section className="card">
+        <h2>
+          <Bot size={16} /> AI sinh bình luận
+        </h2>
+        <small className="hint" style={{ marginBottom: 8 }}>
+          Chuẩn OpenAI-compatible (<code>/v1/chat/completions</code>). Dùng được với OpenAI thật
+          hoặc proxy bên thứ 3 (vd vietapi.tech). Dùng cho tác vụ Tương tác để sinh bình luận theo bài.
+        </small>
+        <label className="field">
+          <span>Base URL</span>
+          <input
+            value={settings.aiBaseUrl}
+            onChange={(e) => update('aiBaseUrl', e.target.value)}
+            placeholder="https://api.openai.com/v1  hoặc  https://api.vietapi.tech/v1"
+          />
+        </label>
+        <label className="field">
+          <span>API Key</span>
+          <input
+            type="password"
+            value={settings.aiApiKey}
+            onChange={(e) => update('aiApiKey', e.target.value)}
+            placeholder="sk-..."
+          />
+        </label>
+        <label className="field">
+          <span>Model</span>
+          <input
+            value={settings.aiModel}
+            onChange={(e) => update('aiModel', e.target.value)}
+            placeholder="gpt-4o-mini  hoặc  gpt"
+          />
+        </label>
+        <label className="field">
+          <span>Giọng điệu</span>
+          <select
+            value={settings.aiCommentTone}
+            onChange={(e) => update('aiCommentTone', e.target.value)}
+            style={{ width: 200 }}
+          >
+            <option value="friendly">Thân thiện</option>
+            <option value="humorous">Hài hước</option>
+            <option value="neutral">Trung lập</option>
+            <option value="concise">Ngắn gọn</option>
+          </select>
+        </label>
+        <label className="field">
+          <span>Ngôn ngữ bình luận</span>
+          <select
+            value={settings.aiCommentLang}
+            onChange={(e) => update('aiCommentLang', e.target.value)}
+            style={{ width: 200 }}
+          >
+            <option value="auto">Theo ngôn ngữ bài viết</option>
+            <option value="vi">Tiếng Việt</option>
+            <option value="en">Tiếng Anh</option>
+          </select>
+        </label>
+        <div className="row" style={{ marginTop: 4 }}>
+          <button className="btn" disabled={aiTesting} onClick={testAi}>
+            {aiTesting ? <Loader2 size={15} className="spin" /> : <Sparkles size={15} />}
+            {aiTesting ? 'Đang test…' : 'Test AI'}
+          </button>
+        </div>
+        {aiTestResult && (
+          <div className={`test-result ${aiTestResult.ok ? 'pass' : 'fail'}`}>
+            {aiTestResult.ok
+              ? `AI trả về: "${aiTestResult.comment}"`
+              : `Lỗi${aiTestResult.status ? ` (HTTP ${aiTestResult.status})` : ''}: ${aiTestResult.error}`}
+          </div>
+        )}
       </section>
 
       <section className="card">

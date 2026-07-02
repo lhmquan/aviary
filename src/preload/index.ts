@@ -10,7 +10,8 @@ import {
   type ProgressPayload,
   type LogListParams,
   type CommentResult,
-  type CommentTestResult
+  type CommentTestResult,
+  type AiTestResult
 } from '../shared/types'
 
 const api: AviaryApi = {
@@ -65,6 +66,10 @@ const api: AviaryApi = {
     test: (accountId?: string) => ipcRenderer.invoke(IpcChannels.webhookTest, accountId),
     testComments: (handle: string, sourceUrl?: string | null) =>
       ipcRenderer.invoke(IpcChannels.webhookTestComments, handle, sourceUrl) as Promise<CommentTestResult>
+  },
+  ai: {
+    test: (sampleText: string) =>
+      ipcRenderer.invoke(IpcChannels.aiTest, sampleText) as Promise<AiTestResult>
   },
   post: {
     runNow: (accountId: string) => ipcRenderer.invoke(IpcChannels.postRunNow, accountId),

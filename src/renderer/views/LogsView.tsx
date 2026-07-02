@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback } from 'react'
-import { RefreshCw, Trash2, ExternalLink, CheckCircle2, XCircle, ScrollText, Clock, Settings2, Send, SkipForward, ChevronLeft, ChevronRight, ChevronDown, ChevronUp, Filter, Trash } from 'lucide-react'
+import { RefreshCw, Trash2, ExternalLink, CheckCircle2, XCircle, ScrollText, Clock, Settings2, Send, SkipForward, ChevronLeft, ChevronRight, ChevronDown, ChevronUp, Filter, Trash, MessageCircle, Activity } from 'lucide-react'
 import type { LogEntry } from '@shared/types'
 
 const PAGE_SIZE = 50
@@ -20,6 +20,18 @@ function eventBadge(eventType: string | null | undefined): JSX.Element {
   if (eventType === 'run_delete') {
     return <span className="badge ev-run-delete"><Clock size={13} /> Lịch: Xoá</span>
   }
+  if (eventType === 'run_comment') {
+    return <span className="badge ev-run-comment"><Clock size={13} /> Lịch: Bình luận</span>
+  }
+  if (eventType === 'run_interact') {
+    return <span className="badge ev-run-interact"><Clock size={13} /> Lịch: Tương tác</span>
+  }
+  if (eventType === 'comment') {
+    return <span className="badge ev-comment"><MessageCircle size={13} /> Bình luận</span>
+  }
+  if (eventType === 'interact') {
+    return <span className="badge ev-interact"><Activity size={13} /> Tương tác</span>
+  }
   if (eventType === 'delete') {
     return <span className="badge ev-delete"><Trash size={13} /> Xoá</span>
   }
@@ -35,6 +47,8 @@ const FILTER_OPTIONS: { value: string | null; label: string }[] = [
   { value: 'schedule', label: 'Hệ thống' },
   { value: 'run', label: 'Lịch: Đăng' },
   { value: 'run_delete', label: 'Lịch: Xoá' },
+  { value: 'run_comment', label: 'Lịch: Bình luận' },
+  { value: 'run_interact', label: 'Lịch: Tương tác' },
   { value: 'delete', label: 'Xoá bài (thủ công)' },
   { value: 'post', label: 'Đăng bài (thủ công)' },
 ]

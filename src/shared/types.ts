@@ -93,7 +93,7 @@ export interface XProfileInfo {
 
 // ---- Lên lịch đăng / xoá bài / bình luận ----
 export type ScheduleKind = 'interval' | 'fixed'
-export type ScheduleAction = 'post' | 'delete' | 'comment'
+export type ScheduleAction = 'post' | 'delete' | 'comment' | 'interact'
 export type DeleteMode = 'newest' | 'by_date'
 
 export interface Schedule {
@@ -113,6 +113,8 @@ export interface Schedule {
   commentCount: number // số bài bình luận trong 1 lần chạy
   commentIntervalSeconds: number // thời gian giữa các lần bình luận trong 1 lần chạy
   commentSourceUrl: string | null // link Google Sheet chứa nội dung bình luận
+  // action='interact' — phiên tương tác feed (scroll/like/comment AI/refresh) theo thời lượng.
+  interactDurationMinutes: number // thời lượng 1 phiên tương tác (phút)
   lastRunAt: number | null
   nextRunAt: number | null
   // Đang chạy (semaphore hàng đợi scheduler). Khi true: countdown dừng, đang chờ/đang chạy.
@@ -136,6 +138,7 @@ export interface ScheduleInput {
   commentCount?: number
   commentIntervalSeconds?: number
   commentSourceUrl?: string | null
+  interactDurationMinutes?: number
 }
 
 export interface AppSettings {
@@ -148,6 +151,12 @@ export interface AppSettings {
   analyticsAutoFetch: boolean
   // Giới hạn số comment tối đa/ngày cho 1 tài khoản (chạm -> tạm dừng, mai chạy tiếp).
   commentDailyLimit: number
+  // ---- AI sinh bình luận (OpenAI-compatible: OpenAI thật hoặc proxy bên thứ 3) ----
+  aiBaseUrl: string // vd https://api.openai.com/v1 hoặc https://api.vietapi.tech/v1
+  aiApiKey: string // sk-... (lưu DB, không log)
+  aiModel: string // vd gpt-4o-mini | gpt
+  aiCommentTone: string // 'friendly' | 'humorous' | 'neutral' | 'concise'
+  aiCommentLang: string // 'auto' (theo bài) | 'vi' | 'en'
 }
 
 // Asset n8n trả về để đăng bài.
@@ -189,6 +198,14 @@ export interface CommentTestResult {
   handle?: string
   comment?: string
   error?: string
+}
+
+// Kết quả test AI sinh bình luận (OpenAI-compatible) — hiển thị câu AI trả về.
+export interface AiTestResult {
+  ok: boolean
+  comment?: string
+  error?: string
+  status?: number
 }
 
 // Kết quả đăng bài thử
@@ -326,6 +343,7 @@ export const IpcChannels = {
   settingsSave: 'settings:save',
   webhookTest: 'webhook:test',
   webhookTestComments: 'webhook:testComments',
+  aiTest: 'ai:test',
   postRunNow: 'post:runNow',
   commentRunNow: 'comment:runNow',
   browserStatusChanged: 'browser:statusChanged',
@@ -391,6 +409,10 @@ export interface AviaryApi {
   webhook: {
     test: (accountId?: string) => Promise<WebhookTestResult>
     testComments: (handle: string, sourceUrl?: string | null) => Promise<CommentTestResult>
+  }
+  ai: {
+    // Test cấu hình AI: gửi 1 đoạn text mẫu -> nhận câu bình luận AI sinh.
+    test: (sampleText: string) => Promise<AiTestResult>
   }
   post: {
     runNow: (accountId: string) => Promise<PostResult>

@@ -23,6 +23,7 @@ import {
   updateAccountStats
 } from './db/accounts'
 import { getAllSettings, saveSettings } from './db/settings'
+import { testAi } from './ai/AiClient'
 import {
   testWebhook,
   sendAnalyticsData,
@@ -186,6 +187,9 @@ export function registerIpc(): void {
     const clean = handle.trim().replace(/^@+/, '')
     return testCommentWebhook(clean, sourceUrl ?? null)
   })
+
+  // Test cấu hình AI — gửi 1 đoạn text mẫu, trả câu bình luận AI sinh (hoặc lỗi rõ ràng).
+  ipcMain.handle(IpcChannels.aiTest, (_e, sampleText: string) => testAi(sampleText))
 
   ipcMain.handle(IpcChannels.logsList, (_e, params?: LogListParams) => listLogs(params))
   ipcMain.handle(IpcChannels.logsClear, () => {

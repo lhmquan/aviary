@@ -9,7 +9,8 @@ import {
   Clock,
   CalendarClock,
   ArrowRight,
-  BarChart3
+  BarChart3,
+  Activity
 } from 'lucide-react'
 import type { Account, Schedule, AppSettings } from '@shared/types'
 
@@ -310,6 +311,13 @@ function ActionChip({ action, schedule, isSystem }: { action: Schedule['action']
     return (
       <span className="qc-action action-comment" title={`Bình luận ${schedule.commentCount} bài`}>
         <MessageCircle size={11} /> Bình luận
+      </span>
+    )
+  }
+  if (action === 'interact') {
+    return (
+      <span className="qc-action action-interact" title={`Tương tác ${schedule.interactDurationMinutes} phút`}>
+        <Activity size={11} /> Tương tác
       </span>
     )
   }

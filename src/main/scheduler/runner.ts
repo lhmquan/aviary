@@ -21,6 +21,7 @@ import {
 } from '../n8n/N8nConnector'
 import { browserManager } from '../browser/BrowserManager'
 import { postTweet, deleteTweetsFromProfile, scrollProfileCollectTweetUrls, commentOnTweet } from '../actions/XActions'
+import { runInteractSession } from '../actions/InteractSession'
 import { insertLog, pruneLogs } from '../db/logs'
 import {
   insertCollectedLinks,
@@ -763,6 +764,83 @@ export async function runCommentForAccount(
       step: ok ? 'done' : 'partial',
       limitReached: countToday + commentedCount >= dailyLimit
     }
+  } finally {
+    // Luôn đóng profile nếu do pipeline tự mở.
+    if (openedByUs) {
+      await browserManager.closeProfile(accountId).catch(() => {})
+    }
+  }
+}
+
+// Pipeline phiên tương tác feed (scroll/like/comment AI/refresh) theo thời lượng.
+// BLOCKING tới hết phiên — giữ slot suốt thời lượng (nhả slot chỉ sau khi return).
+// Nhờ đó lịch khác của CÙNG account phải chờ (activeAccountIds trong scheduler).
+export async function runInteractForAccount(
+  accountId: string,
+  opts?: { source?: 'manual' | 'schedule'; durationMinutes?: number }
+): Promise<{ ok: boolean; error?: string }> {
+  const account = getAccount(accountId)
+  if (!account) throw new Error(`Account không tồn tại: ${accountId}`)
+  const logEventType = opts?.source === 'schedule' ? 'run_interact' : 'interact'
+  const label = account.label
+  const durationMinutes = Math.max(1, opts?.durationMinutes ?? 15)
+
+  emitProgress({ accountId, accountLabel: label, stage: 'prepare', message: 'Đang kiểm tra profile…', busy: true })
+
+  // Mở profile nếu chưa mở. Ghi nhận để đóng khi xong (dù thành công hay lỗi).
+  let openedByUs = false
+  let context = browserManager.getContext(accountId)
+  if (!context) {
+    emitProgress({ accountId, accountLabel: label, stage: 'open', message: 'Đang mở profile…', busy: true })
+    await browserManager.openProfile(account)
+    setAccountStatus(accountId, 'logged_in')
+    context = browserManager.getContext(accountId)
+    openedByUs = true
+  }
+  if (!context) throw new Error('Không mở được profile.')
+
+  try {
+    emitProgress({
+      accountId,
+      accountLabel: label,
+      stage: 'interact',
+      message: `Bắt đầu phiên tương tác ${durationMinutes} phút…`,
+      busy: true
+    })
+    const result = await runInteractSession(
+      context,
+      accountId,
+      { durationMinutes },
+      (message) => emitProgress({ accountId, accountLabel: label, stage: 'interact', message, busy: true })
+    )
+
+    const caption = result.ok
+      ? `Tương tác ${durationMinutes} phút · cuộn ${result.scrolls} · tim ${result.likes} · bình luận ${result.comments} · F5 ${result.refreshes}`
+      : `Phiên tương tác lỗi`
+    insertLog({
+      accountId,
+      accountLabel: label,
+      ts: Date.now(),
+      ok: result.ok,
+      caption,
+      url: null,
+      error: result.ok ? null : (result.error ?? 'Lỗi không xác định'),
+      step: result.ok ? 'done' : 'interact',
+      screenshot: null,
+      eventType: logEventType,
+      // Link các bài đã bình luận trong phiên — hiển thị chi tiết (gập/mở) ở Nhật ký.
+      urls: result.commentedUrls
+    })
+    pruneLogs()
+
+    emitProgress({
+      accountId,
+      accountLabel: label,
+      stage: result.ok ? 'done' : 'error',
+      message: result.ok ? `Hoàn thành — ${caption}` : `Lỗi: ${result.error ?? 'không xác định'}`,
+      busy: false
+    })
+    return { ok: result.ok, error: result.error }
   } finally {
     // Luôn đóng profile nếu do pipeline tự mở.
     if (openedByUs) {
