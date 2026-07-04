@@ -1,5 +1,5 @@
 import type { BrowserContext, Page, Locator } from 'patchright'
-import { existsSync, mkdirSync } from 'fs'
+import { existsSync, mkdirSync, statSync } from 'fs'
 import { join } from 'path'
 import { app } from 'electron'
 import type { PostResult, DeleteResult, DeleteMode, CommentResult } from '../../shared/types'
@@ -14,6 +14,55 @@ export type StepReporter = (message: string) => void
 
 // No-op mặc định để gọi callback an toàn khi không truyền.
 const noop: StepReporter = () => {}
+
+// Sau khi bấm Post, X phải upload media full-res lên server rồi mới đóng modal. Video dài
+// (vd 11 phút, vài trăm MB) qua proxy chậm mất rất lâu → mốc chờ CỐ ĐỊNH dễ hết giờ oan.
+// Nên tính timeout THEO tổng dung lượng media: giả định băng thông upload thấp (~600 KB/s
+// khi qua proxy) + hệ số dự phòng, kẹp trong [sàn, trần]. KHÔNG hạ chất lượng media.
+const UPLOAD_FLOOR_MS = 120_000 // sàn 2 phút (media nhẹ vẫn chờ đủ)
+const UPLOAD_CEIL_MS = 900_000 // trần 15 phút (chặn treo vô hạn khi X lỗi thật)
+const ASSUMED_UPLOAD_BYTES_PER_SEC = 600 * 1024 // ~600 KB/s — băng thông upload dè dặt qua proxy
+
+// Tổng dung lượng các file media (bytes). File không đọc được -> bỏ qua (0).
+function totalMediaBytes(paths: string[]): number {
+  let sum = 0
+  for (const p of paths) {
+    try {
+      sum += statSync(p).size
+    } catch {
+      /* file không tồn tại/không đọc được -> bỏ qua */
+    }
+  }
+  return sum
+}
+
+// Timeout chờ X xử lý/upload media, giãn theo dung lượng. Media rỗng -> dùng sàn.
+function mediaWaitTimeout(paths: string[]): number {
+  const bytes = totalMediaBytes(paths)
+  if (bytes <= 0) return UPLOAD_FLOOR_MS
+  // Thời gian upload ước tính + 50% dự phòng cho encode phía server / mạng dao động.
+  const estimateMs = (bytes / ASSUMED_UPLOAD_BYTES_PER_SEC) * 1000 * 1.5
+  return Math.min(UPLOAD_CEIL_MS, Math.max(UPLOAD_FLOOR_MS, Math.round(estimateMs)))
+}
+
+// X từ chối video dài quá giới hạn tài khoản thường (không premium) bằng 1 toast/inline:
+//   EN: "The duration of the video you tried to upload was too long." + "Upgrade to unlock"
+//   VI: "Thời lượng video bạn đang tải lên quá dài." (tuỳ ngôn ngữ UI)
+// Regex khớp cả 2 ngôn ngữ + biến thể. Đây là lỗi KHÔNG thể tự khắc phục với tài khoản hiện
+// tại (chỉ hết khi lên premium) -> bài này cần bỏ qua để đăng bài kế.
+const VIDEO_TOO_LONG_REGEX =
+  /duration of the video.*too long|video.*too long|thời lượng video.*quá dài|video.*quá dài/i
+
+// Quét toàn trang tìm thông báo "video quá dài". Đọc innerText của <body> (toast của X nằm
+// trong DOM, không phải dialog compose). Dùng evaluate STRING để TS không type-check `document`.
+async function detectVideoTooLong(page: Page): Promise<boolean> {
+  try {
+    const bodyText = (await page.evaluate('document.body.innerText')) as string
+    return typeof bodyText === 'string' && VIDEO_TOO_LONG_REGEX.test(bodyText)
+  } catch {
+    return false
+  }
+}
 
 function screenshotPath(accountId: string, prefix = 'post'): string {
   const dir = join(app.getPath('userData'), 'logs')
@@ -241,6 +290,11 @@ export async function postTweet(
   // Có media nặng (nhất là qua proxy) thì X cần upload full-res lên server sau khi bấm
   // Post → modal đóng chậm. Dùng cờ này để nới các mốc chờ, KHÔNG hạ chất lượng media.
   const hasMedia = !!(mediaPaths && mediaPaths.length > 0)
+  // Timeout chờ media (preview / nút Post bật / modal đóng) giãn theo dung lượng thật của
+  // file — video 11 phút vài trăm MB được chờ lâu hơn nhiều so với ảnh nhỏ. Không media
+  // thì dùng sàn. Bước ffmpeg xử lý video nằm TRƯỚC hàm này (runner.downloadAssets) nên
+  // KHÔNG bị cộng vào timeout đăng bài — mốc chờ dưới đây chỉ tính từ lúc thao tác compose.
+  const mediaTimeout = hasMedia ? mediaWaitTimeout(mediaPaths!) : UPLOAD_FLOOR_MS
 
   try {
     page = await context.newPage()
@@ -336,7 +390,7 @@ export async function postTweet(
       await scope
         .locator('[data-testid="attachments"]:visible')
         .first()
-        .waitFor({ timeout: 90_000, state: 'visible' })
+        .waitFor({ timeout: mediaTimeout, state: 'visible' })
         .catch(() => {
           throw new Error(
             'Đã chọn file nhưng X không hiển thị media preview — không đăng bài thiếu ảnh/video.'
@@ -381,7 +435,7 @@ export async function postTweet(
           typeof el.getAttribute === 'function' &&
           el.getAttribute('aria-disabled') !== 'true',
         await postBtn.elementHandle(),
-        { timeout: 120_000 }
+        { timeout: mediaTimeout }
       )
       .catch(() => {})
 
@@ -426,17 +480,52 @@ export async function postTweet(
       return { ok: true, url: page.url() }
     }
 
-    // Tín hiệu đăng thành công: KHÔNG còn dialog nào hiện (modal compose đóng). Sau khi
-    // bấm Post, X upload media full-res lên server rồi mới đóng modal — có media nặng qua
-    // proxy chậm thì lâu hơn nhiều, nên nới timeout theo có media (không hạ chất lượng).
+    // X có thể từ chối NGAY vì video dài quá giới hạn tài khoản thường (chưa premium).
+    // Bài này không đăng được -> báo runner markDone để bỏ qua, đăng bài kế.
+    if (hasMedia && (await detectVideoTooLong(page))) {
+      report('X báo video quá dài — bỏ qua bài này…')
+      return {
+        ok: false,
+        videoTooLong: true,
+        step: 'video_too_long',
+        error:
+          'Video dài quá giới hạn tài khoản thường (cần Premium). Bỏ qua bài này, sẽ đăng bài kế.'
+      }
+    }
+
+    // Tín hiệu đăng thành công: modal compose đóng (KHÔNG còn dialog hiện) HOẶC URL nhảy
+    // sang /status/. Sau khi bấm Post, X upload media full-res lên server rồi mới đóng modal
+    // — media nặng qua proxy chậm thì rất lâu, nên timeout giãn theo dung lượng (mediaTimeout,
+    // sàn 2' / trần 15'). Poll 1s/lần để bắt tín hiệu NGAY khi xảy ra, không chờ hết timeout.
     // :visible lọc sẵn dialog ẩn vốn tồn tại trong DOM.
-    const modalCloseTimeout = hasMedia ? 120_000 : 45_000
+    const modalCloseTimeout = hasMedia ? mediaTimeout : 45_000
     report('Đang chờ X xác nhận đăng bài…')
     const dialog = page.locator('[role="dialog"]:visible').first()
-    const posted = await dialog
-      .waitFor({ state: 'hidden', timeout: modalCloseTimeout })
-      .then(() => true)
-      .catch(() => false)
+    const deadline = Date.now() + modalCloseTimeout
+    let posted = false
+    while (Date.now() < deadline) {
+      if (page.url().includes('/status/')) {
+        return { ok: true, url: page.url() }
+      }
+      // Lỗi "video quá dài" có thể xuất hiện MUỘN (sau khi upload đủ dung lượng X mới
+      // validate) -> kiểm tra trong vòng poll, không chỉ ngay sau khi bấm Post.
+      if (hasMedia && (await detectVideoTooLong(page))) {
+        report('X báo video quá dài — bỏ qua bài này…')
+        return {
+          ok: false,
+          videoTooLong: true,
+          step: 'video_too_long',
+          error:
+            'Video dài quá giới hạn tài khoản thường (cần Premium). Bỏ qua bài này, sẽ đăng bài kế.'
+        }
+      }
+      const stillOpen = await dialog.isVisible().catch(() => false)
+      if (!stillOpen) {
+        posted = true
+        break
+      }
+      await sleep(1000)
+    }
 
     if (page.url().includes('/status/')) {
       return { ok: true, url: page.url() }
@@ -459,8 +548,9 @@ export async function postTweet(
     // dấu n8n done nhầm khi thực ra chưa đăng).
     return {
       ok: false,
-      error:
-        'Đã bấm Post nhưng modal chưa đóng sau thời gian chờ (overlay/đường truyền chậm hoặc X báo lỗi). Vui lòng kiểm tra lại trên X trước khi thử lại.',
+      error: hasMedia
+        ? `Đã bấm Post nhưng modal chưa đóng sau ${Math.round(modalCloseTimeout / 60_000)} phút chờ upload media (video nặng qua proxy chậm hoặc X báo lỗi). Vui lòng kiểm tra lại trên X trước khi thử lại.`
+        : 'Đã bấm Post nhưng modal chưa đóng sau thời gian chờ (overlay/đường truyền chậm hoặc X báo lỗi). Vui lòng kiểm tra lại trên X trước khi thử lại.',
       step: 'post'
     }
   } catch (e) {

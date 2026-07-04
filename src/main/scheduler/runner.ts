@@ -268,6 +268,46 @@ export async function runPostForAccount(
       await rm(jobDir, { recursive: true, force: true }).catch(() => {})
     }
 
+    // X từ chối vì video dài quá giới hạn tài khoản (chưa premium). Bài này KHÔNG đăng
+    // được với tài khoản hiện tại -> markDone (reason='video_too_long') để n8n đánh dấu
+    // trong sheet, KHÔNG lấy lại; ghi log skip; đăng bài kế ở lần chạy sau. Khi lên
+    // premium thì video dài đăng được nên không rơi vào nhánh này.
+    if (result?.videoTooLong) {
+      emitProgress({ accountId, accountLabel: label, stage: 'markdone', message: 'Video quá dài — đang báo n8n đánh dấu bỏ qua…', busy: true })
+      const md = await markDone({
+        accountId,
+        assetUrl: account.assetUrl,
+        id: payload.id,
+        title: payload.caption ?? '',
+        postUrl: null,
+        url: payload.sourceUrl ?? null,
+        reason: 'video_too_long'
+      })
+      insertLog({
+        accountId,
+        accountLabel: account.label,
+        ts: Date.now(),
+        ok: false,
+        caption: fullCaption,
+        url: null,
+        error: `Bỏ qua (video quá dài — cần Premium)${md.ok ? '' : ` · markdone lỗi: ${md.error}`}`,
+        step: 'skipped',
+        screenshot: null,
+        eventType: logEventType
+      })
+      pruneLogs()
+      emitProgress({
+        accountId,
+        accountLabel: label,
+        stage: 'done',
+        message: md.ok
+          ? 'Đã bỏ qua bài video quá dài (đã báo n8n). Bấm đăng lại để lấy bài kế.'
+          : `Bỏ qua bài video quá dài — báo n8n thất bại: ${md.error}`,
+        busy: false
+      })
+      return { ok: false, skipped: true, videoTooLong: true, error: result.error }
+    }
+
     // Lưu nhật ký (DB) + prune. fullCaption (có hashtag) để user thấy đúng nội dung đã đăng.
     // eventType theo nguồn: manual='post', schedule='run' -> badge Nhật ký đúng loại.
     insertLog({

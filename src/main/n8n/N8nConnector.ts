@@ -205,15 +205,17 @@ export async function fetchPostPayload(
 
 // #3: báo về n8n rằng 1 bài đã xử lý xong -> n8n update sheet đánh dấu video done.
 // reason: 'posted' = đăng thành công; 'broken' = link hỏng (403/SKIP) cần đánh dấu để
-// không lấy lại. Gửi kèm id (ổn định nhất), title, accountId, assetUrl, postUrl (URL tweet X),
-// url (URL reddit gốc) để n8n tìm đúng dòng sheet (ưu tiên khớp theo id, fallback title/url).
+// không lấy lại; 'video_too_long' = X từ chối vì video dài quá giới hạn tài khoản thường
+// (chưa premium) — bỏ qua để đăng bài kế. Gửi kèm id (ổn định nhất), title, accountId,
+// assetUrl, postUrl (URL tweet X), url (URL reddit gốc) để n8n tìm đúng dòng sheet
+// (ưu tiên khớp theo id, fallback title/url).
 export async function markDone(p: {
   accountId: string
   assetUrl: string | null
   title: string
   postUrl: string | null
   url?: string | null
-  reason?: 'posted' | 'broken'
+  reason?: 'posted' | 'broken' | 'video_too_long'
   id?: string | null
 }): Promise<{ ok: boolean; error?: string }> {
   try {

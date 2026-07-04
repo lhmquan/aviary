@@ -217,6 +217,10 @@ export interface PostResult {
   screenshot?: string
   // Bài bị bỏ qua do link hỏng (n8n SKIP hoặc tải 403). Đã markdone, user tự bấm lại.
   skipped?: boolean
+  // X từ chối vì video dài quá giới hạn tài khoản (không premium). Bài này KHÔNG đăng được
+  // với tài khoản hiện tại -> runner sẽ markDone để bỏ qua, đăng bài kế. Đổi lên premium
+  // thì video dài đăng được nên không set cờ này.
+  videoTooLong?: boolean
 }
 
 // Kết quả xoá bài trên X
