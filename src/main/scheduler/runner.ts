@@ -22,6 +22,7 @@ import {
 import { browserManager } from '../browser/BrowserManager'
 import { postTweet, deleteTweetsFromProfile, scrollProfileCollectTweetUrls, commentOnTweet } from '../actions/XActions'
 import { runInteractSession } from '../actions/InteractSession'
+import { isStopRequested, clearStop } from './cancel'
 import { insertLog, pruneLogs } from '../db/logs'
 import {
   insertCollectedLinks,
@@ -143,6 +144,8 @@ export async function runPostForAccount(
   if (!account) throw new Error(`Account không tồn tại: ${accountId}`)
   const logEventType = opts?.source === 'schedule' ? 'run' : 'post'
   const label = account.label
+  // Xoá cờ dừng của lần chạy trước (nếu có) để không dừng nhầm lần chạy mới.
+  clearStop(accountId)
 
   emitProgress({ accountId, accountLabel: label, stage: 'prepare', message: 'Đang kiểm tra profile…', busy: true })
 
@@ -266,6 +269,32 @@ export async function runPostForAccount(
       // Luôn xoá jobDir — screenshot lỗi đã được lưu riêng trong logs, không cần
       // giữ media download (10-100MB) lại để tránh rò rỉ ổ đĩa.
       await rm(jobDir, { recursive: true, force: true }).catch(() => {})
+    }
+
+    // User bấm Dừng khi đang chờ đăng -> bài CHƯA đăng chắc chắn -> KHÔNG markDone (để n8n
+    // giữ nguyên, lần sau đăng lại). Ghi log 'stopped', không đánh dấu lỗi đỏ.
+    if (result?.stopped) {
+      insertLog({
+        accountId,
+        accountLabel: account.label,
+        ts: Date.now(),
+        ok: true,
+        caption: fullCaption,
+        url: null,
+        error: null,
+        step: 'stopped',
+        screenshot: null,
+        eventType: logEventType
+      })
+      pruneLogs()
+      emitProgress({
+        accountId,
+        accountLabel: label,
+        stage: 'done',
+        message: 'Đã dừng đăng bài theo yêu cầu.',
+        busy: false
+      })
+      return result
     }
 
     // X từ chối vì video dài quá giới hạn tài khoản (chưa premium). Bài này KHÔNG đăng
@@ -394,6 +423,7 @@ export async function runDeleteForAccount(
 
   const logEventType = opts?.source === 'schedule' ? 'run_delete' : 'delete'
   const label = account.label
+  clearStop(accountId)
 
   emitProgress({ accountId, accountLabel: label, stage: 'prepare', message: 'Đang kiểm tra profile…', busy: true })
 
@@ -500,6 +530,7 @@ export async function runCommentForAccount(
   if (!account) throw new Error(`Account không tồn tại: ${accountId}`)
   const logEventType = opts?.source === 'schedule' ? 'run_comment' : 'comment'
   const label = account.label
+  clearStop(accountId)
 
   const commentCount = Math.max(1, opts?.commentCount ?? 1)
   const commentIntervalSeconds = Math.max(5, opts?.commentIntervalSeconds ?? 60)
@@ -706,7 +737,13 @@ export async function runCommentForAccount(
     //    Gốc -> comment -> update 'commented'. Lỗi -> update 'fail' (thử lại lần sau).
     let failCount = 0
     let processedIndex = 0
+    let stoppedEarly = false
     while (commentedCount < allowedThisRun && processedIndex < unprocessed.length) {
+      // User bấm Dừng -> thoát vòng, ghi log 'stopped' bên dưới.
+      if (isStopRequested(accountId)) {
+        stoppedEarly = true
+        break
+      }
       const url = unprocessed[processedIndex]
       processedIndex++
       const isLast = processedIndex >= unprocessed.length || commentedCount + 1 >= allowedThisRun
@@ -768,6 +805,31 @@ export async function runCommentForAccount(
 
     // 9. Prune history, ghi log tổng, báo status.
     pruneCommentHistory(accountId)
+    // Bị dừng giữa chừng -> ghi log 'stopped', trả về số đã bình luận tới lúc đó.
+    if (stoppedEarly) {
+      insertLog({
+        accountId,
+        accountLabel: label,
+        ts: Date.now(),
+        ok: true,
+        caption: `Đã dừng — bình luận ${commentedCount}/${allowedThisRun} bài trước khi dừng`,
+        url: commentedUrls[0] ?? null,
+        error: null,
+        step: 'stopped',
+        screenshot: null,
+        eventType: logEventType,
+        urls: commentedUrls
+      })
+      pruneLogs()
+      emitProgress({
+        accountId,
+        accountLabel: label,
+        stage: 'done',
+        message: `Đã dừng — đã bình luận ${commentedCount} bài trước khi dừng.`,
+        busy: false
+      })
+      return { ok: true, commentedCount, urls: commentedUrls, step: 'stopped', stopped: true }
+    }
     const ok = failCount === 0
     const caption =
       commentedCount > 0
@@ -824,6 +886,7 @@ export async function runInteractForAccount(
   const logEventType = opts?.source === 'schedule' ? 'run_interact' : 'interact'
   const label = account.label
   const durationMinutes = Math.max(1, opts?.durationMinutes ?? 15)
+  clearStop(accountId)
 
   emitProgress({ accountId, accountLabel: label, stage: 'prepare', message: 'Đang kiểm tra profile…', busy: true })
 
@@ -850,13 +913,22 @@ export async function runInteractForAccount(
     const result = await runInteractSession(
       context,
       accountId,
-      { durationMinutes },
+      {
+        durationMinutes,
+        aiTone: account.aiCommentTone,
+        aiLang: account.aiCommentLang,
+        aiFormat: account.aiCommentFormat
+      },
       (message) => emitProgress({ accountId, accountLabel: label, stage: 'interact', message, busy: true })
     )
 
-    const caption = result.ok
-      ? `Tương tác ${durationMinutes} phút · cuộn ${result.scrolls} · tim ${result.likes} · bình luận ${result.comments} · F5 ${result.refreshes}`
-      : `Phiên tương tác lỗi`
+    // Bị dừng giữa chừng -> nhãn "Đã dừng", step 'stopped' (không phải lỗi đỏ).
+    const stat = `cuộn ${result.scrolls} · tim ${result.likes} · bình luận ${result.comments} · F5 ${result.refreshes}`
+    const caption = result.stopped
+      ? `Đã dừng phiên tương tác · ${stat}`
+      : result.ok
+        ? `Tương tác ${durationMinutes} phút · ${stat}`
+        : `Phiên tương tác lỗi`
     insertLog({
       accountId,
       accountLabel: label,
@@ -865,7 +937,7 @@ export async function runInteractForAccount(
       caption,
       url: null,
       error: result.ok ? null : (result.error ?? 'Lỗi không xác định'),
-      step: result.ok ? 'done' : 'interact',
+      step: result.stopped ? 'stopped' : result.ok ? 'done' : 'interact',
       screenshot: null,
       eventType: logEventType,
       // Link các bài đã bình luận trong phiên — hiển thị chi tiết (gập/mở) ở Nhật ký.
@@ -877,7 +949,11 @@ export async function runInteractForAccount(
       accountId,
       accountLabel: label,
       stage: result.ok ? 'done' : 'error',
-      message: result.ok ? `Hoàn thành — ${caption}` : `Lỗi: ${result.error ?? 'không xác định'}`,
+      message: result.stopped
+        ? `Đã dừng — ${stat}`
+        : result.ok
+          ? `Hoàn thành — ${caption}`
+          : `Lỗi: ${result.error ?? 'không xác định'}`,
       busy: false
     })
     return { ok: result.ok, error: result.error }

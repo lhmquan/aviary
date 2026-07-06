@@ -1,8 +1,9 @@
 import type { BrowserContext, Page } from 'patchright'
-import { scrollDown, commentOnTweet, type StepReporter } from './XActions'
+import { scrollDown, commentOnTweet, collectTweetContext, type StepReporter } from './XActions'
 import { generateComment } from '../ai/AiClient'
 import { getAllSettings } from '../db/settings'
 import { countCommentsToday, insertCommentedLink } from '../db/comment_history'
+import { isStopRequested } from '../scheduler/cancel'
 
 // Phiên "tương tác feed" mô phỏng người thật: cuộn feed, thỉnh thoảng like/comment/F5.
 // Chạy theo NGÂN SÁCH THỜI GIAN — lặp tới khi hết thời lượng, mỗi vòng bốc 1 action
@@ -18,6 +19,8 @@ export interface InteractResult {
   refreshes: number
   // URL các bài đã bình luận thành công trong phiên (để nhật ký hiển thị chi tiết cho user).
   commentedUrls: string[]
+  // Phiên bị user bấm Dừng giữa chừng (không phải lỗi) — dùng để ghi nhật ký đúng loại.
+  stopped?: boolean
   error?: string
 }
 
@@ -90,12 +93,19 @@ async function readCommentableTweet(
     const idx = (start + i) % count
     const article = articles.nth(idx)
     if (!(await article.isVisible().catch(() => false))) continue
-    const href = await article
+    const rawHref = await article
       .locator('a[href*="/status/"]')
       .first()
       .getAttribute('href')
       .catch(() => null)
-    if (!href || handledHrefs.has(href)) continue
+    if (!rawHref) continue
+    // Article chứa NHIỀU link /status/: permalink (timestamp), /analytics, /photo/1…
+    // Cắt về đúng permalink gốc ".../status/<id>" để không mở nhầm trang analytics
+    // (trang analytics không có ô reply -> click timeout + 0 reply).
+    const m = rawHref.match(/^(.*\/status\/\d+)/)
+    if (!m) continue
+    const href = m[1]
+    if (handledHrefs.has(href)) continue
     const text = await article
       .locator('[data-testid="tweetText"]')
       .first()
@@ -109,16 +119,16 @@ async function readCommentableTweet(
   return null
 }
 
-// F5 feed: về x.com/home hoặc x.com/explore ngẫu nhiên.
+// F5 feed: luôn về x.com/home. KHÔNG dùng /explore vì trang đó chỉ có gợi ý follow +
+// hashtag trend, không có bài để tương tác -> lãng phí lượt.
 async function refreshFeed(page: Page): Promise<void> {
-  const target = Math.random() < 0.7 ? 'https://x.com/home' : 'https://x.com/explore'
-  await page.goto(target, { waitUntil: 'domcontentloaded', timeout: 30_000 }).catch(() => {})
+  await page.goto('https://x.com/home', { waitUntil: 'domcontentloaded', timeout: 30_000 }).catch(() => {})
 }
 
 export async function runInteractSession(
   context: BrowserContext,
   accountId: string,
-  opts: { durationMinutes: number },
+  opts: { durationMinutes: number; aiTone: string; aiLang: string; aiFormat: string },
   report: StepReporter = noop
 ): Promise<InteractResult> {
   const durationMs = Math.max(1, opts.durationMinutes) * 60_000
@@ -159,6 +169,11 @@ export async function runInteractSession(
   }
 
   while (Date.now() < sessionEnd) {
+    // User bấm Dừng -> thoát phiên ngay (không phải lỗi).
+    if (isStopRequested(accountId)) {
+      report('Đã dừng phiên theo yêu cầu.')
+      return { ok: true, scrolls, likes, comments, refreshes, commentedUrls, stopped: true }
+    }
     // Xác định có được phép comment ở vòng này không.
     const nowMs = Date.now()
     const commentedToday = countCommentsToday(accountId)
@@ -213,8 +228,21 @@ export async function runInteractSession(
           await sleep(thinkTime(2000, 5000))
         } else {
           commentedHrefs.add(target.url)
+          // Thu thập thêm ngữ cảnh: mở bài viết, đọc caption đầy đủ + tối đa 10 reply đầu
+          // (ít hơn thì lấy hết). Nhờ vậy AI có ngữ cảnh chính xác hơn -> bình luận liên
+          // quan hơn. Lỗi đọc reply không chặn: fallback về caption từ feed.
+          report('Đang đọc bài viết + reply để lấy ngữ cảnh…')
+          const ctx = await collectTweetContext(context, target.url, 10, accountId, (m) =>
+            report(m)
+          )
+          const captionForAi = ctx.caption?.trim() ? ctx.caption : target.text
           report('Đang nhờ AI sinh bình luận…')
-          const ai = await generateComment(target.text)
+          const ai = await generateComment(captionForAi, {
+            tone: opts.aiTone,
+            lang: opts.aiLang,
+            format: opts.aiFormat,
+            replies: ctx.replies
+          })
           if (ai.ok && ai.comment) {
             const r = await commentOnTweet(context, target.url, ai.comment, accountId, (m) =>
               report(m)

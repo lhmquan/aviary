@@ -683,6 +683,9 @@ function AccountForm(props: {
   const [assetUrl, setAssetUrl] = useState(account?.assetUrl ?? '')
   const [hashtag, setHashtag] = useState(account?.hashtag ?? '')
   const [captionPrefix, setCaptionPrefix] = useState(account?.captionPrefix ?? '')
+  const [aiCommentTone, setAiCommentTone] = useState(account?.aiCommentTone ?? 'random')
+  const [aiCommentLang, setAiCommentLang] = useState(account?.aiCommentLang ?? 'en')
+  const [aiCommentFormat, setAiCommentFormat] = useState(account?.aiCommentFormat ?? 'random')
   const [headless, setHeadless] = useState(account?.headless ?? false)
   const [saving, setSaving] = useState(false)
   // Thông tin X tự fetch từ username.
@@ -736,6 +739,9 @@ function AccountForm(props: {
       assetUrl: assetUrl.trim() || null,
       hashtag: hashtag.trim() || null,
       captionPrefix: captionPrefix || null,
+      aiCommentTone,
+      aiCommentLang,
+      aiCommentFormat,
       headless
     }
     try {
@@ -834,6 +840,37 @@ function AccountForm(props: {
             onChange={(e) => setHashtag(e.target.value)}
             placeholder="VD: f1, vietnam, funny — có thể nhập không cần dấu #"
           />
+        </label>
+        <label className="field">
+          <span>Giọng điệu bình luận AI (tác vụ Tương tác feed)</span>
+          <select value={aiCommentTone} onChange={(e) => setAiCommentTone(e.target.value)}>
+            <option value="random">Ngẫu nhiên</option>
+            <option value="friendly">Thân thiện</option>
+            <option value="humorous">Hài hước</option>
+            <option value="neutral">Trung lập</option>
+            <option value="concise">Ngắn gọn</option>
+          </select>
+        </label>
+        <label className="field">
+          <span>Ngôn ngữ bình luận AI</span>
+          <select value={aiCommentLang} onChange={(e) => setAiCommentLang(e.target.value)}>
+            <option value="auto">Theo ngôn ngữ bài viết</option>
+            <option value="vi">Tiếng Việt</option>
+            <option value="en">Tiếng Anh</option>
+          </select>
+        </label>
+        <label className="field">
+          <span>Định dạng bình luận AI</span>
+          <select value={aiCommentFormat} onChange={(e) => setAiCommentFormat(e.target.value)}>
+            <option value="random">Ngẫu nhiên</option>
+            <option value="normal">Bình thường</option>
+            <option value="question">Câu hỏi</option>
+            <option value="debate">Tranh luận</option>
+            <option value="info">Thông tin</option>
+          </select>
+          <small className="hint">
+            "Ngẫu nhiên" sẽ bốc lại cho mỗi bình luận. Độ dài tối đa cấu hình chung ở tab Cài đặt.
+          </small>
         </label>
         <label className="field checkbox-field">
           <input

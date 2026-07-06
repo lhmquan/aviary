@@ -14,8 +14,8 @@ const DEFAULTS: AppSettings = {
   aiBaseUrl: '',
   aiApiKey: '',
   aiModel: '',
-  aiCommentTone: 'friendly',
-  aiCommentLang: 'auto'
+  // Độ dài bình luận tối đa (ký tự). Tone/ngôn ngữ/định dạng đã chuyển per-account.
+  aiCommentMaxLen: 200
 }
 
 export function getAllSettings(): AppSettings {
@@ -41,8 +41,9 @@ export function getAllSettings(): AppSettings {
     aiBaseUrl: map.get('aiBaseUrl') ?? DEFAULTS.aiBaseUrl,
     aiApiKey: map.get('aiApiKey') ?? DEFAULTS.aiApiKey,
     aiModel: map.get('aiModel') ?? DEFAULTS.aiModel,
-    aiCommentTone: map.get('aiCommentTone') ?? DEFAULTS.aiCommentTone,
-    aiCommentLang: map.get('aiCommentLang') ?? DEFAULTS.aiCommentLang
+    aiCommentMaxLen: map.has('aiCommentMaxLen')
+      ? Number(map.get('aiCommentMaxLen'))
+      : DEFAULTS.aiCommentMaxLen
   }
 }
 

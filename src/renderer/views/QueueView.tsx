@@ -10,7 +10,8 @@ import {
   CalendarClock,
   ArrowRight,
   BarChart3,
-  Activity
+  Activity,
+  Square
 } from 'lucide-react'
 import type { Account, Schedule, AppSettings } from '@shared/types'
 
@@ -47,6 +48,14 @@ export default function QueueView(): JSX.Element {
   const [live, setLive] = useState<Record<string, LiveProgress>>({})
   const liveRef = useRef(live)
   liveRef.current = live
+  // Tập accountId user đã bấm Dừng nhưng phiên chưa kết thúc (để hiện "Đang dừng…").
+  const [stopping, setStopping] = useState<Set<string>>(new Set())
+
+  // Bấm Dừng: gọi IPC dừng + đánh dấu đang-dừng. Cờ tự xoá khi phiên hết busy (onProgress).
+  const stopAccount = useCallback((accountId: string) => {
+    setStopping((prev) => new Set(prev).add(accountId))
+    window.aviary.post.stop(accountId).catch(() => {})
+  }, [])
 
   const refresh = useCallback(async () => {
     setLoading(true)
@@ -81,11 +90,17 @@ export default function QueueView(): JSX.Element {
         if (p.busy) {
           setLive((prev) => ({ ...prev, [id]: { stage: p.stage, message: p.message } }))
         } else {
-          // Xong/lỗi -> xoá dòng sống của tài khoản đó.
+          // Xong/lỗi -> xoá dòng sống + cờ đang-dừng của tài khoản đó.
           setLive((prev) => {
             if (!prev[id]) return prev
             const next = { ...prev }
             delete next[id]
+            return next
+          })
+          setStopping((prev) => {
+            if (!prev.has(id)) return prev
+            const next = new Set(prev)
+            next.delete(id)
             return next
           })
         }
@@ -186,6 +201,8 @@ export default function QueueView(): JSX.Element {
               live={live[s.accountId]}
               isNext={s.id === nextUpId}
               slotsFull={runningCount >= concurrency}
+              stopping={stopping.has(s.accountId)}
+              onStop={stopAccount}
             />
           ))}
         </div>
@@ -202,8 +219,10 @@ function QueueCard(props: {
   live: LiveProgress | undefined
   isNext: boolean
   slotsFull: boolean
+  stopping: boolean
+  onStop: (accountId: string) => void
 }): JSX.Element {
-  const { schedule: s, status, account: acc, live, isNext, slotsFull } = props
+  const { schedule: s, status, account: acc, live, isNext, slotsFull, stopping, onStop } = props
   const meta = STATUS_META[status]
   // Phân biệt khi due nhưng chưa chạy: slot đầy -> "chờ slot trống"; slot còn trống ->
   // "đang xếp hàng" (sắp được nhặt ngay, chỉ thoáng qua) -> tránh báo "chờ slot" sai.
@@ -272,16 +291,30 @@ function QueueCard(props: {
         )}
       </div>
 
-      {/* Cột phải: trạng thái + countdown */}
+      {/* Cột phải: trạng thái + countdown. Khi đang chạy: badge + nút Dừng nằm NGANG hàng. */}
       <div className="qc-right">
-        <span className={`qc-status ${meta.cls}`}>
-          {status === 'running' ? (
-            <Loader2 size={12} className="spin" />
-          ) : (
-            <span className="dot" />
+        <div className="qc-status-row">
+          <span className={`qc-status ${meta.cls}`}>
+            {status === 'running' ? (
+              <Loader2 size={12} className="spin" />
+            ) : (
+              <span className="dot" />
+            )}
+            {status === 'waiting' ? waitText : meta.text}
+          </span>
+          {/* Nút Dừng — chỉ hiện khi tài khoản đang chạy (không áp dụng tác vụ hệ thống). */}
+          {status === 'running' && !isSystem && (
+            <button
+              className="btn btn-stop qc-stop-btn"
+              onClick={() => onStop(s.accountId)}
+              disabled={stopping}
+              title="Dừng phiên đang chạy của tài khoản này"
+            >
+              {stopping ? <Loader2 size={13} className="spin" /> : <Square size={13} />}
+              {stopping ? 'Đang dừng…' : 'Dừng'}
+            </button>
           )}
-          {status === 'waiting' ? waitText : meta.text}
-        </span>
+        </div>
         {status !== 'running' && (
           <div className="qc-countdown">{nextRunDisplay(s, status, slotsFull)}</div>
         )}

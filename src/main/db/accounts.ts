@@ -17,6 +17,9 @@ interface AccountRow {
   headless: number
   hashtag: string | null
   caption_prefix: string | null
+  ai_comment_tone: string | null
+  ai_comment_lang: string | null
+  ai_comment_format: string | null
   followers: number | null
   following: number | null
   statuses: number | null
@@ -38,6 +41,9 @@ function toAccount(r: AccountRow): Account {
     headless: !!r.headless,
     hashtag: r.hashtag,
     captionPrefix: r.caption_prefix ?? null,
+    aiCommentTone: r.ai_comment_tone ?? 'random',
+    aiCommentLang: r.ai_comment_lang ?? 'en',
+    aiCommentFormat: r.ai_comment_format ?? 'random',
     followers: r.followers ?? null,
     following: r.following ?? null,
     statusesCount: r.statuses ?? null,
@@ -67,8 +73,8 @@ export function createAccount(input: AccountInput): Account {
   const profileDir = join(app.getPath('userData'), 'profiles', id)
   getDb()
     .prepare(
-      `INSERT INTO accounts (id, label, handle, proxy_id, profile_dir, fingerprint, status, asset_url, headless, hashtag, caption_prefix, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, NULL, 'new', ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO accounts (id, label, handle, proxy_id, profile_dir, fingerprint, status, asset_url, headless, hashtag, caption_prefix, ai_comment_tone, ai_comment_lang, ai_comment_format, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, NULL, 'new', ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       id,
@@ -80,6 +86,9 @@ export function createAccount(input: AccountInput): Account {
       input.headless ? 1 : 0,
       normalizeHashtag(input.hashtag),
       input.captionPrefix ?? null,
+      input.aiCommentTone ?? 'random',
+      input.aiCommentLang ?? 'en',
+      input.aiCommentFormat ?? 'random',
       now,
       now
     )
@@ -96,11 +105,15 @@ export function updateAccount(id: string, input: Partial<AccountInput>): Account
     assetUrl: input.assetUrl !== undefined ? input.assetUrl : existing.assetUrl,
     headless: input.headless !== undefined ? input.headless : existing.headless,
     hashtag: input.hashtag !== undefined ? input.hashtag : existing.hashtag,
-    captionPrefix: input.captionPrefix !== undefined ? input.captionPrefix : existing.captionPrefix
+    captionPrefix: input.captionPrefix !== undefined ? input.captionPrefix : existing.captionPrefix,
+    aiCommentTone: input.aiCommentTone !== undefined ? input.aiCommentTone : existing.aiCommentTone,
+    aiCommentLang: input.aiCommentLang !== undefined ? input.aiCommentLang : existing.aiCommentLang,
+    aiCommentFormat:
+      input.aiCommentFormat !== undefined ? input.aiCommentFormat : existing.aiCommentFormat
   }
   getDb()
     .prepare(
-      'UPDATE accounts SET label = ?, handle = ?, proxy_id = ?, asset_url = ?, headless = ?, hashtag = ?, caption_prefix = ?, updated_at = ? WHERE id = ?'
+      'UPDATE accounts SET label = ?, handle = ?, proxy_id = ?, asset_url = ?, headless = ?, hashtag = ?, caption_prefix = ?, ai_comment_tone = ?, ai_comment_lang = ?, ai_comment_format = ?, updated_at = ? WHERE id = ?'
     )
     .run(
       next.label,
@@ -110,6 +123,9 @@ export function updateAccount(id: string, input: Partial<AccountInput>): Account
       next.headless ? 1 : 0,
       normalizeHashtag(next.hashtag),
       next.captionPrefix ?? null,
+      next.aiCommentTone,
+      next.aiCommentLang,
+      next.aiCommentFormat,
       Date.now(),
       id
     )

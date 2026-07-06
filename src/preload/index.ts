@@ -73,6 +73,7 @@ const api: AviaryApi = {
   },
   post: {
     runNow: (accountId: string) => ipcRenderer.invoke(IpcChannels.postRunNow, accountId),
+    stop: (accountId: string) => ipcRenderer.invoke(IpcChannels.taskStop, accountId),
     onProgress: (cb) => {
       const listener = (_e: unknown, p: ProgressPayload): void => cb(p)
       ipcRenderer.on(IpcChannels.taskProgress, listener)

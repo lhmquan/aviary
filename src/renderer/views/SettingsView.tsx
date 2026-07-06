@@ -189,29 +189,19 @@ export default function SettingsView(): JSX.Element {
           />
         </label>
         <label className="field">
-          <span>Giọng điệu</span>
-          <select
-            value={settings.aiCommentTone}
-            onChange={(e) => update('aiCommentTone', e.target.value)}
-            style={{ width: 200 }}
-          >
-            <option value="friendly">Thân thiện</option>
-            <option value="humorous">Hài hước</option>
-            <option value="neutral">Trung lập</option>
-            <option value="concise">Ngắn gọn</option>
-          </select>
-        </label>
-        <label className="field">
-          <span>Ngôn ngữ bình luận</span>
-          <select
-            value={settings.aiCommentLang}
-            onChange={(e) => update('aiCommentLang', e.target.value)}
-            style={{ width: 200 }}
-          >
-            <option value="auto">Theo ngôn ngữ bài viết</option>
-            <option value="vi">Tiếng Việt</option>
-            <option value="en">Tiếng Anh</option>
-          </select>
+          <span>Độ dài bình luận tối đa (ký tự)</span>
+          <input
+            type="number"
+            min={20}
+            max={280}
+            value={settings.aiCommentMaxLen}
+            onChange={(e) => update('aiCommentMaxLen', Number(e.target.value) || 200)}
+            style={{ width: 120 }}
+          />
+          <small className="hint">
+            X cho tối đa 280 ký tự. AI được nhắc viết dưới giới hạn này; nếu vẫn vượt sẽ tự cắt.
+            Giọng điệu, ngôn ngữ và định dạng cấu hình riêng ở từng tài khoản (tab Tài khoản → Sửa).
+          </small>
         </label>
         <div className="row" style={{ marginTop: 4 }}>
           <button className="btn" disabled={aiTesting} onClick={testAi}>

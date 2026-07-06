@@ -19,6 +19,13 @@ export interface Account {
   hashtag: string | null
   // Tiền tố ghép vào ĐẦU caption khi đăng bài (KHÔNG gửi trong webhook).
   captionPrefix: string | null
+  // Cấu hình AI sinh bình luận RIÊNG cho tài khoản này (tác vụ Tương tác feed).
+  // tone: 'random' | 'friendly' | 'humorous' | 'neutral' | 'concise' ('random' = mỗi bình luận bốc ngẫu nhiên).
+  aiCommentTone: string
+  // lang: 'auto' (theo bài) | 'vi' | 'en'.
+  aiCommentLang: string
+  // format: 'random' | 'normal' | 'question' | 'debate' | 'info' ('random' = mỗi bình luận bốc ngẫu nhiên).
+  aiCommentFormat: string
   // '__local' (IP máy, mặc định) | '__random' (random mỗi lần chạy) | id proxy cụ thể.
   proxyId: string
   // Thống kê hồ sơ X (tự fetch từ username). null = chưa fetch.
@@ -39,6 +46,9 @@ export interface AccountInput {
   headless?: boolean
   hashtag?: string | null
   captionPrefix?: string | null
+  aiCommentTone?: string
+  aiCommentLang?: string
+  aiCommentFormat?: string
 }
 
 // Proxy trong kho chung (tab Proxy).
@@ -155,8 +165,9 @@ export interface AppSettings {
   aiBaseUrl: string // vd https://api.openai.com/v1 hoặc https://api.vietapi.tech/v1
   aiApiKey: string // sk-... (lưu DB, không log)
   aiModel: string // vd gpt-4o-mini | gpt
-  aiCommentTone: string // 'friendly' | 'humorous' | 'neutral' | 'concise'
-  aiCommentLang: string // 'auto' (theo bài) | 'vi' | 'en'
+  // Độ dài bình luận tối đa (ký tự). X cho tối đa 280. Giọng điệu/ngôn ngữ/định dạng
+  // đã chuyển sang cấu hình RIÊNG từng tài khoản (Account.aiCommentTone/Lang/Format).
+  aiCommentMaxLen: number
 }
 
 // Asset n8n trả về để đăng bài.
@@ -221,6 +232,8 @@ export interface PostResult {
   // với tài khoản hiện tại -> runner sẽ markDone để bỏ qua, đăng bài kế. Đổi lên premium
   // thì video dài đăng được nên không set cờ này.
   videoTooLong?: boolean
+  // User bấm Dừng giữa chừng -> KHÔNG markDone (bài chưa đăng), ghi log 'stopped'.
+  stopped?: boolean
 }
 
 // Kết quả xoá bài trên X
@@ -254,6 +267,8 @@ export interface CommentResult {
   limitReached?: boolean
   // Tweet là reply (không phải bài gốc) -> bỏ qua, không bình luận.
   skipped?: boolean
+  // User bấm Dừng giữa chừng -> ghi log 'stopped', trả về số bài đã bình luận tới lúc đó.
+  stopped?: boolean
 }
 
 // Một dòng nhật ký đăng bài (lưu DB, hiển thị ở tab Nhật ký).
@@ -352,6 +367,7 @@ export const IpcChannels = {
   commentRunNow: 'comment:runNow',
   browserStatusChanged: 'browser:statusChanged',
   taskProgress: 'task:progress',
+  taskStop: 'task:stop',
   queueChanged: 'queue:changed',
   logsList: 'logs:list',
   logsClear: 'logs:clear',
@@ -420,6 +436,9 @@ export interface AviaryApi {
   }
   post: {
     runNow: (accountId: string) => Promise<PostResult>
+    // Dừng đột ngột phiên đang chạy của 1 tài khoản (mọi action). Đóng profile + báo
+    // các vòng lặp dài thoát sớm.
+    stop: (accountId: string) => Promise<void>
     onProgress: (cb: (p: ProgressPayload) => void) => () => void
     // Báo hàng đợi scheduler thay đổi (để ScheduleView cập nhật "đang chờ/đang chạy").
     onQueueChanged: (cb: () => void) => () => void

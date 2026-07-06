@@ -54,6 +54,7 @@ import { deleteAnalyticsByAccount, clearAllAnalytics, pruneAnalytics, getAnalyti
 import { deleteCommentHistoryByAccount } from './db/comment_history'
 import { runPostForAccount, runCommentForAccount, emitProgress } from './scheduler/runner'
 import { acquireSlot, releaseSlot } from './scheduler/index'
+import { requestStop } from './scheduler/cancel'
 import { fetchXProfile, downloadAvatarAsDataUrl } from './x/FetchProfile'
 import { fetchAllAccountsStats, fetchAccountStats } from './analytics/fetcher'
 import { getAnalyticsData } from './analytics/growth'
@@ -216,6 +217,20 @@ export function registerIpc(): void {
     } finally {
       releaseSlot(accountId)
     }
+  })
+
+  // Dừng đột ngột phiên đang chạy của 1 tài khoản (mọi action: đăng/xoá/bình luận/tương
+  // tác). Đóng profile ngay để cắt thao tác Playwright + đặt cờ để vòng lặp dài thoát sớm.
+  // Pipeline đang chạy sẽ tự ghi log 'stopped' + nhả slot ở finally.
+  ipcMain.handle(IpcChannels.taskStop, async (_e, accountId: string) => {
+    emitProgress({
+      accountId,
+      accountLabel: getAccount(accountId)?.label ?? accountId,
+      stage: 'stopping',
+      message: 'Đang dừng phiên…',
+      busy: true
+    })
+    await requestStop(accountId)
   })
 
   // Nút "Bình luận" thủ công (tab Tài khoản) — chạy pipeline bình luận với cài đặt

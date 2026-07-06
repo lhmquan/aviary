@@ -57,6 +57,12 @@ function migrate(d: Database.Database): void {
   addColumnIfMissing(d, 'accounts', 'hashtag', 'TEXT')
   // Tiền tố ghép vào đầu caption khi đăng (không gửi trong webhook).
   addColumnIfMissing(d, 'accounts', 'caption_prefix', 'TEXT')
+  // Cấu hình AI sinh bình luận RIÊNG từng tài khoản (tác vụ Tương tác feed).
+  // tone: random/friendly/humorous/neutral/concise; lang: auto/vi/en;
+  // format: random/normal/question/debate/info. DB cũ tự nhận default.
+  addColumnIfMissing(d, 'accounts', 'ai_comment_tone', "TEXT NOT NULL DEFAULT 'random'")
+  addColumnIfMissing(d, 'accounts', 'ai_comment_lang', "TEXT NOT NULL DEFAULT 'en'")
+  addColumnIfMissing(d, 'accounts', 'ai_comment_format', "TEXT NOT NULL DEFAULT 'random'")
   // proxy_id: '__local' (mặc định, IP máy) | '__random' (random mỗi lần) | id proxy.
   addColumnIfMissing(d, 'accounts', 'proxy_id', "TEXT NOT NULL DEFAULT '__local'")
   // Thống kê hồ sơ X (tự fetch từ username): follower / following / số bài. Cũ = NULL.
@@ -163,6 +169,22 @@ function migrate(d: Database.Database): void {
     CREATE UNIQUE INDEX IF NOT EXISTS idx_stats_acct_day ON account_stats_daily (account_id, day);
     CREATE INDEX IF NOT EXISTS idx_stats_day ON account_stats_daily (day);
   `)
+
+  // Migration chạy-MỘT-LẦN: các tài khoản tạo trước khi đổi default AI bình luận đã bị
+  // backfill giá trị cũ ('friendly'/'auto'/'normal') vào cột khi cột được thêm. Đổi default
+  // trong addColumnIfMissing KHÔNG cập nhật hàng/cột đã tồn tại, nên phải backfill 1 lần về
+  // default mới (random/en/random). Dùng user_version làm cờ để chỉ chạy đúng 1 lần —
+  // sau đó user tự đổi tuỳ ý sẽ được giữ nguyên.
+  const userVersion = (d.pragma('user_version', { simple: true }) as number) ?? 0
+  if (userVersion < 1) {
+    d.exec(`
+      UPDATE accounts SET
+        ai_comment_tone = 'random',
+        ai_comment_lang = 'en',
+        ai_comment_format = 'random'
+    `)
+    d.pragma('user_version = 1')
+  }
 }
 
 function addColumnIfMissing(d: Database.Database, table: string, col: string, decl: string): void {

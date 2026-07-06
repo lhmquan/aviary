@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, statSync } from 'fs'
 import { join } from 'path'
 import { app } from 'electron'
 import type { PostResult, DeleteResult, DeleteMode, CommentResult } from '../../shared/types'
+import { isStopRequested } from '../scheduler/cancel'
 
 export type { PostResult }
 export type { DeleteResult }
@@ -504,6 +505,11 @@ export async function postTweet(
     const deadline = Date.now() + modalCloseTimeout
     let posted = false
     while (Date.now() < deadline) {
+      // User bấm Dừng -> ngừng chờ. Báo cờ để runner ghi log 'stopped' (không markDone).
+      if (isStopRequested(acc)) {
+        report('Đã dừng đăng bài theo yêu cầu.')
+        return { ok: false, stopped: true, step: 'stopped', error: 'Đã dừng theo yêu cầu.' }
+      }
       if (page.url().includes('/status/')) {
         return { ok: true, url: page.url() }
       }
@@ -726,6 +732,11 @@ export async function deleteTweetsFromProfile(
 
     while (deletedCount < targetCount && iterations < MAX_ITERATIONS) {
       iterations++
+      // User bấm Dừng -> trả về số bài đã xoá tới lúc này (không phải lỗi).
+      if (isStopRequested(acc)) {
+        report('Đã dừng xoá bài theo yêu cầu.')
+        return { ok: true, deletedCount, urls: deletedUrls, step: 'stopped' }
+      }
 
       // Quét TẤT CẢ article đang render (không chỉ .first()). X virtualize timeline: bài cũ
       // ngoài màn hình bị gỡ khỏi DOM, còn vài bài mới hơn có thể "kẹt" ở mép trên. Nếu chỉ
@@ -1060,6 +1071,177 @@ export async function scrollProfileCollectTweetUrls(
   }
 }
 
+// Ngữ cảnh 1 bài viết để AI sinh bình luận sát nội dung: caption bài chính + text của
+// tối đa `maxReplies` reply hiển thị đầu tiên. Bài ít hơn thì lấy hết (giới hạn để tiết
+// kiệm token AI).
+export interface TweetContext {
+  caption: string
+  replies: string[]
+}
+
+/**
+ * Mở 1 tweet, đọc caption bài chính + text các reply hiển thị đầu tiên (tối đa maxReplies).
+ * KHÔNG cuộn nhiều — chỉ lấy các reply render sẵn ở đầu trang (tiết kiệm thời gian/token).
+ * Lỗi/không đọc được -> trả caption rỗng + replies rỗng (caller tự fallback về caption feed).
+ *
+ * @param context   Browser context đã mở (có session X)
+ * @param tweetUrl  URL đầy đủ của tweet
+ * @param maxReplies Số reply tối đa cần lấy (mặc định 10)
+ * @param accountId ID tài khoản (để log)
+ */
+// Bấm các nút X dùng để GIẤU bớt reply: "Show more replies", "Show probable spam",
+// "Show additional replies", "Discover more" (EN) / "Hiện thêm câu trả lời", "Hiển thị
+// nội dung có thể là spam" (VI). Trả true nếu bấm được ít nhất 1 nút (đã lộ thêm reply).
+// Dùng evaluate STRING để TS không type-check biến trình duyệt.
+async function clickShowMoreReplies(page: Page): Promise<boolean> {
+  try {
+    const clicked = (await page.evaluate(
+      `(() => {
+        const re = /show more repl|show additional repl|show probable spam|more repl|hiện thêm|hiển thị thêm|có thể là spam|discover more/i;
+        const nodes = Array.from(document.querySelectorAll('[role="button"], span, div[role="button"] span'));
+        for (const n of nodes) {
+          const txt = (n.textContent || '').trim();
+          if (!txt || txt.length > 60) continue;
+          if (!re.test(txt)) continue;
+          const btn = n.closest('[role="button"]') || n;
+          if (btn && typeof btn.scrollIntoView === 'function') btn.scrollIntoView({ block: 'center' });
+          if (btn && typeof btn.click === 'function') { btn.click(); return true; }
+        }
+        return false;
+      })()`
+    )) as boolean
+    return clicked === true
+  } catch {
+    return false
+  }
+}
+
+export async function collectTweetContext(
+  context: BrowserContext,
+  tweetUrl: string,
+  maxReplies = 10,
+  accountId?: string,
+  report: StepReporter = noop
+): Promise<TweetContext> {
+  void accountId
+  let page: Page | null = null
+  // Deadline TỔNG cho cả bước lấy ngữ cảnh (goto + đọc caption + cuộn reply) — chặn trên để
+  // dù mạng/proxy chậm cũng không treo phiên vô hạn. Đặt rộng để ngân sách cuộn reply riêng
+  // (REPLY_COLLECT_MS bên dưới) mới là ràng buộc chính. Hết giờ -> trả về những gì đã lấy.
+  const CONTEXT_DEADLINE_MS = 55_000
+  const ctxDeadline = Date.now() + CONTEXT_DEADLINE_MS
+  try {
+    page = await context.newPage()
+    // goto chờ 'commit' (nhanh hơn 'domcontentloaded' — chỉ cần điều hướng bắt đầu) + timeout
+    // ngắn để không treo ở đây. Bài chính render sau đó, ta chờ ở waitFor bên dưới.
+    report('Đang mở bài viết để đọc ngữ cảnh…')
+    await page.goto(tweetUrl, { waitUntil: 'commit', timeout: 20_000 }).catch(() => {})
+    await sleep(1200)
+
+    // Session hết hạn -> trả rỗng để caller fallback.
+    if (page.url().includes('/login') || page.url().includes('/i/flow/login')) {
+      return { caption: '', replies: [] }
+    }
+
+    // Bài chính trên trang tweet detail có tabindex="-1". Đọc caption của CHÍNH bài này.
+    // Chờ NGẮN (6s); không thấy -> vẫn tiếp tục (đọc reply / trả rỗng), không kẹt.
+    report('Đang đọc nội dung bài viết…')
+    const mainTweet = page.locator('article[data-testid="tweet"][tabindex="-1"]').first()
+    await mainTweet.waitFor({ timeout: 6_000, state: 'visible' }).catch(() => {})
+    const caption = await mainTweet
+      .locator('[data-testid="tweetText"]')
+      .first()
+      .innerText()
+      .catch(() => '')
+
+    // Reply = mọi article KHÁC bài chính (bài chính có tabindex="-1", reply có tabindex="0").
+    // X VIRTUALIZE timeline: sau khi cuộn, bài chính trượt khỏi màn hình và bị gỡ khỏi DOM.
+    // Vì thế KHÔNG gate theo "đã thấy bài chính" (sau vài lần cuộn sẽ không còn thấy nó nữa
+    // -> gate cũ làm bỏ sạch reply). Thay vào đó: lấy mọi article tabindex!="-1".
+    //
+    // KHỬ TRÙNG THEO PERMALINK, KHÔNG theo text: mỗi reply có link riêng
+    // (a[href="/user/status/<id>"]). Nếu dedup theo text sẽ MẤT các reply trùng nội dung
+    // ("God bless!", "Couldn't agree more"…) và reply chỉ có ảnh/emoji (tweetText rỗng)
+    // — đây là lý do có bài chỉ lấy được 4. Dùng href làm khóa -> giữ đúng từng reply.
+    const captionTrim = caption.trim()
+    const seen = new Set<string>() // các href reply ĐÃ lấy
+    const replies: string[] = []
+    // Ngân sách RIÊNG cho việc cuộn lấy reply — tính từ LÚC NÀY (sau goto/đọc caption), để
+    // thời gian điều hướng chậm qua proxy KHÔNG ăn vào thời gian thu reply. X virtualize
+    // vùng reply (chỉ giữ ~5-6 article trong DOM), nạp LƯỜI theo cuộn nên cần cuộn nhiều
+    // vòng + chờ đủ để reply mới render.
+    const REPLY_COLLECT_MS = 30_000
+    const replyDeadline = Date.now() + REPLY_COLLECT_MS
+    const MAX_ROUNDS = 40
+    const MAX_STUCK = 6 // số vòng LIÊN TIẾP không lộ reply mới -> coi như chạm đáy
+    let stuck = 0
+    for (let round = 0; round < MAX_ROUNDS && replies.length < maxReplies; round++) {
+      // Hết ngân sách (hoặc deadline tổng) -> dừng, trả về những gì đã có.
+      if (Date.now() > replyDeadline || Date.now() > ctxDeadline) break
+      const before = replies.length
+      const articles = await page.locator('article[data-testid="tweet"]').all()
+      for (const a of articles) {
+        if (replies.length >= maxReplies) break
+        const tab = await a.getAttribute('tabindex').catch(() => null)
+        if (tab === '-1') continue // bài chính -> bỏ (đã lấy làm caption)
+        // Khóa khử trùng = permalink reply (.../status/<id>), cắt bỏ đuôi /photo /analytics.
+        const rawHref = await a
+          .locator('a[href*="/status/"]')
+          .first()
+          .getAttribute('href')
+          .catch(() => null)
+        const hrefKey = rawHref?.match(/^(.*\/status\/\d+)/)?.[1] ?? null
+        // Không đọc được href -> bỏ (tránh dedup sai); đã lấy rồi -> bỏ.
+        if (!hrefKey || seen.has(hrefKey)) continue
+        const text = await a
+          .locator('[data-testid="tweetText"]')
+          .first()
+          .innerText()
+          .catch(() => '')
+        const t = text.trim()
+        // Reply chỉ có ảnh/emoji (tweetText rỗng) -> vẫn tính là 1 reply nhưng KHÔNG đưa
+        // text rỗng cho AI (bỏ khỏi mảng replies gửi AI); chỉ đánh dấu href đã thấy.
+        seen.add(hrefKey)
+        if (!t) continue
+        replies.push(t)
+        // Hiển thị một phần nội dung reply vừa lấy để user theo dõi ngay trên status bar.
+        const preview = t.replace(/\s+/g, ' ').slice(0, 60)
+        report(`Reply ${replies.length}/${maxReplies}: "${preview}${t.length > 60 ? '…' : ''}"`)
+      }
+      if (replies.length >= maxReplies) break
+      // Không lộ thêm reply mới ở vòng này -> tăng đếm "kẹt"; đủ MAX_STUCK thì dừng.
+      if (replies.length === before) {
+        stuck++
+        // Khi bắt đầu kẹt: X thường GIẤU phần reply còn lại sau nút "Show more replies" /
+        // "Show probable spam" / "Show additional replies" (reply bị lọc spam/nhạy cảm).
+        // Cuộn thường không mở ra -> phải bấm. Thử bấm khi kẹt (mỗi lần kẹt thử 1 lần).
+        const revealed = await clickShowMoreReplies(page)
+        if (revealed) {
+          stuck = 0 // vừa mở thêm reply -> reset, cho vòng sau quét tiếp
+          await sleep(1200)
+          continue
+        }
+        if (stuck >= MAX_STUCK) break
+      } else {
+        stuck = 0
+      }
+      // Cuộn NHẸ (0.7 màn hình) để reply mới kịp vào DOM trước khi bị virtualize gỡ bài cũ;
+      // cuộn quá xa 1 nhịp dễ nhảy cóc bỏ sót reply ở giữa. Chờ lâu hơn cho X nạp thêm.
+      await page.evaluate('window.scrollBy(0, Math.round(window.innerHeight * 0.7))').catch(() => {})
+      await sleep(1500)
+    }
+
+    report(`Ngữ cảnh: caption + ${replies.length} reply.`)
+    return { caption: captionTrim, replies }
+  } catch {
+    return { caption: '', replies: [] }
+  } finally {
+    if (page && !page.isClosed()) {
+      await page.close().catch(() => {})
+    }
+  }
+}
+
 /**
  * Bình luận trên 1 tweet cụ thể. Mở URL tweet, tìm reply box, gõ nội dung, bấm Reply.
  *
@@ -1127,12 +1309,61 @@ export async function commentOnTweet(
       }
     }
 
-    // Tìm reply box. X render nhiều textarea ẩn; neo vào [data-testid="tweetTextarea_0"]
-    // đang VISIBLE trong vùng reply. Trên trang tweet chi tiết, reply box đầu tiên có thể
-    // là ô collapsed (placeholder) -> click để mở rộng thành form đầy đủ có nút Reply.
+    // Tìm reply box. VẤN ĐỀ: bài dài đẩy ô reply INLINE xuống dưới viewport -> ô có thể
+    // CHƯA render (X lazy) hoặc :visible fail -> waitFor timeout. Cách chắc chắn: bấm nút
+    // "Reply" của BÀI CHÍNH (tabindex="-1") để mở MODAL soạn reply (luôn hiện tweetTextarea_0
+    // giữa màn hình bất kể vị trí cuộn). Nếu đã có sẵn ô inline visible thì dùng luôn.
     report('Đang chờ ô bình luận hiển thị…')
     const replyBox = page.locator('[data-testid="tweetTextarea_0"]:visible').first()
-    await replyBox.waitFor({ timeout: 15_000, state: 'visible' })
+    let boxReady = await replyBox
+      .waitFor({ timeout: 5_000, state: 'visible' })
+      .then(() => true)
+      .catch(() => false)
+
+    if (!boxReady) {
+      // Mở modal soạn reply qua nút Reply của bài chính. Thử nút trong bài chính trước,
+      // fallback nút reply đầu tiên trên trang.
+      report('Ô bình luận chưa hiện — mở khung soạn reply…')
+      const replyOpenBtn = page
+        .locator(
+          'article[data-testid="tweet"][tabindex="-1"] [data-testid="reply"], [data-testid="reply"]'
+        )
+        .first()
+      const hasBtn = await replyOpenBtn
+        .waitFor({ timeout: 8_000, state: 'attached' })
+        .then(() => true)
+        .catch(() => false)
+      if (hasBtn) {
+        await replyOpenBtn.scrollIntoViewIfNeeded({ timeout: 3_000 }).catch(() => {})
+        try {
+          await replyOpenBtn.click({ timeout: 5_000 })
+        } catch {
+          await replyOpenBtn.dispatchEvent('click').catch(() => {})
+        }
+        await sleep(1200)
+      }
+      // Chờ lại textarea (giờ đã ở modal hoặc đã render sau khi cuộn tới nút).
+      boxReady = await replyBox
+        .waitFor({ timeout: 10_000, state: 'visible' })
+        .then(() => true)
+        .catch(() => false)
+    }
+
+    if (!boxReady) {
+      const shot = screenshotPath(acc, 'comment_nobox')
+      await page.screenshot({ path: shot }).catch(() => {})
+      return {
+        ok: false,
+        commentedCount: 0,
+        urls: [],
+        error:
+          'Không tìm thấy ô bình luận (kể cả sau khi mở khung soạn reply). Có thể X đổi layout hoặc bài bị khoá reply.',
+        step: 'reply_box',
+        screenshot: existsSync(shot) ? shot : undefined
+      }
+    }
+
+    await replyBox.scrollIntoViewIfNeeded({ timeout: 3_000 }).catch(() => {})
     await replyBox.click()
     await sleep(1000)
     // Click lần nữa để chắc form reply đã mở rộng (X đôi khi cần 2 click).
