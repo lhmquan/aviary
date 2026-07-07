@@ -153,6 +153,20 @@ export default function SettingsView(): JSX.Element {
             và chạy tiếp vào ngày hôm sau. Tránh bị X đánh dấu spam.
           </small>
         </label>
+        <label className="field checkbox-field">
+          <input
+            type="checkbox"
+            checked={settings.blockMedia}
+            onChange={(e) => update('blockMedia', e.target.checked)}
+          />
+          <span>Không tải ảnh/video khi mở trình duyệt</span>
+        </label>
+        <small className="hint">
+          Chặn tải ảnh, video, font khi Chromium mở trang X — tiết kiệm băng thông proxy, load
+          nhanh hơn, giảm lỗi do chờ media. Không ảnh hưởng việc upload ảnh/video khi đăng bài.
+          Lưu ý: khi tự mở profile để đăng nhập, ảnh sẽ không hiển thị. Áp dụng cho lần mở profile
+          tiếp theo.
+        </small>
       </section>
 
       <section className="card">

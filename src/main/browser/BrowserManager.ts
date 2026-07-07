@@ -3,6 +3,7 @@ import { execSync } from 'child_process'
 import { chromium, type BrowserContext } from 'patchright'
 import type { Account } from '../../shared/types'
 import { resolveProxyString } from '../db/proxies'
+import { getAllSettings } from '../db/settings'
 
 // Parse chuỗi proxy sang cấu hình Playwright. Chấp nhận nhiều định dạng phổ biến:
 //   - host:port                         (không auth)
@@ -130,6 +131,23 @@ class BrowserManager {
     context.on('close', () => {
       if (this.open.delete(account.id)) this.emitStatus(account.id, false)
     })
+
+    // Chặn tải media (nếu bật trong Cài đặt): huỷ mọi request ảnh/video/font/media để tiết
+    // kiệm băng thông proxy + load nhanh hơn. KHÔNG ảnh hưởng upload đăng bài (setInputFiles
+    // đọc file cục bộ + preview dùng blob: nội bộ, không qua network). Áp cho toàn context
+    // -> mọi page (kể cả page mở khi collect reply / comment).
+    if (getAllSettings().blockMedia) {
+      // QUAN TRỌNG: chỉ đăng route cho ĐÚNG các URL media (regex), KHÔNG dùng '**/*'.
+      // Nếu route('**/*') thì patchright pause MỌI request rồi từng cái phải vòng qua Node
+      // để continue() -> với X (hàng trăm request) qua proxy, độ trễ cộng dồn làm chậm hẳn,
+      // compose/home có thể timeout. Đăng route hẹp -> chỉ media bị chặn, request khác chạy thẳng.
+      //   - host pbs.twimg.com / video.twimg.com -> ảnh + video (kể cả HLS/DASH fetch qua xhr).
+      //   - đuôi ảnh/video/font -> bắt luôn các CDN khác (card, emoji, font woff).
+      // KHÔNG khớp upload (upload.twitter.com/i/media/upload.json) nên upload đăng bài an toàn.
+      const mediaUrl =
+        /(?:\/\/(?:pbs|video)\.twimg\.com\/)|(?:\.(?:jpg|jpeg|png|gif|webp|svg|ico|mp4|m3u8|ts|m4s|mpd|woff2?|ttf|otf)(?:$|\?))/i
+      await context.route(mediaUrl, (route) => route.abort().catch(() => {})).catch(() => {})
+    }
 
     this.open.set(account.id, context)
     this.emitStatus(account.id, true)

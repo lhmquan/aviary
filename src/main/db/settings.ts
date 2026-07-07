@@ -15,7 +15,9 @@ const DEFAULTS: AppSettings = {
   aiApiKey: '',
   aiModel: '',
   // Độ dài bình luận tối đa (ký tự). Tone/ngôn ngữ/định dạng đã chuyển per-account.
-  aiCommentMaxLen: 200
+  aiCommentMaxLen: 200,
+  // Mặc định TẮT: giữ nguyên hành vi cũ (hiện đầy đủ ảnh/video). User bật để tiết kiệm proxy.
+  blockMedia: false
 }
 
 export function getAllSettings(): AppSettings {
@@ -43,7 +45,8 @@ export function getAllSettings(): AppSettings {
     aiModel: map.get('aiModel') ?? DEFAULTS.aiModel,
     aiCommentMaxLen: map.has('aiCommentMaxLen')
       ? Number(map.get('aiCommentMaxLen'))
-      : DEFAULTS.aiCommentMaxLen
+      : DEFAULTS.aiCommentMaxLen,
+    blockMedia: map.has('blockMedia') ? map.get('blockMedia') === 'true' : DEFAULTS.blockMedia
   }
 }
 

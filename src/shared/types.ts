@@ -168,6 +168,10 @@ export interface AppSettings {
   // Độ dài bình luận tối đa (ký tự). X cho tối đa 280. Giọng điệu/ngôn ngữ/định dạng
   // đã chuyển sang cấu hình RIÊNG từng tài khoản (Account.aiCommentTone/Lang/Format).
   aiCommentMaxLen: number
+  // Chặn tải media (ảnh/video/font) khi Chromium mở trang X. Tiết kiệm băng thông proxy +
+  // load nhanh hơn, giảm lỗi do delay. KHÔNG ảnh hưởng upload khi đăng (upload đọc file
+  // cục bộ, không phải request tải xuống).
+  blockMedia: boolean
 }
 
 // Asset n8n trả về để đăng bài.
