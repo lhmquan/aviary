@@ -244,6 +244,10 @@ function ScheduleForm(props: {
   const [commentSourceUrl, setCommentSourceUrl] = useState(schedule?.commentSourceUrl ?? '')
   // Interact fields
   const [interactDurationMinutes, setInteractDurationMinutes] = useState(String(schedule?.interactDurationMinutes ?? 15))
+  // Số bình luận mục tiêu/phiên: '' hoặc '0' = tự tính theo thời lượng (như cũ).
+  const [interactCommentTarget, setInteractCommentTarget] = useState(
+    String(schedule?.interactCommentTarget ?? 0)
+  )
   const [testingComment, setTestingComment] = useState(false)
   const [commentTestResult, setCommentTestResult] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
@@ -354,7 +358,9 @@ function ScheduleForm(props: {
       commentIntervalSeconds:
         action === 'comment' ? Math.max(5, Number(commentIntervalSeconds) || 60) : 60,
       commentSourceUrl: action === 'comment' ? commentSourceUrl.trim() || null : null,
-      interactDurationMinutes: action === 'interact' ? Math.max(1, Number(interactDurationMinutes) || 15) : 15
+      interactDurationMinutes: action === 'interact' ? Math.max(1, Number(interactDurationMinutes) || 15) : 15,
+      interactCommentTarget:
+        action === 'interact' ? Math.max(0, Math.floor(Number(interactCommentTarget) || 0)) : 0
     } satisfies Omit<ScheduleInput, 'accountId'>
     setSaving(true)
     try {
@@ -559,10 +565,25 @@ function ScheduleForm(props: {
                 placeholder="VD: 15"
               />
             </label>
+            <label className="field">
+              <span>Số bình luận mỗi phiên (0 = tự động)</span>
+              <input
+                type="number"
+                min={0}
+                value={interactCommentTarget}
+                onChange={(e) => setInteractCommentTarget(e.target.value)}
+                placeholder="0 = tự tính theo thời lượng"
+              />
+            </label>
             <p className="hint">
               Mỗi lần lịch kích hoạt, app mở profile và mô phỏng người thật trên feed suốt thời lượng:
               cuộn feed, thỉnh thoảng thả tim, bình luận (nội dung do AI sinh theo bài), thỉnh thoảng F5.
-              Số lượng mỗi hành vi tự nảy sinh theo thời lượng.
+            </p>
+            <p className="hint">
+              <b>Số bình luận mỗi phiên</b>: để <b>0</b> thì app tự tính theo thời lượng (khoảng
+              1 bình luận mỗi 2,5 phút). Đặt số cụ thể thì app phân bổ để đạt đúng số đó, giãn đều
+              trong phiên. Mỗi bình luận cần tối thiểu ~90 giây (chống spam) nên số tối đa ≈ thời
+              lượng (phút) × 60 ÷ 90.
             </p>
             <p className="hint">
               Bình luận cần cấu hình AI ở tab <b>Cài đặt → AI sinh bình luận</b>. Nếu chưa cấu hình,

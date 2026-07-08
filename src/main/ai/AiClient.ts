@@ -10,7 +10,7 @@ export interface CommentOptions {
   tone: string // 'random' | 'friendly' | 'humorous' | 'neutral' | 'concise'
   lang: string // 'auto' | 'vi' | 'en'
   format: string // 'random' | 'normal' | 'question' | 'debate' | 'info'
-  // Text của tối đa 10 reply đầu bài viết (nếu có) — cho AI ngữ cảnh chính xác hơn để
+  // Text của tối đa 20 reply đầu bài viết (nếu có) — cho AI ngữ cảnh chính xác hơn để
   // bình luận sát cuộc trò chuyện. Trống -> chỉ dùng caption.
   replies?: string[]
 }
@@ -109,7 +109,7 @@ function buildUserPrompt(caption: string, replies: string[] | undefined, lang: s
   const cleanReplies = (replies ?? [])
     .map((r) => r.trim())
     .filter(Boolean)
-    .slice(0, 10)
+    .slice(0, 20)
   if (cleanReplies.length > 0) {
     // Mỗi reply cắt ngắn để không phình token; đánh số cho dễ đọc.
     const block = cleanReplies.map((r, i) => `${i + 1}. ${r.slice(0, 200)}`).join('\n')

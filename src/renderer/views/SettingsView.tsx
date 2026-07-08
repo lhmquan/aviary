@@ -162,10 +162,11 @@ export default function SettingsView(): JSX.Element {
           <span>Không tải ảnh/video khi mở trình duyệt</span>
         </label>
         <small className="hint">
-          Chặn tải ảnh, video, font khi Chromium mở trang X — tiết kiệm băng thông proxy, load
-          nhanh hơn, giảm lỗi do chờ media. Không ảnh hưởng việc upload ảnh/video khi đăng bài.
-          Lưu ý: khi tự mở profile để đăng nhập, ảnh sẽ không hiển thị. Áp dụng cho lần mở profile
-          tiếp theo.
+          Chặn tải ảnh và video (kể cả video tự phát trong feed) ngay từ engine Chromium —
+          tiết kiệm băng thông proxy và giảm tải khi lướt feed. Không ảnh hưởng việc upload
+          ảnh/video khi đăng bài, và không làm chậm trang (cache vẫn hoạt động bình thường).
+          Lưu ý: khi tự mở profile để đăng nhập, ảnh/video sẽ không hiển thị. Áp dụng cho lần
+          mở profile tiếp theo.
         </small>
       </section>
 

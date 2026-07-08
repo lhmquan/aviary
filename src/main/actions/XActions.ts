@@ -1072,21 +1072,23 @@ export async function scrollProfileCollectTweetUrls(
 }
 
 // Ngữ cảnh 1 bài viết để AI sinh bình luận sát nội dung: caption bài chính + text của
-// tối đa `maxReplies` reply hiển thị đầu tiên. Bài ít hơn thì lấy hết (giới hạn để tiết
-// kiệm token AI).
+// tối đa `maxReplies` reply CÓ NGHĨA (khử trùng theo permalink, loại reply chỉ media/emoji).
+// Bài ít hơn thì lấy hết (giới hạn để chặn bài vài ngàn reply + tiết kiệm thời gian).
 export interface TweetContext {
   caption: string
   replies: string[]
 }
 
 /**
- * Mở 1 tweet, đọc caption bài chính + text các reply hiển thị đầu tiên (tối đa maxReplies).
- * KHÔNG cuộn nhiều — chỉ lấy các reply render sẵn ở đầu trang (tiết kiệm thời gian/token).
+ * Mở 1 tweet, đọc caption bài chính + text các reply CÓ NGHĨA (tối đa maxReplies).
+ * VỪA CUỘN VỪA GOM: X virtualize timeline (chỉ giữ ~20-30 article trong DOM), nên phải cuộn
+ * nhiều vòng + bấm "Show more replies" mới lấy đủ. Khử trùng theo permalink (link bọc <time>).
+ * Có nhiều lớp chặn (maxReplies / deadline / số vòng / kẹt) -> AN TOÀN với bài vài ngàn reply.
  * Lỗi/không đọc được -> trả caption rỗng + replies rỗng (caller tự fallback về caption feed).
  *
  * @param context   Browser context đã mở (có session X)
  * @param tweetUrl  URL đầy đủ của tweet
- * @param maxReplies Số reply tối đa cần lấy (mặc định 10)
+ * @param maxReplies Số reply CÓ NGHĨA tối đa cần lấy (mặc định 50 — chặn trên cứng)
  * @param accountId ID tài khoản (để log)
  */
 // Bấm các nút X dùng để GIẤU bớt reply: "Show more replies", "Show probable spam",
@@ -1116,10 +1118,17 @@ async function clickShowMoreReplies(page: Page): Promise<boolean> {
   }
 }
 
+// Reply "có nghĩa" = chứa ít nhất 1 chữ cái HOẶC chữ số (mọi ngôn ngữ: Latin, CJK, Ả Rập…).
+// Reply chỉ có emoji/icon/ảnh/gif/video/dấu câu -> text rỗng hoặc không có chữ -> loại,
+// KHÔNG đưa cho AI làm ngữ cảnh.
+function hasMeaningfulText(s: string): boolean {
+  return /[\p{L}\p{N}]/u.test(s)
+}
+
 export async function collectTweetContext(
   context: BrowserContext,
   tweetUrl: string,
-  maxReplies = 10,
+  maxReplies = 50,
   accountId?: string,
   report: StepReporter = noop
 ): Promise<TweetContext> {
@@ -1170,46 +1179,61 @@ export async function collectTweetContext(
     // thời gian điều hướng chậm qua proxy KHÔNG ăn vào thời gian thu reply. X virtualize
     // vùng reply (chỉ giữ ~5-6 article trong DOM), nạp LƯỜI theo cuộn nên cần cuộn nhiều
     // vòng + chờ đủ để reply mới render.
-    const REPLY_COLLECT_MS = 30_000
+    // NGÂN SÁCH nhiều lớp để AN TOÀN với bài có vài NGÀN reply (không bao giờ chạy vô hạn):
+    //   - maxReplies (chặn trên, mặc định 50) -> đủ số là dừng ngay.
+    //   - REPLY_COLLECT_MS + ctxDeadline -> chặn theo thời gian.
+    //   - MAX_ROUNDS -> chặn số vòng cuộn.
+    //   - MAX_STUCK -> nhiều vòng LIÊN TIẾP không thêm reply mới (đã cạn/đáy) -> dừng.
+    // 20s đủ để gom ~20 reply ở bài thường; đây chỉ là chặn TRÊN cho trường hợp xấu (bài ít
+    // reply phải cuộn nhiều vòng mới biết đã cạn) — để mỗi lần comment không kéo dài quá lâu,
+    // phiên tương tác đạt đủ số bình luận mục tiêu trong thời lượng.
+    const REPLY_COLLECT_MS = 20_000
     const replyDeadline = Date.now() + REPLY_COLLECT_MS
-    const MAX_ROUNDS = 40
-    const MAX_STUCK = 6 // số vòng LIÊN TIẾP không lộ reply mới -> coi như chạm đáy
+    const MAX_ROUNDS = 80
+    const MAX_STUCK = 8 // số vòng LIÊN TIẾP không lộ reply mới -> coi như chạm đáy
     let stuck = 0
     for (let round = 0; round < MAX_ROUNDS && replies.length < maxReplies; round++) {
       // Hết ngân sách (hoặc deadline tổng) -> dừng, trả về những gì đã có.
       if (Date.now() > replyDeadline || Date.now() > ctxDeadline) break
       const before = replies.length
-      const articles = await page.locator('article[data-testid="tweet"]').all()
-      for (const a of articles) {
+
+      // Quét TOÀN BỘ article trong DOM 1 lần bằng evaluate (nhanh hơn locator từng cái + khớp
+      // hành vi script Console đã kiểm chứng). Trả về [{ href, text }] cho các article KHÔNG
+      // phải bài chính (tabindex != "-1"). Khóa khử trùng = permalink THẬT bọc thẻ <time>
+      // (a:has(time)) — tránh bắt nhầm link quote-tweet/ảnh dùng chung khiến dedup sai -> đây
+      // là lý do bản cũ hay kẹt ở 4-5 reply. Fallback a[href*="/status/"] nếu không có <time>.
+      const found = (await page.evaluate(
+        `(() => {
+          const out = [];
+          for (const a of document.querySelectorAll('article[data-testid="tweet"]')) {
+            if (a.getAttribute('tabindex') === '-1') continue;
+            const link = a.querySelector('a:has(time)[href*="/status/"]') || a.querySelector('a[href*="/status/"]');
+            const raw = link && link.getAttribute('href');
+            if (!raw) continue;
+            const m = raw.match(/^(.*\\/status\\/\\d+)/);
+            if (!m) continue;
+            const te = a.querySelector('[data-testid="tweetText"]');
+            out.push({ href: m[1], text: te ? (te.innerText || '') : '' });
+          }
+          return out;
+        })()`
+      )) as { href: string; text: string }[]
+
+      for (const r of found) {
         if (replies.length >= maxReplies) break
-        const tab = await a.getAttribute('tabindex').catch(() => null)
-        if (tab === '-1') continue // bài chính -> bỏ (đã lấy làm caption)
-        // Khóa khử trùng = permalink reply (.../status/<id>), cắt bỏ đuôi /photo /analytics.
-        const rawHref = await a
-          .locator('a[href*="/status/"]')
-          .first()
-          .getAttribute('href')
-          .catch(() => null)
-        const hrefKey = rawHref?.match(/^(.*\/status\/\d+)/)?.[1] ?? null
-        // Không đọc được href -> bỏ (tránh dedup sai); đã lấy rồi -> bỏ.
-        if (!hrefKey || seen.has(hrefKey)) continue
-        const text = await a
-          .locator('[data-testid="tweetText"]')
-          .first()
-          .innerText()
-          .catch(() => '')
-        const t = text.trim()
-        // Reply chỉ có ảnh/emoji (tweetText rỗng) -> vẫn tính là 1 reply nhưng KHÔNG đưa
-        // text rỗng cho AI (bỏ khỏi mảng replies gửi AI); chỉ đánh dấu href đã thấy.
-        seen.add(hrefKey)
-        if (!t) continue
+        if (seen.has(r.href)) continue
+        seen.add(r.href)
+        const t = r.text.trim()
+        // CHỈ giữ reply CÓ NGHĨA (ít nhất 1 chữ cái/số). Reply chỉ media/emoji/icon/dấu câu
+        // -> loại, không đưa cho AI (đánh dấu seen để không quét lại).
+        if (!hasMeaningfulText(t)) continue
         replies.push(t)
-        // Hiển thị một phần nội dung reply vừa lấy để user theo dõi ngay trên status bar.
         const preview = t.replace(/\s+/g, ' ').slice(0, 60)
         report(`Reply ${replies.length}/${maxReplies}: "${preview}${t.length > 60 ? '…' : ''}"`)
       }
       if (replies.length >= maxReplies) break
-      // Không lộ thêm reply mới ở vòng này -> tăng đếm "kẹt"; đủ MAX_STUCK thì dừng.
+
+      // Không thêm reply mới ở vòng này -> tăng đếm "kẹt"; đủ MAX_STUCK thì dừng.
       if (replies.length === before) {
         stuck++
         // Khi bắt đầu kẹt: X thường GIẤU phần reply còn lại sau nút "Show more replies" /
@@ -1225,10 +1249,10 @@ export async function collectTweetContext(
       } else {
         stuck = 0
       }
-      // Cuộn NHẸ (0.7 màn hình) để reply mới kịp vào DOM trước khi bị virtualize gỡ bài cũ;
-      // cuộn quá xa 1 nhịp dễ nhảy cóc bỏ sót reply ở giữa. Chờ lâu hơn cho X nạp thêm.
-      await page.evaluate('window.scrollBy(0, Math.round(window.innerHeight * 0.7))').catch(() => {})
-      await sleep(1500)
+      // Cuộn NHẸ (0.8 màn hình) để reply mới kịp vào DOM trước khi bị virtualize gỡ bài cũ;
+      // cuộn quá xa 1 nhịp dễ nhảy cóc bỏ sót reply ở giữa. Chờ đủ để X nạp thêm.
+      await page.evaluate('window.scrollBy(0, Math.round(window.innerHeight * 0.8))').catch(() => {})
+      await sleep(1200)
     }
 
     report(`Ngữ cảnh: caption + ${replies.length} reply.`)

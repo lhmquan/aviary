@@ -1,6 +1,6 @@
 import { mkdirSync } from 'fs'
 import { execSync } from 'child_process'
-import { chromium, type BrowserContext } from 'patchright'
+import { chromium, type BrowserContext, type Page } from 'patchright'
 import type { Account } from '../../shared/types'
 import { resolveProxyString } from '../db/proxies'
 import { getAllSettings } from '../db/settings'
@@ -97,6 +97,25 @@ class BrowserManager {
     const proxyString = resolveProxyString(account.proxyId)
     console.log(`[browser] profile ${account.label}: proxy=${account.proxyId} -> ${proxyString ?? 'local'}`)
 
+    // Chặn tải media (nếu bật trong Cài đặt). QUAN TRỌNG — vì sao KHÔNG dùng context.route():
+    //   Chỉ cần đăng ký context.route() (dù pattern hẹp) là Playwright/patchright TẮT TOÀN BỘ
+    //   HTTP cache của context. Hệ quả: mọi JS bundle nặng + API + font của X phải tải LẠI
+    //   qua proxy mỗi lần điều hướng -> home/compose LOAD RẤT LÂU -> timeout, không đăng được.
+    //   Băng thông tiết kiệm từ chặn ảnh KHÔNG bù nổi phần mất cache.
+    // Cách dùng: chặn ẢNH + VIDEO theo URL qua CDP Network.setBlockedURLs (xem applyMediaBlock).
+    //   CDP chặn ở tầng network stack, KHÔNG tắt cache như route() -> trang vẫn load nhanh.
+    //   - Ảnh: host pbs.twimg.com + đuôi .jpg/.png/.gif/.webp… (feed không tải ảnh).
+    //   - Video: host video.twimg.com + đuôi stream HLS/DASH (.m3u8/.ts/.m4s/.mpd/.mp4).
+    // VÌ SAO KHÔNG dùng --blink-settings=imagesEnabled=false (cách cũ, đã BỎ):
+    //   Nó tắt engine GIẢI MÃ ẢNH. Khi upload ảnh, X tạo <img> preview cục bộ (blob:) rồi CHỜ
+    //   onload để lấy kích thước -> tắt decode thì onload không bắn -> preview XOAY MÃI -> đăng
+    //   ảnh lỗi. Chặn theo URL qua CDP không đụng ảnh blob: cục bộ nên upload ảnh vẫn chạy.
+    //   (Không dùng addInitScript hook fetch: patchright vô hiệu hoá addInitScript để tránh bị
+    //    phát hiện -> script không chạy.)
+    // KHÔNG ảnh hưởng upload đăng bài (setInputFiles đọc file cục bộ + preview dùng blob:, không
+    // khớp host/đuôi bị chặn; upload endpoint là upload.twitter.com cũng không khớp).
+    const blockMedia = getAllSettings().blockMedia
+
     const launch = (): Promise<BrowserContext> =>
       chromium.launchPersistentContext(account.profileDir, {
         channel: 'chrome',
@@ -132,21 +151,12 @@ class BrowserManager {
       if (this.open.delete(account.id)) this.emitStatus(account.id, false)
     })
 
-    // Chặn tải media (nếu bật trong Cài đặt): huỷ mọi request ảnh/video/font/media để tiết
-    // kiệm băng thông proxy + load nhanh hơn. KHÔNG ảnh hưởng upload đăng bài (setInputFiles
-    // đọc file cục bộ + preview dùng blob: nội bộ, không qua network). Áp cho toàn context
-    // -> mọi page (kể cả page mở khi collect reply / comment).
-    if (getAllSettings().blockMedia) {
-      // QUAN TRỌNG: chỉ đăng route cho ĐÚNG các URL media (regex), KHÔNG dùng '**/*'.
-      // Nếu route('**/*') thì patchright pause MỌI request rồi từng cái phải vòng qua Node
-      // để continue() -> với X (hàng trăm request) qua proxy, độ trễ cộng dồn làm chậm hẳn,
-      // compose/home có thể timeout. Đăng route hẹp -> chỉ media bị chặn, request khác chạy thẳng.
-      //   - host pbs.twimg.com / video.twimg.com -> ảnh + video (kể cả HLS/DASH fetch qua xhr).
-      //   - đuôi ảnh/video/font -> bắt luôn các CDN khác (card, emoji, font woff).
-      // KHÔNG khớp upload (upload.twitter.com/i/media/upload.json) nên upload đăng bài an toàn.
-      const mediaUrl =
-        /(?:\/\/(?:pbs|video)\.twimg\.com\/)|(?:\.(?:jpg|jpeg|png|gif|webp|svg|ico|mp4|m3u8|ts|m4s|mpd|woff2?|ttf|otf)(?:$|\?))/i
-      await context.route(mediaUrl, (route) => route.abort().catch(() => {})).catch(() => {})
+    // Chặn ẢNH + VIDEO (nếu bật): gắn CDP Network.setBlockedURLs cho MỌI page. CDP session gắn
+    // theo từng page, nên phải áp cho page hiện có + mọi page mở sau (đọc reply / comment mở
+    // page riêng). Lỗi CDP không được làm sập việc mở profile -> bọc try/catch, nuốt lỗi.
+    if (blockMedia) {
+      for (const p of context.pages()) void applyMediaBlock(context, p)
+      context.on('page', (p) => void applyMediaBlock(context, p))
     }
 
     this.open.set(account.id, context)
@@ -178,6 +188,35 @@ class BrowserManager {
 }
 
 export const browserManager = new BrowserManager()
+
+// Danh sách pattern URL media của X để chặn qua CDP Network.setBlockedURLs.
+//   - ẢNH: host pbs.twimg.com (ảnh feed, avatar, card…) + đuôi ảnh phổ biến.
+//   - VIDEO: host video.twimg.com + đuôi stream HLS/DASH (.m3u8/.ts/.m4s/.mpd) + .mp4.
+// (kèm ?query nên có cả biến thể '*?*'.) KHÔNG khớp:
+//   - blob: (preview upload cục bộ) -> upload ảnh/video khi đăng bài vẫn chạy.
+//   - upload.twitter.com (endpoint upload) -> đăng media bình thường.
+const MEDIA_BLOCK_URLS = [
+  '*pbs.twimg.com*',
+  '*video.twimg.com*',
+  '*.jpg', '*.jpg?*', '*.jpeg', '*.jpeg?*',
+  '*.png', '*.png?*', '*.gif', '*.gif?*',
+  '*.webp', '*.webp?*',
+  '*.mp4', '*.mp4?*', '*.m3u8', '*.m3u8?*',
+  '*.ts', '*.ts?*', '*.m4s', '*.m4s?*', '*.mpd', '*.mpd?*'
+]
+
+// Gắn CDP block media cho 1 page. CDP Network.setBlockedURLs chặn ở tầng network stack mà
+// KHÔNG tắt HTTP cache (khác context.route). Lỗi (page đã đóng, CDP không khả dụng) -> nuốt,
+// không làm sập luồng mở profile / mở page.
+async function applyMediaBlock(context: BrowserContext, page: Page): Promise<void> {
+  try {
+    const client = await context.newCDPSession(page)
+    await client.send('Network.enable')
+    await client.send('Network.setBlockedURLs', { urls: MEDIA_BLOCK_URLS })
+  } catch {
+    /* page đóng sớm / CDP lỗi -> bỏ qua, không chặn được media page này nhưng không sập app */
+  }
+}
 
 // Kill các tiến trình chrome.exe đang giữ profileDir (qua --user-data-dir).
 // Chỉ nhắm đúng tiến trình dùng profile này, không động Chrome thường của user.

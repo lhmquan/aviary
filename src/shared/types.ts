@@ -125,6 +125,9 @@ export interface Schedule {
   commentSourceUrl: string | null // link Google Sheet chứa nội dung bình luận
   // action='interact' — phiên tương tác feed (scroll/like/comment AI/refresh) theo thời lượng.
   interactDurationMinutes: number // thời lượng 1 phiên tương tác (phút)
+  // Số bình luận MỤC TIÊU trong 1 phiên tương tác. 0 = tự tính theo thời lượng (như cũ:
+  // floor(phút/2.5)). >0 = app phân bổ để đạt đúng số này, giãn đều trong thời lượng.
+  interactCommentTarget: number
   lastRunAt: number | null
   nextRunAt: number | null
   // Đang chạy (semaphore hàng đợi scheduler). Khi true: countdown dừng, đang chờ/đang chạy.
@@ -149,6 +152,7 @@ export interface ScheduleInput {
   commentIntervalSeconds?: number
   commentSourceUrl?: string | null
   interactDurationMinutes?: number
+  interactCommentTarget?: number
 }
 
 export interface AppSettings {

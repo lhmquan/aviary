@@ -135,6 +135,8 @@ function migrate(d: Database.Database): void {
 
   // Cột cho lịch tương tác feed (action='interact'): thời lượng 1 phiên (phút).
   addColumnIfMissing(d, 'schedules', 'interact_duration_minutes', 'INTEGER NOT NULL DEFAULT 15')
+  // Số bình luận mục tiêu/phiên tương tác. 0 = tự tính theo thời lượng (mặc định).
+  addColumnIfMissing(d, 'schedules', 'interact_comment_target', 'INTEGER NOT NULL DEFAULT 0')
 
   // Bảng cache link đã bình luận — để so sánh tránh bình luận trùng bài.
   // Prune: chỉ giữ 10 lần chạy gần nhất (theo commented_at) cho mỗi account.

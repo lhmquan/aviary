@@ -7,7 +7,10 @@ import { isStopRequested } from '../scheduler/cancel'
 
 // Phiên "tương tác feed" mô phỏng người thật: cuộn feed, thỉnh thoảng like/comment/F5.
 // Chạy theo NGÂN SÁCH THỜI GIAN — lặp tới khi hết thời lượng, mỗi vòng bốc 1 action
-// theo trọng số rồi nghỉ "think-time" ngẫu nhiên. Số lượng mỗi action tự nảy sinh.
+// theo trọng số rồi nghỉ "think-time" ngẫu nhiên.
+//   - Không đặt số bình luận mục tiêu (target=0): số comment TỰ NẢY SINH (cap floor(phút/2.5)).
+//   - Đặt target>0: app PHÂN BỔ để đạt đúng số bình luận đó, giãn đều trong thời lượng (ép
+//     comment khi trễ tiến độ). Các action khác vẫn tự nảy sinh quanh đó.
 
 const noop: StepReporter = () => {}
 
@@ -128,7 +131,14 @@ async function refreshFeed(page: Page): Promise<void> {
 export async function runInteractSession(
   context: BrowserContext,
   accountId: string,
-  opts: { durationMinutes: number; aiTone: string; aiLang: string; aiFormat: string },
+  opts: {
+    durationMinutes: number
+    aiTone: string
+    aiLang: string
+    aiFormat: string
+    // Số bình luận MỤC TIÊU. 0 = tự tính theo thời lượng (như cũ). >0 = phân bổ để đạt đúng số này.
+    commentTarget?: number
+  },
   report: StepReporter = noop
 ): Promise<InteractResult> {
   const durationMs = Math.max(1, opts.durationMinutes) * 60_000
@@ -143,9 +153,18 @@ export async function runInteractSession(
   const commentedHrefs = new Set<string>()
   const commentedUrls: string[] = []
 
-  // Cap comment theo thời lượng: tối đa floor(phút/2.5), tối thiểu 1.
-  const commentCap = Math.max(1, Math.floor(opts.durationMinutes / 2.5))
-  const MIN_COMMENT_GAP_MS = 90_000 // tối thiểu 90s giữa 2 comment
+  const MIN_COMMENT_GAP_MS = 90_000 // tối thiểu 90s giữa 2 comment (chống spam)
+  // Cap + nhịp comment:
+  //   - target = 0 (tự tính): cap = floor(phút/2.5), tối thiểu 1; nhịp = MIN_COMMENT_GAP_MS.
+  //   - target > 0 (user đặt): cap = target; nhịp = giãn ĐỀU trong thời lượng (durationMs/target)
+  //     nhưng không nhỏ hơn MIN_COMMENT_GAP_MS. Nhờ vậy comment rải đều cả phiên thay vì dồn cục.
+  const targetMode = (opts.commentTarget ?? 0) > 0
+  const commentCap = targetMode
+    ? Math.max(1, Math.floor(opts.commentTarget as number))
+    : Math.max(1, Math.floor(opts.durationMinutes / 2.5))
+  const commentGapMs = targetMode
+    ? Math.max(MIN_COMMENT_GAP_MS, Math.floor(durationMs / commentCap))
+    : MIN_COMMENT_GAP_MS
   let lastCommentAt = 0
   const dailyLimit = getAllSettings().commentDailyLimit
 
@@ -177,10 +196,22 @@ export async function runInteractSession(
     // Xác định có được phép comment ở vòng này không.
     const nowMs = Date.now()
     const commentedToday = countCommentsToday(accountId)
-    const canComment =
-      comments < commentCap &&
-      commentedToday < dailyLimit &&
-      nowMs - lastCommentAt >= MIN_COMMENT_GAP_MS
+    const underCap = comments < commentCap && commentedToday < dailyLimit
+    const gapPassed = nowMs - lastCommentAt >= commentGapMs
+
+    // targetMode: nếu ĐANG TRỄ tiến độ (số comment thực tế < kỳ vọng theo thời gian đã trôi)
+    // thì ÉP comment. Khi trễ, BỎ QUA ràng buộc giãn cách (gap chỉ để rải đều lúc thong thả,
+    // không nên cản khi đã trễ) — vẫn giữ giãn cách tối thiểu MIN_COMMENT_GAP_MS chống spam.
+    // Nhờ vậy phiên "bắt kịp" và đạt đủ số bình luận mục tiêu dù mỗi comment tốn thời gian thực.
+    let forceComment = false
+    if (targetMode && underCap) {
+      const elapsedRatio = (nowMs - (sessionEnd - durationMs)) / durationMs
+      const expected = Math.min(commentCap, Math.floor(elapsedRatio * commentCap) + 1)
+      const minGapPassed = nowMs - lastCommentAt >= MIN_COMMENT_GAP_MS
+      if (comments < expected && minGapPassed) forceComment = true
+    }
+
+    const canComment = underCap && gapPassed
 
     // Trọng số hành vi: scroll 60 / like 22 / refresh 8 / comment 6 / nghỉ-dài 4.
     const weights: Record<ActionKind, number> = {
@@ -190,7 +221,7 @@ export async function runInteractSession(
       comment: canComment ? 6 : 0,
       longpause: 4
     }
-    const action = weightedPick(weights)
+    const action: ActionKind = forceComment ? 'comment' : weightedPick(weights)
 
     const remainMin = Math.max(0, Math.ceil((sessionEnd - Date.now()) / 60_000))
 
@@ -228,11 +259,12 @@ export async function runInteractSession(
           await sleep(thinkTime(2000, 5000))
         } else {
           commentedHrefs.add(target.url)
-          // Thu thập thêm ngữ cảnh: mở bài viết, đọc caption đầy đủ + tối đa 10 reply đầu
-          // (ít hơn thì lấy hết). Nhờ vậy AI có ngữ cảnh chính xác hơn -> bình luận liên
-          // quan hơn. Lỗi đọc reply không chặn: fallback về caption từ feed.
+          // Thu thập ngữ cảnh: mở bài viết, đọc caption đầy đủ + tối đa 20 reply CÓ NGHĨA
+          // (khớp đúng số reply AiClient dùng làm ngữ cảnh — thu nhiều hơn chỉ tổ chậm mỗi
+          // comment mà AI không dùng tới). Cuộn + bấm "Show more replies" + khử trùng permalink.
+          // Lỗi đọc reply không chặn: fallback về caption từ feed.
           report('Đang đọc bài viết + reply để lấy ngữ cảnh…')
-          const ctx = await collectTweetContext(context, target.url, 10, accountId, (m) =>
+          const ctx = await collectTweetContext(context, target.url, 20, accountId, (m) =>
             report(m)
           )
           const captionForAi = ctx.caption?.trim() ? ctx.caption : target.text

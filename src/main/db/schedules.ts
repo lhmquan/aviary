@@ -24,6 +24,7 @@ interface ScheduleRow {
   comment_interval_seconds: number
   comment_source_url: string | null
   interact_duration_minutes: number
+  interact_comment_target: number
   last_run_at: number | null
   next_run_at: number | null
   running: number
@@ -55,6 +56,7 @@ function toSchedule(r: ScheduleRow): Schedule {
     commentIntervalSeconds: r.comment_interval_seconds ?? 60,
     commentSourceUrl: r.comment_source_url ?? null,
     interactDurationMinutes: r.interact_duration_minutes ?? 15,
+    interactCommentTarget: r.interact_comment_target ?? 0,
     lastRunAt: r.last_run_at,
     nextRunAt: r.next_run_at,
     running: !!r.running,
@@ -139,13 +141,16 @@ export function createSchedule(input: ScheduleInput): Schedule {
   const interactDurationMinutes = action === 'interact'
     ? Math.max(1, input.interactDurationMinutes === undefined ? 15 : Number(input.interactDurationMinutes))
     : 15
+  const interactCommentTarget = action === 'interact'
+    ? Math.max(0, input.interactCommentTarget === undefined ? 0 : Math.floor(Number(input.interactCommentTarget)))
+    : 0
 
   getDb()
     .prepare(
       `INSERT INTO schedules (id, account_id, label, enabled, action, kind, interval_minutes, times, jitter_seconds,
         delete_mode, delete_before_date, delete_count, comment_count, comment_interval_seconds, comment_source_url,
-        interact_duration_minutes, last_run_at, next_run_at, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)`
+        interact_duration_minutes, interact_comment_target, last_run_at, next_run_at, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)`
     )
     .run(
       id,
@@ -164,6 +169,7 @@ export function createSchedule(input: ScheduleInput): Schedule {
       commentIntervalSeconds,
       commentSourceUrl,
       interactDurationMinutes,
+      interactCommentTarget,
       nextRunAt,
       now,
       now
@@ -197,6 +203,7 @@ export function updateSchedule(id: string, input: Partial<ScheduleInput>): Sched
     commentIntervalSeconds: existing.commentIntervalSeconds,
     commentSourceUrl: existing.commentSourceUrl,
     interactDurationMinutes: existing.interactDurationMinutes,
+    interactCommentTarget: existing.interactCommentTarget,
     ...input
   }
   validateInput(merged)
@@ -224,13 +231,16 @@ export function updateSchedule(id: string, input: Partial<ScheduleInput>): Sched
   const interactDurationMinutes = action === 'interact'
     ? Math.max(1, merged.interactDurationMinutes === undefined ? 15 : Number(merged.interactDurationMinutes))
     : 15
+  const interactCommentTarget = action === 'interact'
+    ? Math.max(0, merged.interactCommentTarget === undefined ? 0 : Math.floor(Number(merged.interactCommentTarget)))
+    : 0
 
   getDb()
     .prepare(
       `UPDATE schedules SET account_id = ?, label = ?, enabled = ?, action = ?, kind = ?, interval_minutes = ?,
        times = ?, jitter_seconds = ?, delete_mode = ?, delete_before_date = ?, delete_count = ?,
        comment_count = ?, comment_interval_seconds = ?, comment_source_url = ?, interact_duration_minutes = ?,
-       next_run_at = ?, updated_at = ? WHERE id = ?`
+       interact_comment_target = ?, next_run_at = ?, updated_at = ? WHERE id = ?`
     )
     .run(
       merged.accountId,
@@ -248,6 +258,7 @@ export function updateSchedule(id: string, input: Partial<ScheduleInput>): Sched
       commentIntervalSeconds,
       commentSourceUrl,
       interactDurationMinutes,
+      interactCommentTarget,
       nextRunAt,
       now,
       id
@@ -400,6 +411,20 @@ function validateInput(input: ScheduleInput): void {
         `Giảm thời lượng phiên hoặc tăng khoảng cách lịch.`
       )
     }
+    // Số bình luận mục tiêu (nếu user đặt >0) phải KHẢ THI trong thời lượng: mỗi bình luận
+    // cần tối thiểu ~INTERACT_MIN_COMMENT_GAP_SECONDS (giãn cách chống spam) + thời gian đọc
+    // ngữ cảnh. Nếu đặt quá cao, phiên không thể đạt -> báo lỗi để user chỉnh.
+    const target = input.interactCommentTarget === undefined ? 0 : Math.floor(Number(input.interactCommentTarget))
+    if (target > 0) {
+      const maxFeasible = Math.floor((dur * 60) / INTERACT_MIN_COMMENT_GAP_SECONDS)
+      if (target > maxFeasible) {
+        throw new Error(
+          `Số bình luận mục tiêu (${target}) quá cao cho phiên ${dur} phút. ` +
+          `Mỗi bình luận cần ~${INTERACT_MIN_COMMENT_GAP_SECONDS}s (giãn cách chống spam) nên tối đa ~${maxFeasible} bình luận. ` +
+          `Giảm số bình luận hoặc tăng thời lượng phiên.`
+        )
+      }
+    }
   }
 
   // Validate thời gian
@@ -444,6 +469,9 @@ function minGapSeconds(input: ScheduleInput): number {
 const COMMENT_BUFFER_SECONDS = 30
 // Buffer cho phiên tương tác: chừa thời gian mở profile + đóng profile sau khi hết thời lượng.
 const INTERACT_BUFFER_SECONDS = 30
+// Giãn cách tối thiểu giữa 2 bình luận trong phiên tương tác (chống spam). PHẢI khớp với
+// MIN_COMMENT_GAP_MS trong InteractSession.ts để validate "số bình luận mục tiêu" đúng thực tế.
+export const INTERACT_MIN_COMMENT_GAP_SECONDS = 90
 export function validateCommentTiming(input: ScheduleInput): void {
   if (input.action !== 'comment') return
   const count = Math.max(1, Number(input.commentCount) || 1)
@@ -507,6 +535,9 @@ function buildScheduleObject(input: ScheduleInput): Schedule {
     interactDurationMinutes: action === 'interact'
       ? Math.max(1, input.interactDurationMinutes === undefined ? 15 : Number(input.interactDurationMinutes))
       : 15,
+    interactCommentTarget: action === 'interact'
+      ? Math.max(0, input.interactCommentTarget === undefined ? 0 : Math.floor(Number(input.interactCommentTarget)))
+      : 0,
     lastRunAt: null,
     nextRunAt: null,
     running: false,
@@ -557,7 +588,7 @@ export function computeNextRun(schedule: Pick<Schedule, 'kind' | 'intervalMinute
 }
 
 // Mô tả lịch dạng text cho log/UI. Bao gồm cả tác vụ (đăng/xoá/bình luận).
-export function describeSchedule(s: Pick<Schedule, 'kind' | 'intervalMinutes' | 'times' | 'jitterSeconds'> & Partial<Pick<Schedule, 'action' | 'deleteMode' | 'deleteBeforeDate' | 'deleteCount' | 'commentCount' | 'interactDurationMinutes'>>): string {
+export function describeSchedule(s: Pick<Schedule, 'kind' | 'intervalMinutes' | 'times' | 'jitterSeconds'> & Partial<Pick<Schedule, 'action' | 'deleteMode' | 'deleteBeforeDate' | 'deleteCount' | 'commentCount' | 'interactDurationMinutes' | 'interactCommentTarget'>>): string {
   const timing =
     s.kind === 'interval'
       ? `Mỗi ${s.intervalMinutes} phút${s.jitterSeconds ? ` ±${s.jitterSeconds}s` : ''}`
@@ -573,7 +604,9 @@ export function describeSchedule(s: Pick<Schedule, 'kind' | 'intervalMinutes' | 
     return `Bình luận ${s.commentCount ?? 1} bài · ${timing}`
   }
   if (action === 'interact') {
-    return `Tương tác ${s.interactDurationMinutes ?? 15} phút · ${timing}`
+    const target = s.interactCommentTarget ?? 0
+    const cmtText = target > 0 ? `${target} bình luận` : 'bình luận tự động'
+    return `Tương tác ${s.interactDurationMinutes ?? 15} phút · ${cmtText} · ${timing}`
   }
 
   return timing
@@ -633,6 +666,7 @@ function buildAnalyticsSchedule(): Schedule {
     commentIntervalSeconds: 0,
     commentSourceUrl: null,
     interactDurationMinutes: 15,
+    interactCommentTarget: 0,
     lastRunAt,
     nextRunAt,
     running,

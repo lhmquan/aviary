@@ -879,13 +879,15 @@ export async function runCommentForAccount(
 // Nhờ đó lịch khác của CÙNG account phải chờ (activeAccountIds trong scheduler).
 export async function runInteractForAccount(
   accountId: string,
-  opts?: { source?: 'manual' | 'schedule'; durationMinutes?: number }
+  opts?: { source?: 'manual' | 'schedule'; durationMinutes?: number; commentTarget?: number }
 ): Promise<{ ok: boolean; error?: string }> {
   const account = getAccount(accountId)
   if (!account) throw new Error(`Account không tồn tại: ${accountId}`)
   const logEventType = opts?.source === 'schedule' ? 'run_interact' : 'interact'
   const label = account.label
   const durationMinutes = Math.max(1, opts?.durationMinutes ?? 15)
+  // 0 = tự tính theo thời lượng (như cũ); >0 = số bình luận mục tiêu user đặt.
+  const commentTarget = Math.max(0, Math.floor(opts?.commentTarget ?? 0))
   clearStop(accountId)
 
   emitProgress({ accountId, accountLabel: label, stage: 'prepare', message: 'Đang kiểm tra profile…', busy: true })
@@ -915,6 +917,7 @@ export async function runInteractForAccount(
       accountId,
       {
         durationMinutes,
+        commentTarget,
         aiTone: account.aiCommentTone,
         aiLang: account.aiCommentLang,
         aiFormat: account.aiCommentFormat

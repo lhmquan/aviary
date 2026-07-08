@@ -227,7 +227,8 @@ async function runScheduledJob(s: ReturnType<typeof listDueSchedules>[number]): 
     } else if (isInteract) {
       await runInteractForAccount(s.accountId, {
         source: 'schedule',
-        durationMinutes: s.interactDurationMinutes
+        durationMinutes: s.interactDurationMinutes,
+        commentTarget: s.interactCommentTarget
       }).catch((e) => {
         insertLog({
           accountId: s.accountId,
