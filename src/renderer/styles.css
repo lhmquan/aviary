@@ -1690,6 +1690,141 @@ nav {
 .multi-select {
   min-height: 96px;
 }
+
+/* ---------- Menu chọn tài khoản (AccountPicker) ---------- */
+.account-picker {
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--panel);
+  overflow: hidden;
+}
+.ap-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel-2);
+}
+.ap-head-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.ap-head-actions .ap-selectall + .ap-selectall {
+  border-left: 1px solid var(--border-strong);
+  padding-left: 8px;
+  margin-left: 4px;
+}
+.ap-selectall {
+  border: none;
+  background: none;
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  padding: 2px 4px;
+}
+.ap-selectall:hover { text-decoration: underline; }
+.ap-selectall.active {
+  text-decoration: underline;
+  opacity: 0.75;
+}
+.ap-count { font-size: 12px; color: var(--muted); }
+.ap-list {
+  max-height: 260px;
+  overflow-y: auto;
+}
+.ap-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 10px;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  background: none;
+  font-family: inherit;
+  font-size: 13px;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--ease);
+}
+.ap-row:last-child { border-bottom: none; }
+.ap-row:hover { background: var(--panel-2); }
+.ap-row.selected { background: var(--accent-soft); }
+.ap-check {
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  border-radius: 5px;
+  border: 1.5px solid var(--border-strong);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  transition: background var(--ease), border-color var(--ease);
+}
+.ap-check.on {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.ap-avatar {
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  overflow: hidden;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--panel-2);
+}
+.ap-avatar img { width: 100%; height: 100%; object-fit: cover; }
+.ap-avatar-fallback {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-2);
+}
+.ap-name {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ap-handle { font-size: 11px; color: var(--muted); }
+.ap-badges {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.ap-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 7px;
+  border-radius: var(--r-full);
+  font-size: 11px;
+  font-weight: 600;
+}
+.ap-badge.action-post { background: var(--success-soft); color: var(--success); }
+.ap-badge.action-delete { background: var(--danger-soft); color: var(--danger); }
+.ap-badge.action-comment {
+  background: color-mix(in srgb, var(--accent-2) 16%, transparent);
+  color: var(--accent-2);
+}
+.ap-badge.action-interact {
+  background: color-mix(in srgb, #ec4899 16%, transparent);
+  color: #ec4899;
+}
+
 .small { font-size: 12px; }
 .mono.small { font-size: 11px; }
 
@@ -2466,6 +2601,42 @@ nav {
   background: var(--accent-soft);
   color: var(--accent);
   border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+}
+/* Badge số lượng trong chip lọc (vd "Đăng 3") */
+.filter-chip .chip-count {
+  font-size: 11px;
+  font-weight: 600;
+  opacity: 0.7;
+  padding: 0 5px;
+  border-radius: var(--r-full);
+  background: color-mix(in srgb, currentColor 12%, transparent);
+}
+
+/* Chip lọc hàng đợi khi active: tô đúng màu loại tác vụ (đồng bộ với ActionChip trên card). */
+.qfilter-chip.active.action-post {
+  background: var(--success-soft);
+  color: var(--success);
+  border-color: color-mix(in srgb, var(--success) 40%, transparent);
+}
+.qfilter-chip.active.action-delete {
+  background: var(--danger-soft);
+  color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 40%, transparent);
+}
+.qfilter-chip.active.action-comment {
+  background: color-mix(in srgb, var(--accent-2) 16%, transparent);
+  color: var(--accent-2);
+  border-color: color-mix(in srgb, var(--accent-2) 40%, transparent);
+}
+.qfilter-chip.active.action-interact {
+  background: color-mix(in srgb, #ec4899 16%, transparent);
+  color: #ec4899;
+  border-color: color-mix(in srgb, #ec4899 40%, transparent);
+}
+.qfilter-chip.active.action-system {
+  background: color-mix(in srgb, #ff9500 16%, transparent);
+  color: #ff9500;
+  border-color: color-mix(in srgb, #ff9500 40%, transparent);
 }
 
 /* Nút "Xoá lọc" */

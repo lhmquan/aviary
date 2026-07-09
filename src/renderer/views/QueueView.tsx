@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useRef } from 'react'
+import { useEffect, useState, useCallback, useRef, useMemo } from 'react'
 import {
   RefreshCw,
   Loader2,
@@ -32,6 +32,28 @@ const STATUS_META: Record<QueueStatus, { cls: string; text: string }> = {
 
 const STATUS_ORDER: Record<QueueStatus, number> = { running: 0, waiting: 1, upcoming: 2 }
 
+// Loại tác vụ để lọc hàng đợi. 'system' = tác vụ hệ thống (analytics), tách riêng khỏi
+// action='post' của lịch thường vì hiển thị chip "Analytics".
+type QueueKind = 'post' | 'delete' | 'comment' | 'interact' | 'system'
+
+function kindOf(s: Schedule): QueueKind {
+  if (s.accountId === '__system__') return 'system'
+  if (s.action === 'delete') return 'delete'
+  if (s.action === 'comment') return 'comment'
+  if (s.action === 'interact') return 'interact'
+  return 'post'
+}
+
+// Nhãn + icon + class màu cho chip lọc (đồng bộ với ActionChip trên từng card).
+const KIND_META: Record<QueueKind, { text: string; Icon: typeof Send; cls: string }> = {
+  post: { text: 'Đăng', Icon: Send, cls: 'action-post' },
+  delete: { text: 'Xoá', Icon: Trash, cls: 'action-delete' },
+  comment: { text: 'Bình luận', Icon: MessageCircle, cls: 'action-comment' },
+  interact: { text: 'Tương tác', Icon: Activity, cls: 'action-interact' },
+  system: { text: 'Analytics', Icon: BarChart3, cls: 'action-system' }
+}
+const KIND_ORDER: QueueKind[] = ['post', 'delete', 'comment', 'interact', 'system']
+
 // Tiến trình realtime của 1 tài khoản đang chạy (lấy từ onProgress).
 interface LiveProgress {
   stage: string
@@ -50,6 +72,8 @@ export default function QueueView(): JSX.Element {
   liveRef.current = live
   // Tập accountId user đã bấm Dừng nhưng phiên chưa kết thúc (để hiện "Đang dừng…").
   const [stopping, setStopping] = useState<Set<string>>(new Set())
+  // Lọc theo loại tác vụ. null = tất cả.
+  const [kindFilter, setKindFilter] = useState<QueueKind | null>(null)
 
   // Bấm Dừng: gọi IPC dừng + đánh dấu đang-dừng. Cờ tự xoá khi phiên hết busy (onProgress).
   const stopAccount = useCallback((accountId: string) => {
@@ -121,9 +145,9 @@ export default function QueueView(): JSX.Element {
 
   // Lọc: chỉ hiển thị lịch đang bật (enabled) — tắt thì không nằm trong hàng đợi.
   const now = Date.now()
-  const queueItems = schedules
+  const enabledItems = schedules
     .filter((s) => s.enabled)
-    .map((s) => ({ s, status: classifySchedule(s, now) }))
+    .map((s) => ({ s, status: classifySchedule(s, now), kind: kindOf(s) }))
     .sort((a, b) => {
       const ordDiff = STATUS_ORDER[a.status] - STATUS_ORDER[b.status]
       if (ordDiff !== 0) return ordDiff
@@ -132,9 +156,24 @@ export default function QueueView(): JSX.Element {
       return aTime - bTime
     })
 
-  const runningCount = queueItems.filter((q) => q.status === 'running').length
-  const waitingCount = queueItems.filter((q) => q.status === 'waiting').length
-  const upcomingCount = queueItems.filter((q) => q.status === 'upcoming').length
+  // Các loại tác vụ đang có trong hàng đợi (kèm số lượng) — chỉ hiện chip cho loại có thật.
+  const kindCounts = useMemo(() => {
+    const counts = new Map<QueueKind, number>()
+    for (const it of enabledItems) counts.set(it.kind, (counts.get(it.kind) ?? 0) + 1)
+    return counts
+  }, [enabledItems])
+  const availableKinds = KIND_ORDER.filter((k) => kindCounts.has(k))
+
+  // Filter đã chọn nhưng loại đó không còn trong hàng đợi -> tự bỏ filter (hiện tất cả).
+  const effectiveKind = kindFilter && kindCounts.has(kindFilter) ? kindFilter : null
+  const queueItems = effectiveKind
+    ? enabledItems.filter((it) => it.kind === effectiveKind)
+    : enabledItems
+
+  // Đếm theo TOÀN hàng đợi (không theo filter) — slot meter + logic slot đầy phải đúng thực tế.
+  const runningCount = enabledItems.filter((q) => q.status === 'running').length
+  const waitingCount = enabledItems.filter((q) => q.status === 'waiting').length
+  const upcomingCount = enabledItems.filter((q) => q.status === 'upcoming').length
   const concurrency = settings?.concurrency ?? 3
 
   // Đánh dấu item "kế tiếp": item upcoming có nextRunAt nhỏ nhất.
@@ -181,14 +220,48 @@ export default function QueueView(): JSX.Element {
         </span>
       </div>
 
+      {/* Hàng chip lọc theo loại tác vụ — chỉ hiện khi hàng đợi có từ 2 loại trở lên. */}
+      {availableKinds.length >= 2 && (
+        <div className="filter-bar">
+          <div className="filter-chips">
+            <span className="filter-label">Loại tác vụ:</span>
+            <QueueFilterChip active={effectiveKind === null} onClick={() => setKindFilter(null)}>
+              <ListOrdered size={12} /> Tất cả <span className="chip-count">{enabledItems.length}</span>
+            </QueueFilterChip>
+            {availableKinds.map((k) => {
+              const { text, Icon, cls } = KIND_META[k]
+              return (
+                <QueueFilterChip
+                  key={k}
+                  active={effectiveKind === k}
+                  colorCls={cls}
+                  onClick={() => setKindFilter((prev) => (prev === k ? null : k))}
+                >
+                  <Icon size={12} /> {text} <span className="chip-count">{kindCounts.get(k)}</span>
+                </QueueFilterChip>
+              )
+            })}
+          </div>
+        </div>
+      )}
+
       {queueItems.length === 0 ? (
         <div className="empty-state">
           <ListOrdered size={36} />
-          <p>Hàng đợi trống</p>
-          <span>
-            Chưa có lịch nào đang bật. Hãy thêm lịch ở tab "Lên lịch" để tài khoản tự động
-            đăng/xoá bài theo hàng đợi.
-          </span>
+          {effectiveKind ? (
+            <>
+              <p>Không có tác vụ "{KIND_META[effectiveKind].text}"</p>
+              <span>Hàng đợi không có lịch nào thuộc loại này. Bấm "Tất cả" để xem hết.</span>
+            </>
+          ) : (
+            <>
+              <p>Hàng đợi trống</p>
+              <span>
+                Chưa có lịch nào đang bật. Hãy thêm lịch ở tab "Lên lịch" để tài khoản tự động
+                đăng/xoá bài theo hàng đợi.
+              </span>
+            </>
+          )}
         </div>
       ) : (
         <div className="queue-list">
@@ -412,5 +485,22 @@ function Countdown({ nextRunAt }: { nextRunAt: number }): JSX.Element {
       <span className="qc-cd-rel">{display}</span>
       <ArrowRight size={11} /> <span className="qc-cd-at">{at}</span>
     </span>
+  )
+}
+
+// Chip lọc hàng đợi theo loại tác vụ (dùng lại style .filter-chip toàn cục).
+// colorCls (action-post/…): khi active tô đúng màu loại tác vụ cho đồng bộ với card.
+function QueueFilterChip(props: {
+  active: boolean
+  onClick: () => void
+  colorCls?: string
+  children: React.ReactNode
+}): JSX.Element {
+  const { active, onClick, colorCls, children } = props
+  const cls = `filter-chip qfilter-chip${active ? ' active' : ''}${active && colorCls ? ` ${colorCls}` : ''}`
+  return (
+    <button className={cls} onClick={onClick}>
+      {children}
+    </button>
   )
 }

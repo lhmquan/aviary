@@ -1,8 +1,208 @@
-import { useEffect, useState, useCallback } from 'react'
-import { Plus, Pencil, Trash2, RefreshCw, Loader2, Clock, CalendarClock, Trash, MessageSquare, Activity } from 'lucide-react'
+import { useEffect, useState, useCallback, useMemo } from 'react'
+import { Plus, Pencil, Trash2, RefreshCw, Loader2, Clock, CalendarClock, Trash, MessageSquare, Activity, Send, MessageCircle, BarChart3, ListOrdered, Copy, X, Check } from 'lucide-react'
 import type { Account, Schedule, ScheduleInput, ScheduleKind, ScheduleAction, DeleteMode } from '@shared/types'
 
 const REFRESH_MS = 15_000
+
+// Loại tác vụ để lọc bảng lịch. 'system' = tác vụ hệ thống (analytics).
+type ScheduleKindTag = 'post' | 'delete' | 'comment' | 'interact' | 'system'
+
+function kindOf(s: Schedule): ScheduleKindTag {
+  if (s.accountId === '__system__') return 'system'
+  return actionToKind(s.action)
+}
+
+// Map ScheduleAction -> tag loại (post/delete/comment/interact). Không bao giờ 'system'.
+function actionToKind(action: ScheduleAction): ScheduleKindTag {
+  if (action === 'delete') return 'delete'
+  if (action === 'comment') return 'comment'
+  if (action === 'interact') return 'interact'
+  return 'post'
+}
+
+// Đếm số lịch theo tài khoản + loại tác vụ: Map<accountId, Map<kind, count>>. Bỏ qua lịch
+// hệ thống. Dùng cho badge số lịch trong menu chọn tài khoản (AccountPicker).
+function buildScheduleCountMap(schedules: Schedule[]): Map<string, Map<ScheduleKindTag, number>> {
+  const map = new Map<string, Map<ScheduleKindTag, number>>()
+  for (const s of schedules) {
+    if (s.accountId === '__system__') continue
+    const kind = kindOf(s)
+    let inner = map.get(s.accountId)
+    if (!inner) {
+      inner = new Map<ScheduleKindTag, number>()
+      map.set(s.accountId, inner)
+    }
+    inner.set(kind, (inner.get(kind) ?? 0) + 1)
+  }
+  return map
+}
+
+// Nhãn + icon + class màu cho chip lọc (đồng bộ với badge tác vụ trong bảng + tab Hàng đợi).
+const KIND_META: Record<ScheduleKindTag, { text: string; Icon: typeof Send; cls: string }> = {
+  post: { text: 'Đăng', Icon: Send, cls: 'action-post' },
+  delete: { text: 'Xoá', Icon: Trash, cls: 'action-delete' },
+  comment: { text: 'Bình luận', Icon: MessageCircle, cls: 'action-comment' },
+  interact: { text: 'Tương tác', Icon: Activity, cls: 'action-interact' },
+  system: { text: 'Analytics', Icon: BarChart3, cls: 'action-system' }
+}
+const KIND_ORDER: ScheduleKindTag[] = ['post', 'delete', 'comment', 'interact', 'system']
+
+// Chip lọc (dùng lại style .filter-chip + .qfilter-chip toàn cục). colorCls: khi active tô
+// đúng màu loại tác vụ cho đồng bộ với badge trong bảng.
+function ScheduleFilterChip(props: {
+  active: boolean
+  onClick: () => void
+  colorCls?: string
+  children: React.ReactNode
+}): JSX.Element {
+  const { active, onClick, colorCls, children } = props
+  const cls = `filter-chip qfilter-chip${active ? ' active' : ''}${active && colorCls ? ` ${colorCls}` : ''}`
+  return (
+    <button className={cls} onClick={onClick}>
+      {children}
+    </button>
+  )
+}
+
+// Badge số lịch theo từng loại tác vụ cho 1 tài khoản (tô màu đồng bộ). Bỏ qua loại 'system'.
+// countKind: null = hiện tất cả loại (trừ system); 1 loại cụ thể = chỉ hiện loại đó.
+function AccountScheduleBadges(props: {
+  counts: Map<ScheduleKindTag, number>
+  countKind: ScheduleKindTag | null
+}): JSX.Element | null {
+  const { counts, countKind } = props
+  const kinds = (countKind ? [countKind] : KIND_ORDER).filter((k) => k !== 'system' && counts.get(k))
+  if (kinds.length === 0) return null
+  return (
+    <span className="ap-badges">
+      {kinds.map((k) => {
+        const { text, Icon, cls } = KIND_META[k]
+        return (
+          <span key={k} className={`ap-badge ${cls}`} title={`${counts.get(k)} lịch ${text}`}>
+            <Icon size={11} /> {counts.get(k)}
+          </span>
+        )
+      })}
+    </span>
+  )
+}
+
+// Menu chọn tài khoản dùng chung (thay <select multiple>): mỗi tài khoản 1 row bấm-để-chọn
+// (không cần Ctrl/Shift), có avatar + tên + badge số lịch theo loại để user biết account nào
+// đã có lịch. multi=false -> chỉ chọn 1 (radio-like). countKind quyết định badge đếm loại nào.
+function AccountPicker(props: {
+  accounts: Account[]
+  selectedIds: string[]
+  onChange: (ids: string[]) => void
+  scheduleCountByAccount: Map<string, Map<ScheduleKindTag, number>>
+  countKind: ScheduleKindTag | null
+  multi?: boolean
+}): JSX.Element {
+  const { accounts, selectedIds, onChange, scheduleCountByAccount, countKind, multi = true } = props
+  const selected = new Set(selectedIds)
+
+  function toggle(id: string): void {
+    if (!multi) {
+      onChange([id])
+      return
+    }
+    const next = new Set(selected)
+    if (next.has(id)) next.delete(id)
+    else next.add(id)
+    onChange([...next])
+  }
+
+  const allSelected = accounts.length > 0 && accounts.every((a) => selected.has(a.id))
+
+  // "Chưa có lịch" hiểu theo đúng loại đang xét (countKind) để KHỚP với badge đang hiển thị:
+  // - countKind cụ thể (vd Tương tác) -> tài khoản chưa có lịch LOẠI ĐÓ.
+  // - countKind null (tất cả) -> tài khoản chưa có lịch nào.
+  // Lịch hệ thống đã loại sẵn khỏi scheduleCountByAccount.
+  function hasNoSchedule(id: string): boolean {
+    const inner = scheduleCountByAccount.get(id)
+    if (!inner || inner.size === 0) return true
+    if (countKind) return !inner.get(countKind)
+    return false
+  }
+  const noScheduleAccounts = accounts.filter((a) => hasNoSchedule(a.id))
+  // Nhãn nút phản ánh loại đang xét (vd "Chưa có lịch Tương tác").
+  const noScheduleLabel = countKind ? `Chưa có lịch ${KIND_META[countKind].text}` : 'Chưa có lịch'
+  // Nhóm "chưa có lịch" đã được chọn hết chưa (để toggle: bấm lần nữa -> bỏ chọn nhóm này).
+  const allNoSchedSelected =
+    noScheduleAccounts.length > 0 && noScheduleAccounts.every((a) => selected.has(a.id))
+
+  // Toggle chọn/bỏ nhóm "chưa có lịch" (giữ nguyên các lựa chọn khác).
+  function toggleNoSchedule(): void {
+    const ids = noScheduleAccounts.map((a) => a.id)
+    if (allNoSchedSelected) {
+      const next = new Set(selected)
+      for (const id of ids) next.delete(id)
+      onChange([...next])
+    } else {
+      onChange([...new Set([...selected, ...ids])])
+    }
+  }
+
+  return (
+    <div className="account-picker">
+      {multi && accounts.length > 1 && (
+        <div className="ap-head">
+          <span className="ap-head-actions">
+            <button
+              type="button"
+              className="ap-selectall"
+              onClick={() => onChange(allSelected ? [] : accounts.map((a) => a.id))}
+            >
+              {allSelected ? 'Bỏ chọn tất cả' : 'Chọn tất cả'}
+            </button>
+            {noScheduleAccounts.length > 0 && (
+              <button
+                type="button"
+                className={`ap-selectall${allNoSchedSelected ? ' active' : ''}`}
+                onClick={toggleNoSchedule}
+                title={`Chọn các tài khoản ${noScheduleLabel.toLowerCase()}`}
+              >
+                {noScheduleLabel} ({noScheduleAccounts.length})
+              </button>
+            )}
+          </span>
+          <span className="ap-count">{selectedIds.length}/{accounts.length} đã chọn</span>
+        </div>
+      )}
+      <div className="ap-list">
+        {accounts.map((a) => {
+          const isSel = selected.has(a.id)
+          const counts = scheduleCountByAccount.get(a.id) ?? new Map<ScheduleKindTag, number>()
+          const initial = a.label.trim().charAt(0).toUpperCase() || '?'
+          return (
+            <button
+              type="button"
+              key={a.id}
+              className={`ap-row${isSel ? ' selected' : ''}`}
+              onClick={() => toggle(a.id)}
+            >
+              <span className={`ap-check${isSel ? ' on' : ''}`}>
+                {isSel && <Check size={12} />}
+              </span>
+              <span className="ap-avatar">
+                {a.avatarUrl ? (
+                  <img src={a.avatarUrl} alt="" loading="lazy" referrerPolicy="no-referrer" />
+                ) : (
+                  <span className="ap-avatar-fallback">{initial}</span>
+                )}
+              </span>
+              <span className="ap-name" title={a.label}>
+                {a.label}
+                {a.handle && <span className="ap-handle">@{a.handle.replace(/^@/, '')}</span>}
+              </span>
+              <AccountScheduleBadges counts={counts} countKind={countKind} />
+            </button>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
 
 export default function ScheduleView(): JSX.Element {
   const [schedules, setSchedules] = useState<Schedule[]>([])
@@ -12,6 +212,13 @@ export default function ScheduleView(): JSX.Element {
   const [editing, setEditing] = useState<Schedule | null>(null)
   const [toggling, setToggling] = useState<string | null>(null)
   const [, force] = useState(0)
+  // Lọc bảng theo loại tác vụ. null = tất cả.
+  const [kindFilter, setKindFilter] = useState<ScheduleKindTag | null>(null)
+  // Bulk select: tập id lịch đã tick (bỏ qua lịch hệ thống). + cờ đang xử lý hàng loạt.
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  const [bulkBusy, setBulkBusy] = useState(false)
+  // Lịch đang mở modal Clone (null = không mở).
+  const [cloning, setCloning] = useState<Schedule | null>(null)
 
   const refresh = useCallback(async () => {
     setLoading(true)
@@ -34,7 +241,9 @@ export default function ScheduleView(): JSX.Element {
     // ScheduleForm và có thể LÀM RỚT KÝ TỰ đang gõ ở ô <input type="number"> (controlled input) —
     // đó là lý do "thỉnh thoảng không nhập số được, chỉ chỉnh bằng nút lên/xuống". Với lịch chạy
     // mỗi 1 phút, onProgress bắn refresh() đúng lúc đang gõ -> rớt ký tự. Đóng băng để form ổn định.
-    if (showForm) return
+    // Modal Clone cũng phải đóng băng: re-render 100ms/lần sẽ RESET lựa chọn của <select multiple>
+    // controlled -> "click chọn tài khoản không ăn". Che modal nên không cần cập nhật nền.
+    if (showForm || cloning) return
 
     refresh()
     // Làm mới định kỳ để cập nhật "lần chạy cuối / lần kế" + force render countdown realtime.
@@ -56,7 +265,7 @@ export default function ScheduleView(): JSX.Element {
       off()
       offQueue()
     }
-  }, [refresh, showForm])
+  }, [refresh, showForm, cloning])
 
   async function handleDelete(s: Schedule): Promise<void> {
     const actionLabel = s.action === 'delete' ? 'xoá bài' : s.action === 'comment' ? 'bình luận' : s.action === 'interact' ? 'tương tác' : 'đăng bài'
@@ -81,6 +290,69 @@ export default function ScheduleView(): JSX.Element {
     return accounts.find((a) => a.id === accountId)?.label ?? '(đã xoá)'
   }
 
+  // Các loại tác vụ đang có (kèm số lượng) — chỉ hiện chip cho loại có thật.
+  const kindCounts = useMemo(() => {
+    const counts = new Map<ScheduleKindTag, number>()
+    for (const s of schedules) counts.set(kindOf(s), (counts.get(kindOf(s)) ?? 0) + 1)
+    return counts
+  }, [schedules])
+  const availableKinds = KIND_ORDER.filter((k) => kindCounts.has(k))
+
+  // Số lịch theo tài khoản + loại (cho badge trong menu chọn tài khoản).
+  const scheduleCountByAccount = useMemo(() => buildScheduleCountMap(schedules), [schedules])
+
+  // Filter đã chọn nhưng loại đó không còn -> tự bỏ filter (hiện tất cả).
+  const effectiveKind = kindFilter && kindCounts.has(kindFilter) ? kindFilter : null
+  const visibleSchedules = effectiveKind
+    ? schedules.filter((s) => kindOf(s) === effectiveKind)
+    : schedules
+
+  // ---- Bulk select ----
+  // Chỉ lịch thường mới chọn được (lịch hệ thống __system__ không xoá được).
+  const selectableVisible = visibleSchedules.filter((s) => s.accountId !== '__system__')
+  const allVisibleSelected =
+    selectableVisible.length > 0 && selectableVisible.every((s) => selectedIds.has(s.id))
+  const hasSelection = selectedIds.size > 0
+
+  function toggleSelect(id: string): void {
+    setSelectedIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  function toggleSelectAll(): void {
+    if (allVisibleSelected) {
+      // Bỏ chọn các lịch đang hiển thị (giữ lựa chọn ở loại khác nếu có).
+      setSelectedIds((prev) => {
+        const next = new Set(prev)
+        for (const s of selectableVisible) next.delete(s.id)
+        return next
+      })
+    } else {
+      setSelectedIds((prev) => {
+        const next = new Set(prev)
+        for (const s of selectableVisible) next.add(s.id)
+        return next
+      })
+    }
+  }
+
+  async function handleBulkDelete(): Promise<void> {
+    const count = selectedIds.size
+    if (count === 0) return
+    if (!confirm(`Xoá ${count} lịch đã chọn?`)) return
+    setBulkBusy(true)
+    for (const id of selectedIds) {
+      await window.aviary.schedules.remove(id).catch(() => {})
+    }
+    setSelectedIds(new Set())
+    await refresh()
+    setBulkBusy(false)
+  }
+
   return (
     <div className="view">
       <div className="toolbar">
@@ -98,7 +370,70 @@ export default function ScheduleView(): JSX.Element {
           <Plus size={15} />
           Thêm lịch
         </button>
+
+        {/* Chọn tất cả (các lịch đang hiển thị, bỏ qua lịch hệ thống). */}
+        {selectableVisible.length > 0 && (
+          <label className="select-all-check">
+            <input
+              type="checkbox"
+              ref={(el) => {
+                if (el) el.indeterminate = hasSelection && !allVisibleSelected
+              }}
+              checked={allVisibleSelected}
+              onChange={toggleSelectAll}
+            />
+            <span className="small muted">Chọn tất cả</span>
+          </label>
+        )}
+
+        {hasSelection && (
+          <>
+            <span className="bulk-sep" />
+            <span className="badge selected-badge">Đã chọn {selectedIds.size}</span>
+            <button
+              className="btn icon-label danger"
+              disabled={bulkBusy}
+              onClick={handleBulkDelete}
+              title={`Xoá ${selectedIds.size} lịch`}
+            >
+              {bulkBusy ? <Loader2 size={15} className="spin" /> : <Trash2 size={15} />}
+              Xoá
+            </button>
+            <button
+              className="btn icon-only ghost"
+              title="Bỏ chọn tất cả"
+              onClick={() => setSelectedIds(new Set())}
+            >
+              <X size={16} />
+            </button>
+          </>
+        )}
       </div>
+
+      {/* Hàng chip lọc theo loại tác vụ — chỉ hiện khi có từ 2 loại trở lên. */}
+      {availableKinds.length >= 2 && (
+        <div className="filter-bar">
+          <div className="filter-chips">
+            <span className="filter-label">Loại tác vụ:</span>
+            <ScheduleFilterChip active={effectiveKind === null} onClick={() => setKindFilter(null)}>
+              <ListOrdered size={12} /> Tất cả <span className="chip-count">{schedules.length}</span>
+            </ScheduleFilterChip>
+            {availableKinds.map((k) => {
+              const { text, Icon, cls } = KIND_META[k]
+              return (
+                <ScheduleFilterChip
+                  key={k}
+                  active={effectiveKind === k}
+                  colorCls={cls}
+                  onClick={() => setKindFilter((prev) => (prev === k ? null : k))}
+                >
+                  <Icon size={12} /> {text} <span className="chip-count">{kindCounts.get(k)}</span>
+                </ScheduleFilterChip>
+              )
+            })}
+          </div>
+        </div>
+      )}
 
       {schedules.length === 0 ? (
         <div className="empty-state">
@@ -109,11 +444,30 @@ export default function ScheduleView(): JSX.Element {
             được ghi vào Nhật ký.
           </span>
         </div>
+      ) : visibleSchedules.length === 0 ? (
+        <div className="empty-state">
+          <Clock size={36} />
+          <p>Không có lịch "{effectiveKind ? KIND_META[effectiveKind].text : ''}"</p>
+          <span>Không có lịch nào thuộc loại này. Bấm "Tất cả" để xem hết.</span>
+        </div>
       ) : (
         <div className="card table-card">
           <table className="table">
             <thead>
               <tr>
+                <th className="col-check">
+                  {selectableVisible.length > 0 && (
+                    <input
+                      type="checkbox"
+                      ref={(el) => {
+                        if (el) el.indeterminate = hasSelection && !allVisibleSelected
+                      }}
+                      checked={allVisibleSelected}
+                      onChange={toggleSelectAll}
+                      title="Chọn tất cả"
+                    />
+                  )}
+                </th>
                 <th>Tài khoản</th>
                 <th>Tác vụ</th>
                 <th>Mô hình</th>
@@ -125,10 +479,23 @@ export default function ScheduleView(): JSX.Element {
               </tr>
             </thead>
             <tbody>
-              {schedules.map((s) => {
+              {visibleSchedules.map((s) => {
                 const isSystem = s.accountId === '__system__'
+                const isSelected = selectedIds.has(s.id)
                 return (
-                  <tr key={s.id} className={isSystem ? 'system-schedule' : ''}>
+                  <tr
+                    key={s.id}
+                    className={`${isSystem ? 'system-schedule' : ''}${isSelected ? ' row-selected' : ''}`}
+                  >
+                    <td className="col-check">
+                      {!isSystem && (
+                        <input
+                          type="checkbox"
+                          checked={isSelected}
+                          onChange={() => toggleSelect(s.id)}
+                        />
+                      )}
+                    </td>
                     <td className="cell-label">
                       {isSystem ? (
                         <span className="system-label">Hệ thống</span>
@@ -185,6 +552,13 @@ export default function ScheduleView(): JSX.Element {
                             <Pencil size={16} />
                           </button>
                           <button
+                            className="btn icon-only"
+                            title="Nhân bản lịch sang tài khoản khác"
+                            onClick={() => setCloning(s)}
+                          >
+                            <Copy size={16} />
+                          </button>
+                          <button
                             className="btn icon-only danger"
                             title="Xóa"
                             onClick={() => handleDelete(s)}
@@ -206,9 +580,25 @@ export default function ScheduleView(): JSX.Element {
         <ScheduleForm
           schedule={editing}
           accounts={accounts}
+          scheduleCountByAccount={scheduleCountByAccount}
           onClose={() => setShowForm(false)}
           onSaved={async () => {
             setShowForm(false)
+            await refresh()
+          }}
+        />
+      )}
+
+      {cloning && (
+        <CloneScheduleModal
+          schedule={cloning}
+          accounts={accounts}
+          accountLabel={accountLabel}
+          scheduleCountByAccount={scheduleCountByAccount}
+          countKind={effectiveKind && effectiveKind !== 'system' ? effectiveKind : null}
+          onClose={() => setCloning(null)}
+          onCloned={async () => {
+            setCloning(null)
             await refresh()
           }}
         />
@@ -217,13 +607,122 @@ export default function ScheduleView(): JSX.Element {
   )
 }
 
+// ---- Modal Clone: nhân bản 1 lịch sang 1+ tài khoản khác ----
+// Sao chép TOÀN BỘ cấu hình lịch gốc (tác vụ, mô hình, giờ, jitter, các field theo tác vụ),
+// chỉ đổi accountId. Chọn nhiều tài khoản -> tạo nhiều lịch tương ứng. Lịch mới luôn tạo bằng
+// schedules.create (không đụng lịch gốc). Mặc định KHÔNG cho tick lại chính tài khoản gốc.
+function CloneScheduleModal(props: {
+  schedule: Schedule
+  accounts: Account[]
+  accountLabel: (accountId: string) => string
+  scheduleCountByAccount: Map<string, Map<ScheduleKindTag, number>>
+  // Loại tác vụ để đếm badge: theo filter đang chọn (null = tất cả loại trừ system).
+  countKind: ScheduleKindTag | null
+  onClose: () => void
+  onCloned: () => void
+}): JSX.Element {
+  const { schedule, accounts, accountLabel, scheduleCountByAccount, countKind, onClose, onCloned } = props
+  // Loại trừ tài khoản gốc khỏi danh sách đích (clone sang tài khoản KHÁC).
+  const targets = accounts.filter((a) => a.id !== schedule.accountId)
+  const [selectedIds, setSelectedIds] = useState<string[]>([])
+  const [enabled, setEnabled] = useState<boolean>(schedule.enabled)
+  const [cloning, setCloning] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  // Dựng input clone từ lịch gốc (bỏ id/accountId/trạng thái runtime), giữ mọi cấu hình.
+  function buildInput(accountId: string): ScheduleInput {
+    return {
+      accountId,
+      label: schedule.label,
+      action: schedule.action,
+      kind: schedule.kind,
+      intervalMinutes: schedule.intervalMinutes,
+      times: schedule.times,
+      jitterSeconds: schedule.jitterSeconds,
+      enabled,
+      deleteMode: schedule.deleteMode,
+      deleteBeforeDate: schedule.deleteBeforeDate,
+      deleteCount: schedule.deleteCount,
+      commentCount: schedule.commentCount,
+      commentIntervalSeconds: schedule.commentIntervalSeconds,
+      commentSourceUrl: schedule.commentSourceUrl,
+      interactDurationMinutes: schedule.interactDurationMinutes,
+      interactCommentTarget: schedule.interactCommentTarget
+    }
+  }
+
+  async function doClone(): Promise<void> {
+    if (selectedIds.length === 0) {
+      setError('Phải chọn ít nhất 1 tài khoản đích')
+      return
+    }
+    setError(null)
+    setCloning(true)
+    try {
+      for (const accountId of selectedIds) {
+        await window.aviary.schedules.create(buildInput(accountId))
+      }
+      onCloned()
+    } catch (e) {
+      setError((e as Error).message)
+    } finally {
+      setCloning(false)
+    }
+  }
+
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal" onClick={(e) => e.stopPropagation()}>
+        <h2>Nhân bản lịch</h2>
+        <p className="hint">
+          Sao chép lịch <b>{describe(schedule)}</b> (từ {accountLabel(schedule.accountId)}) sang các
+          tài khoản được chọn. Mỗi tài khoản được tạo 1 lịch giống hệt.
+        </p>
+        {targets.length === 0 ? (
+          <p className="hint">Không có tài khoản nào khác để nhân bản.</p>
+        ) : (
+          <div className="field">
+            <span>Tài khoản đích * ({selectedIds.length} đã chọn)</span>
+            <AccountPicker
+              accounts={targets}
+              selectedIds={selectedIds}
+              onChange={setSelectedIds}
+              scheduleCountByAccount={scheduleCountByAccount}
+              countKind={countKind}
+            />
+          </div>
+        )}
+        <label className="field checkbox-field">
+          <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} />
+          <span>Bật các lịch vừa nhân bản</span>
+        </label>
+        {error && <p className="test-result fail">{error}</p>}
+        <div className="modal-actions">
+          <button className="btn" onClick={onClose} disabled={cloning}>
+            Hủy
+          </button>
+          <button
+            className="btn primary"
+            disabled={cloning || targets.length === 0 || selectedIds.length === 0}
+            onClick={doClone}
+          >
+            {cloning ? <Loader2 size={15} className="spin" /> : <Copy size={15} />}
+            {cloning ? 'Đang nhân bản…' : `Nhân bản (${selectedIds.length})`}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function ScheduleForm(props: {
   schedule: Schedule | null
   accounts: Account[]
+  scheduleCountByAccount: Map<string, Map<ScheduleKindTag, number>>
   onClose: () => void
   onSaved: () => void
 }): JSX.Element {
-  const { schedule, accounts, onClose, onSaved } = props
+  const { schedule, accounts, scheduleCountByAccount, onClose, onSaved } = props
   const [accountScope, setAccountScope] = useState<'all' | 'specific'>('specific')
   const [selectedAccountIds, setSelectedAccountIds] = useState<string[]>(schedule ? [schedule.accountId] : accounts[0] ? [accounts[0].id] : [])
   const [label, setLabel] = useState(schedule?.label ?? '')
@@ -419,25 +918,16 @@ function ScheduleForm(props: {
           </select>
         </label>
         {accountScope === 'specific' && (
-          <label className="field">
+          <div className="field">
             <span>Tài khoản * ({selectedAccountIds.length} đã chọn)</span>
-            <select
-              multiple
-              className="multi-select"
-              size={Math.min(8, Math.max(3, accounts.length))}
-              value={selectedAccountIds}
-              onChange={(e) =>
-                setSelectedAccountIds(Array.from(e.currentTarget.selectedOptions, (opt) => opt.value))
-              }
-            >
-              {accounts.map((a) => (
-                <option key={a.id} value={a.id}>
-                  {a.label}
-                </option>
-              ))}
-            </select>
-            <p className="hint">Giữ Ctrl hoặc Shift để chọn nhiều tài khoản.</p>
-          </label>
+            <AccountPicker
+              accounts={accounts}
+              selectedIds={selectedAccountIds}
+              onChange={setSelectedAccountIds}
+              scheduleCountByAccount={scheduleCountByAccount}
+              countKind={actionToKind(action)}
+            />
+          </div>
         )}
         {schedule && accountSelection().length > 1 && (
           <p className="hint">
