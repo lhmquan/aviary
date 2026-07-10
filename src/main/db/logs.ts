@@ -72,21 +72,23 @@ export function listLogs(params?: LogListParams): LogListResult {
   const pageSize = Math.max(1, Math.min(200, params?.pageSize ?? 50))
   const offset = (page - 1) * pageSize
   const eventType = params?.eventType ?? null
+  const onlyErrors = params?.onlyErrors ?? false
 
   const db = getDb()
 
-  // Xây dựng WHERE clause động theo eventType filter.
-  let where = ''
+  // Xây dựng WHERE clause động: gom các điều kiện rồi nối bằng AND.
+  const conds: string[] = []
   const args: any[] = []
   if (eventType === 'post') {
     // Đăng: bao gồm cả log cũ (event_type NULL) và log có event_type = 'post'.
-    where = 'WHERE (event_type IS NULL OR event_type = ?)'
+    conds.push('(event_type IS NULL OR event_type = ?)')
     args.push('post')
   } else if (eventType) {
-    where = 'WHERE event_type = ?'
+    conds.push('event_type = ?')
     args.push(eventType)
   }
-  // eventType null/undefined: lấy tất cả (không có WHERE)
+  if (onlyErrors) conds.push('ok = 0')
+  const where = conds.length > 0 ? `WHERE ${conds.join(' AND ')}` : ''
 
   const totalSql = `SELECT COUNT(*) as c FROM logs ${where}`
   const total = (db.prepare(totalSql).get(...args) as { c: number }).c

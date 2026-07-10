@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback, useMemo } from 'react'
-import { Plus, Pencil, Trash2, RefreshCw, Loader2, Clock, CalendarClock, Trash, MessageSquare, Activity, Send, MessageCircle, BarChart3, ListOrdered, Copy, X, Check } from 'lucide-react'
+import { Plus, Pencil, Trash2, RefreshCw, Loader2, Clock, CalendarClock, Trash, MessageSquare, Activity, Send, MessageCircle, BarChart3, ListOrdered, Copy, X, Check, Search } from 'lucide-react'
 import type { Account, Schedule, ScheduleInput, ScheduleKind, ScheduleAction, DeleteMode } from '@shared/types'
 
 const REFRESH_MS = 15_000
@@ -214,6 +214,8 @@ export default function ScheduleView(): JSX.Element {
   const [, force] = useState(0)
   // Lọc bảng theo loại tác vụ. null = tất cả.
   const [kindFilter, setKindFilter] = useState<ScheduleKindTag | null>(null)
+  // Ô tìm kiếm theo tài khoản (tên/@username). Nhiều từ khoá ngăn cách bởi dấu phẩy = OR.
+  const [query, setQuery] = useState('')
   // Bulk select: tập id lịch đã tick (bỏ qua lịch hệ thống). + cờ đang xử lý hàng loạt.
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [bulkBusy, setBulkBusy] = useState(false)
@@ -303,9 +305,38 @@ export default function ScheduleView(): JSX.Element {
 
   // Filter đã chọn nhưng loại đó không còn -> tự bỏ filter (hiện tất cả).
   const effectiveKind = kindFilter && kindCounts.has(kindFilter) ? kindFilter : null
-  const visibleSchedules = effectiveKind
+  const byKind = effectiveKind
     ? schedules.filter((s) => kindOf(s) === effectiveKind)
     : schedules
+
+  // Tách query thành các từ khoá (ngăn bởi dấu phẩy), lowercase, bỏ rỗng. Nhiều từ khoá = OR:
+  // lịch khớp nếu tài khoản của nó chứa BẤT KỲ từ khoá nào (theo tên hoặc @username).
+  const searchTerms = useMemo(
+    () =>
+      query
+        .toLowerCase()
+        .split(',')
+        .map((t) => t.trim().replace(/^@/, ''))
+        .filter(Boolean),
+    [query]
+  )
+  // Map accountId -> chuỗi tìm kiếm gộp (tên + @username), lowercase, để match nhanh.
+  const accountSearchText = useMemo(() => {
+    const m = new Map<string, string>()
+    for (const a of accounts) {
+      const handle = (a.handle ?? '').replace(/^@/, '')
+      m.set(a.id, `${a.label} ${handle}`.toLowerCase())
+    }
+    return m
+  }, [accounts])
+
+  const visibleSchedules =
+    searchTerms.length === 0
+      ? byKind
+      : byKind.filter((s) => {
+          const text = accountSearchText.get(s.accountId) ?? ''
+          return searchTerms.some((term) => text.includes(term))
+        })
 
   // ---- Bulk select ----
   // Chỉ lịch thường mới chọn được (lịch hệ thống __system__ không xoá được).
@@ -370,6 +401,23 @@ export default function ScheduleView(): JSX.Element {
           <Plus size={15} />
           Thêm lịch
         </button>
+
+        {/* Ô tìm kiếm — lọc lịch theo tài khoản (tên/@username). Nhiều tài khoản: cách bởi dấu phẩy. */}
+        <div className="search-box">
+          <Search size={15} className="search-icon" />
+          <input
+            type="text"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Lọc theo tài khoản: tên, @username (nhiều: cách bởi dấu phẩy)…"
+            spellCheck={false}
+          />
+          {query && (
+            <button className="search-clear" title="Xoá từ khoá" onClick={() => setQuery('')}>
+              <X size={14} />
+            </button>
+          )}
+        </div>
 
         {/* Chọn tất cả (các lịch đang hiển thị, bỏ qua lịch hệ thống). */}
         {selectableVisible.length > 0 && (
@@ -447,8 +495,21 @@ export default function ScheduleView(): JSX.Element {
       ) : visibleSchedules.length === 0 ? (
         <div className="empty-state">
           <Clock size={36} />
-          <p>Không có lịch "{effectiveKind ? KIND_META[effectiveKind].text : ''}"</p>
-          <span>Không có lịch nào thuộc loại này. Bấm "Tất cả" để xem hết.</span>
+          {searchTerms.length > 0 ? (
+            <>
+              <p>Không tìm thấy lịch phù hợp</p>
+              <span>
+                Không có lịch nào cho tài khoản khớp từ khoá
+                {effectiveKind ? ` (loại "${KIND_META[effectiveKind].text}")` : ''}. Thử đổi từ khoá
+                hoặc xoá ô tìm kiếm.
+              </span>
+            </>
+          ) : (
+            <>
+              <p>Không có lịch "{effectiveKind ? KIND_META[effectiveKind].text : ''}"</p>
+              <span>Không có lịch nào thuộc loại này. Bấm "Tất cả" để xem hết.</span>
+            </>
+          )}
         </div>
       ) : (
         <div className="card table-card">

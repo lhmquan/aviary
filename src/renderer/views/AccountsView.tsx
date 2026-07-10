@@ -22,7 +22,8 @@ import {
   Users as UsersIcon,
   UserCheck,
   FileText,
-  Search
+  Search,
+  AlertTriangle
 } from 'lucide-react'
 import type { Account, AccountInput, Proxy, Schedule, WebhookTestResult, XProfileInfo } from '@shared/types'
 import { PROXY_LOCAL, PROXY_RANDOM } from '@shared/types'
@@ -49,6 +50,10 @@ export default function AccountsView(): JSX.Element {
   const [testResult, setTestResult] = useState<{ accountId: string; result: WebhookTestResult } | null>(
     null
   )
+  // Tài khoản đang chạy tác vụ (đăng/lịch...) — theo dõi qua onProgress để cảnh báo khi đóng.
+  const [runningIds, setRunningIds] = useState<Set<string>>(new Set())
+  // Tài khoản đang chờ xác nhận đóng (vì đang chạy tác vụ). null = không có modal.
+  const [confirmClose, setConfirmClose] = useState<Account | null>(null)
   // Bulk selection
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [bulkBusy, setBulkBusy] = useState(false)
@@ -79,7 +84,23 @@ export default function AccountsView(): JSX.Element {
     const off = window.aviary.browser.onStatusChanged((accountId, open) => {
       setOpenMap((m) => ({ ...m, [accountId]: open }))
     })
-    return off
+    // #2: theo dõi tài khoản nào đang chạy tác vụ (busy) để cảnh báo trước khi đóng.
+    const offProgress = window.aviary.post.onProgress((p) => {
+      if (!p.accountId || p.accountId === '__system__') return
+      const id = p.accountId
+      setRunningIds((prev) => {
+        const has = prev.has(id)
+        if (p.busy === has) return prev // không đổi -> giữ nguyên reference
+        const next = new Set(prev)
+        if (p.busy) next.add(id)
+        else next.delete(id)
+        return next
+      })
+    })
+    return () => {
+      off()
+      offProgress()
+    }
   }, [refresh])
 
   // Khi danh sách account thay đổi (xoá...), xoá selectedIds không còn tồn tại.
@@ -105,7 +126,17 @@ export default function AccountsView(): JSX.Element {
     }
   }
 
+  // Bấm Đóng: nếu tài khoản đang chạy tác vụ -> mở modal xác nhận; ngược lại đóng luôn.
+  function requestClose(a: Account): void {
+    if (runningIds.has(a.id)) {
+      setConfirmClose(a)
+      return
+    }
+    void handleClose(a)
+  }
+
   async function handleClose(a: Account): Promise<void> {
+    setConfirmClose(null)
     setBusy(a.id)
     try {
       await window.aviary.browser.close(a.id)
@@ -596,10 +627,10 @@ export default function AccountsView(): JSX.Element {
                 {/* ---- Actions chính: Mở/Đóng + Đăng ---- */}
                 <div className="account-actions">
                   <button
-                    className={`btn icon-label ${isOpen ? '' : 'accent'}`}
+                    className={`btn icon-label ${isOpen ? 'danger' : 'accent'}`}
                     title={isOpen ? 'Đóng profile' : 'Mở profile'}
                     disabled={isBusy}
-                    onClick={() => (isOpen ? handleClose(a) : handleOpen(a))}
+                    onClick={() => (isOpen ? requestClose(a) : handleOpen(a))}
                   >
                     {isBusy ? (
                       <Loader2 size={15} className="spin" />
@@ -666,6 +697,49 @@ export default function AccountsView(): JSX.Element {
           onClose={() => setShowBulkProxy(false)}
         />
       )}
+
+      {confirmClose && (
+        <ConfirmCloseModal
+          account={confirmClose}
+          onCancel={() => setConfirmClose(null)}
+          onConfirm={() => handleClose(confirmClose)}
+        />
+      )}
+    </div>
+  )
+}
+
+// Modal xác nhận đóng profile khi tài khoản ĐANG CHẠY tác vụ (đăng/lịch/tương tác). Đóng giữa
+// chừng sẽ hủy tác vụ đang chạy -> cần user xác nhận. Design đồng bộ modal chung của app.
+function ConfirmCloseModal(props: {
+  account: Account
+  onCancel: () => void
+  onConfirm: () => void
+}): JSX.Element {
+  const { account, onCancel, onConfirm } = props
+  return (
+    <div className="modal-backdrop" onClick={onCancel}>
+      <div className="modal modal-sm" onClick={(e) => e.stopPropagation()}>
+        <div className="confirm-head">
+          <span className="confirm-icon warn">
+            <AlertTriangle size={20} />
+          </span>
+          <h2>Đóng khi đang chạy tác vụ?</h2>
+        </div>
+        <p className="hint">
+          Tài khoản <b>{account.label}</b> đang thực hiện một tác vụ (đăng bài / lịch / tương tác).
+          Đóng profile ngay bây giờ sẽ <b>hủy tác vụ đang chạy</b> giữa chừng.
+        </p>
+        <div className="modal-actions">
+          <button className="btn" onClick={onCancel}>
+            Để tiếp tục
+          </button>
+          <button className="btn danger" onClick={onConfirm}>
+            <PowerOff size={15} />
+            Đóng ngay
+          </button>
+        </div>
+      </div>
     </div>
   )
 }

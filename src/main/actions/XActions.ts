@@ -18,11 +18,18 @@ const noop: StepReporter = () => {}
 
 // Sau khi bấm Post, X phải upload media full-res lên server rồi mới đóng modal. Video dài
 // (vd 11 phút, vài trăm MB) qua proxy chậm mất rất lâu → mốc chờ CỐ ĐỊNH dễ hết giờ oan.
-// Nên tính timeout THEO tổng dung lượng media: giả định băng thông upload thấp (~600 KB/s
-// khi qua proxy) + hệ số dự phòng, kẹp trong [sàn, trần]. KHÔNG hạ chất lượng media.
+// mediaWaitTimeout ước tính timeout theo dung lượng (dùng cho các mốc chờ preview/modal đóng),
+// nhưng bước chờ nút Post giờ chờ theo TIẾN ĐỘ THẬT (waitForPostEnabled) nên không phụ thuộc
+// con số đoán này nữa. KHÔNG hạ chất lượng media.
 const UPLOAD_FLOOR_MS = 120_000 // sàn 2 phút (media nhẹ vẫn chờ đủ)
-const UPLOAD_CEIL_MS = 900_000 // trần 15 phút (chặn treo vô hạn khi X lỗi thật)
-const ASSUMED_UPLOAD_BYTES_PER_SEC = 600 * 1024 // ~600 KB/s — băng thông upload dè dặt qua proxy
+// Trần CỨNG 10 phút: chặn trên tuyệt đối cho 1 lần đăng. Không để 1 tài khoản giữ slot quá lâu
+// làm nghẽn các tài khoản khác đang chờ. Video thường upload xong dưới mốc này; hy hữu quá nặng
+// thì thà báo lỗi còn hơn treo cả hàng đợi. Bail sớm hơn nữa do stall-detection (UPLOAD_STALL_MS).
+const UPLOAD_CEIL_MS = 600_000
+// ~350 KB/s — băng thông upload dè dặt qua proxy. Hạ từ 600 vì thực tế nhiều proxy chậm hơn
+// nhiều, dẫn tới timeout oan khi video nặng còn đang upload dở. Đây là mốc chờ TỐI ĐA: upload
+// xong sớm thì code thoát ngay, nên nới rộng không làm chậm case bình thường.
+const ASSUMED_UPLOAD_BYTES_PER_SEC = 350 * 1024
 
 // Tổng dung lượng các file media (bytes). File không đọc được -> bỏ qua (0).
 function totalMediaBytes(paths: string[]): number {
@@ -44,6 +51,88 @@ function mediaWaitTimeout(paths: string[]): number {
   // Thời gian upload ước tính + 50% dự phòng cho encode phía server / mạng dao động.
   const estimateMs = (bytes / ASSUMED_UPLOAD_BYTES_PER_SEC) * 1000 * 1.5
   return Math.min(UPLOAD_CEIL_MS, Math.max(UPLOAD_FLOOR_MS, Math.round(estimateMs)))
+}
+
+// Bao lâu KHÔNG thấy tiến triển (upload % đứng yên VÀ nút Post vẫn khoá) thì coi là treo thật.
+// Đây mới là điều kiện dừng ĐÚNG khi upload media: chừng nào còn nhích thì còn chờ, chỉ bỏ khi
+// đứng hình. Tránh cắt oan video nặng/proxy chậm chỉ vì vượt một mốc thời gian đoán mò.
+const UPLOAD_STALL_MS = 90_000 // 90s không nhích tiến độ -> treo thật
+
+// Đọc % upload media của X. X KHÔNG dùng aria-valuenow — nó hiện text kiểu:
+//   "<tên_file>: Uploading (25%)"  (đặt trong role="status" aria-live="polite")
+// KHÔNG phụ thuộc tên file (mỗi bài mỗi khác) — chỉ bắt cụm "(NN%)" đứng sau từ khoá tải lên.
+// Nhiều media -> có nhiều dòng %: lấy MIN (media chậm nhất quyết định lúc tất cả xong), tránh
+// tụt số oan khi 1 media xong trước làm match nhảy sang % thấp hơn. Ảnh nhẹ thường không hiện
+// dòng này -> trả null (nút Post bật gần như tức thì nên không dính stall). evaluate STRING để
+// TS không type-check `document`.
+async function readUploadProgress(page: Page): Promise<number | null> {
+  try {
+    const v = await page.evaluate(`(() => {
+      const txt = document.body ? document.body.innerText : '';
+      const re = /(?:Uploading|Đang tải lên|Đang tải)\\s*\\((\\d{1,3})\\s*%\\)/gi;
+      let m, min = null;
+      while ((m = re.exec(txt)) !== null) {
+        const n = Number(m[1]);
+        if (Number.isFinite(n) && (min === null || n < min)) min = n;
+      }
+      return min;
+    })()`)
+    return typeof v === 'number' ? v : null
+  } catch {
+    return null
+  }
+}
+
+// Chờ nút Post SẴN SÀNG (aria-disabled != 'true') theo TIẾN ĐỘ THẬT, không theo timeout đoán mò:
+// - Poll mỗi 2s: nếu nút đã bật -> xong.
+// - Còn khoá: đọc % upload. Nếu % còn tăng (hoặc lần đầu thấy progressbar) -> reset đồng hồ stall.
+// - Nếu suốt UPLOAD_STALL_MS mà % KHÔNG nhích và nút vẫn khoá -> coi là treo, trả false.
+// - Trần cứng hardCeilingMs để không kẹt vô hạn nếu X lỗi lạ.
+async function waitForPostEnabled(
+  page: Page,
+  postBtn: Locator,
+  hardCeilingMs: number,
+  report: StepReporter
+): Promise<boolean> {
+  const start = Date.now()
+  let lastProgress = -1
+  let lastProgressAt = Date.now()
+  let announcedPct = -1
+  let sawProgress = false // đã từng thấy % upload chưa (để xử lý lúc chuyển sang encode)
+  let encodeGraceUsed = false // đã cấp thêm thời gian cho giai đoạn encode chưa
+
+  while (Date.now() - start < hardCeilingMs) {
+    const disabled = await postBtn
+      .getAttribute('aria-disabled')
+      .then((v) => v === 'true')
+      .catch(() => false)
+    if (!disabled) return true
+
+    const pct = await readUploadProgress(page)
+    if (pct != null) {
+      sawProgress = true
+      // Báo tiến độ ra statusbar mỗi khi nhích >= 5% để user thấy còn sống.
+      if (pct >= announcedPct + 5) {
+        report(`Đang tải media lên X… ${Math.round(pct)}%`)
+        announcedPct = pct
+      }
+      if (pct > lastProgress) {
+        lastProgress = pct
+        lastProgressAt = Date.now()
+      }
+    } else if (sawProgress && !encodeGraceUsed) {
+      // Text % vừa biến mất SAU KHI từng thấy tiến độ = upload xong, X đang encode server-side.
+      // Cấp thêm 1 chu kỳ stall để encode kịp (nút Post sẽ bật khi encode xong). Chỉ 1 lần.
+      encodeGraceUsed = true
+      lastProgressAt = Date.now()
+      report('Đang chờ X xử lý video (encode)…')
+    }
+    // Đứng yên quá lâu (không nhích % / không encode xong) -> treo thật.
+    if (Date.now() - lastProgressAt > UPLOAD_STALL_MS) return false
+
+    await sleep(2000)
+  }
+  return false
 }
 
 // X từ chối video dài quá giới hạn tài khoản thường (không premium) bằng 1 toast/inline:
@@ -428,32 +517,26 @@ export async function postTweet(
       .first()
     await postBtn.waitFor({ timeout: 90_000, state: 'visible' })
 
-    // Khi còn upload/encode video, nút Post bị aria-disabled="true". Chờ tới khi bật.
-    await page
-      .waitForFunction(
-        (el: { getAttribute?: (n: string) => string | null } | null) =>
-          !!el &&
-          typeof el.getAttribute === 'function' &&
-          el.getAttribute('aria-disabled') !== 'true',
-        await postBtn.elementHandle(),
-        { timeout: mediaTimeout }
-      )
-      .catch(() => {})
+    // Khi còn upload/encode video, nút Post bị aria-disabled="true". Chờ tới khi bật — theo
+    // TIẾN ĐỘ THẬT: còn nhích % thì còn chờ (tới trần cứng UPLOAD_CEIL_MS = 10 phút), đứng yên
+    // quá UPLOAD_STALL_MS thì bỏ. Không dùng timeout đoán theo dung lượng nữa (hay cắt oan).
+    const postReady = await waitForPostEnabled(page, postBtn, UPLOAD_CEIL_MS, report)
 
     // Nếu nút Post VẪN bị khoá -> không click vô ích (sẽ treo 45s rồi báo lỗi sai).
     // Báo đúng bản chất: caption vượt giới hạn ký tự là nguyên nhân phổ biến nhất.
-    const stillDisabled = await postBtn
-      .getAttribute('aria-disabled')
-      .then((v) => v === 'true')
-      .catch(() => false)
-    if (stillDisabled) {
+    if (!postReady) {
       const len = weightedLength(caption)
       const shot = screenshotPath(acc, 'post')
       await page.screenshot({ path: shot }).catch(() => {})
+      const lastPct = await readUploadProgress(page)
+      const uploadInfo =
+        lastPct != null
+          ? ` Upload media dừng ở ${Math.round(lastPct)}% (mạng/proxy quá chậm hoặc đứng).`
+          : ''
       const reason =
         len > TWEET_LIMIT
           ? `Caption dài ${len} ký tự (giới hạn ${TWEET_LIMIT}). Việc tách thread đã thử nhưng nút Post vẫn bị X khoá — kiểm tra lại composer trên X.`
-          : `Nút Post bị X khoá (aria-disabled) dù caption chỉ ${len} ký tự. Có thể media chưa encode xong, tài khoản bị giới hạn, hoặc X báo lỗi nội dung.`
+          : `Nút Post bị X khoá (aria-disabled) dù caption chỉ ${len} ký tự.${uploadInfo} Có thể media chưa encode xong, tài khoản bị giới hạn, hoặc X báo lỗi nội dung.`
       return {
         ok: false,
         error: reason,

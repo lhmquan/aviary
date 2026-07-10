@@ -41,16 +41,16 @@ function eventBadge(eventType: string | null | undefined): JSX.Element {
   return <span className="badge ev-post"><Send size={13} /> Đăng</span>
 }
 
-// Các tùy chọn lọc loại sự kiện.
-const FILTER_OPTIONS: { value: string | null; label: string }[] = [
+// Các tùy chọn lọc loại sự kiện — kèm icon + class màu badge để chip đồng bộ với cột "Loại".
+const FILTER_OPTIONS: { value: string | null; label: string; Icon?: typeof Send; cls?: string }[] = [
   { value: null, label: 'Tất cả' },
-  { value: 'schedule', label: 'Hệ thống' },
-  { value: 'run', label: 'Lịch: Đăng' },
-  { value: 'run_delete', label: 'Lịch: Xoá' },
-  { value: 'run_comment', label: 'Lịch: Bình luận' },
-  { value: 'run_interact', label: 'Lịch: Tương tác' },
-  { value: 'delete', label: 'Xoá bài (thủ công)' },
-  { value: 'post', label: 'Đăng bài (thủ công)' },
+  { value: 'post', label: 'Đăng (thủ công)', Icon: Send, cls: 'ev-post' },
+  { value: 'delete', label: 'Xoá (thủ công)', Icon: Trash, cls: 'ev-delete' },
+  { value: 'run', label: 'Lịch: Đăng', Icon: Clock, cls: 'ev-run' },
+  { value: 'run_delete', label: 'Lịch: Xoá', Icon: Clock, cls: 'ev-run-delete' },
+  { value: 'run_comment', label: 'Lịch: Bình luận', Icon: Clock, cls: 'ev-run-comment' },
+  { value: 'run_interact', label: 'Lịch: Tương tác', Icon: Clock, cls: 'ev-run-interact' },
+  { value: 'schedule', label: 'Hệ thống', Icon: Settings2, cls: 'ev-system' },
 ]
 
 // Danh sách link các bài đã xoá, hiển thị thông minh: mặc định chỉ hiện vài link đầu,
@@ -108,19 +108,33 @@ export default function LogsView(): JSX.Element {
   const [page, setPage] = useState(1)
   const [total, setTotal] = useState(0)
   const [filterEventType, setFilterEventType] = useState<string | null>(null)
+  // Lọc chỉ hiện dòng LỖI — độc lập với lọc loại (kết hợp AND).
+  const [onlyErrors, setOnlyErrors] = useState(false)
 
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE))
 
-  const refresh = useCallback(async (p: number = page, ev: string | null = filterEventType) => {
-    setLoading(true)
-    try {
-      const result = await window.aviary.logs.list({ page: p, pageSize: PAGE_SIZE, eventType: ev })
-      setLogs(result.rows)
-      setTotal(result.total)
-    } finally {
-      setLoading(false)
-    }
-  }, [page, filterEventType])
+  const refresh = useCallback(
+    async (
+      p: number = page,
+      ev: string | null = filterEventType,
+      errs: boolean = onlyErrors
+    ) => {
+      setLoading(true)
+      try {
+        const result = await window.aviary.logs.list({
+          page: p,
+          pageSize: PAGE_SIZE,
+          eventType: ev,
+          onlyErrors: errs
+        })
+        setLogs(result.rows)
+        setTotal(result.total)
+      } finally {
+        setLoading(false)
+      }
+    },
+    [page, filterEventType, onlyErrors]
+  )
 
   useEffect(() => {
     refresh(1)
@@ -134,11 +148,19 @@ export default function LogsView(): JSX.Element {
     return off
   }, [])
 
-  // Đổi bộ lọc loại: reset về trang 1 và tải lại theo loại mới.
+  // Đổi bộ lọc loại: reset về trang 1 và tải lại theo loại mới (giữ nguyên cờ lỗi).
   function handleFilterChange(ev: string | null): void {
     setFilterEventType(ev)
     setPage(1)
-    refresh(1, ev)
+    refresh(1, ev, onlyErrors)
+  }
+
+  // Bật/tắt lọc chỉ-lỗi (giữ nguyên loại đang chọn).
+  function toggleOnlyErrors(): void {
+    const next = !onlyErrors
+    setOnlyErrors(next)
+    setPage(1)
+    refresh(1, filterEventType, next)
   }
 
   async function clearAll(): Promise<void> {
@@ -154,7 +176,7 @@ export default function LogsView(): JSX.Element {
     refresh(next)
   }
 
-  const isFiltered = filterEventType !== null
+  const isFiltered = filterEventType !== null || onlyErrors
 
   return (
     <div className="view">
@@ -167,23 +189,54 @@ export default function LogsView(): JSX.Element {
           <Trash2 size={15} />
           Xóa hết
         </button>
-        <span className="filter-group" title="Lọc nhật ký theo loại sự kiện">
-          <Filter size={15} className="filter-icon" />
-          <select
-            className="log-filter-select"
-            value={filterEventType ?? ''}
-            onChange={(e) => handleFilterChange(e.target.value === '' ? null : e.target.value)}
-          >
-            {FILTER_OPTIONS.map((opt) => (
-              <option key={opt.label} value={opt.value ?? ''}>
-                {opt.label}
-              </option>
-            ))}
-          </select>
-        </span>
         <span className="badge count-badge">
           {total} dòng{isFiltered ? ' (đã lọc)' : ''}
         </span>
+      </div>
+
+      {/* Hàng chip lọc — đồng bộ với các tab khác. Lọc loại (single-select) + chip Lỗi (toggle riêng). */}
+      <div className="filter-bar">
+        <div className="filter-chips">
+          <span className="filter-label">
+            <Filter size={13} /> Loại:
+          </span>
+          {FILTER_OPTIONS.map((opt) => {
+            const active = filterEventType === opt.value
+            const Icon = opt.Icon
+            return (
+              <button
+                key={opt.label}
+                className={`filter-chip${active ? ' active' : ''}${active && opt.cls ? ` ${opt.cls}` : ''}`}
+                onClick={() => handleFilterChange(opt.value)}
+              >
+                {Icon && <Icon size={12} />} {opt.label}
+              </button>
+            )
+          })}
+        </div>
+        <div className="filter-chips">
+          <span className="filter-label">Trạng thái:</span>
+          <button
+            className={`filter-chip${onlyErrors ? ' active ev-error-chip' : ''}`}
+            onClick={toggleOnlyErrors}
+            title="Chỉ hiện các dòng lỗi"
+          >
+            <XCircle size={12} /> Lỗi
+          </button>
+          {isFiltered && (
+            <button
+              className="filter-clear"
+              onClick={() => {
+                setFilterEventType(null)
+                setOnlyErrors(false)
+                setPage(1)
+                refresh(1, null, false)
+              }}
+            >
+              <XCircle size={13} /> Xoá lọc
+            </button>
+          )}
+        </div>
       </div>
 
       {total === 0 ? (
