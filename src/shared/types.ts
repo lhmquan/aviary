@@ -161,6 +161,10 @@ export interface AppSettings {
   downloadsDir: string
   concurrency: number
   logRetentionDays: number
+  // Số ngày giữ dữ liệu Analytics (snapshot follower/following/bài theo ngày). Tách RIÊNG
+  // khỏi logRetentionDays: nhật ký thường giữ ngắn, còn analytics cần giữ dài để vẽ chart
+  // xu hướng. 0 = giữ mãi.
+  analyticsRetentionDays: number
   // Bật/tắt fetch analytics tự động 1 lần/ngày (tắt khi đang dev để không fetch liên tục).
   analyticsAutoFetch: boolean
   // Giới hạn số comment tối đa/ngày cho 1 tài khoản (chạm -> tạm dừng, mai chạy tiếp).
@@ -308,6 +312,8 @@ export interface LogListParams {
   // Lọc theo loại sự kiện (event_type). 'post' gồm cả log cũ (event_type = NULL).
   // Bỏ trống / null = lấy tất cả.
   eventType?: string | null
+  // Chỉ lấy các dòng LỖI (ok = 0). Kết hợp AND với eventType nếu có.
+  onlyErrors?: boolean
 }
 
 export interface LogListResult {

@@ -7,6 +7,7 @@ const DEFAULTS: AppSettings = {
   downloadsDir: '',
   concurrency: 3,
   logRetentionDays: 30,
+  analyticsRetentionDays: 90,
   analyticsAutoFetch: true,
   // Giới hạn số comment tối đa/ngày cho 1 tài khoản (chạm -> tạm dừng, mai chạy tiếp).
   commentDailyLimit: 30,
@@ -34,6 +35,9 @@ export function getAllSettings(): AppSettings {
     logRetentionDays: map.has('logRetentionDays')
       ? Number(map.get('logRetentionDays'))
       : DEFAULTS.logRetentionDays,
+    analyticsRetentionDays: map.has('analyticsRetentionDays')
+      ? Number(map.get('analyticsRetentionDays'))
+      : DEFAULTS.analyticsRetentionDays,
     analyticsAutoFetch: map.has('analyticsAutoFetch')
       ? map.get('analyticsAutoFetch') === 'true'
       : DEFAULTS.analyticsAutoFetch,

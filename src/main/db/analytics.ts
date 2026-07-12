@@ -3,7 +3,7 @@ import { getAllSettings } from './settings'
 
 // ---- Analytics: snapshot thống kê X theo ngày cho từng tài khoản ----
 // 1 row/account/day. Upsert qua unique index (account_id, day).
-// Retention 30 ngày (prune xoá row cũ + tính lại dung lượng).
+// Retention theo settings.analyticsRetentionDays (mặc định 90 ngày, 0 = giữ mãi).
 
 interface StatsRow {
   id: number
@@ -99,7 +99,10 @@ export function listAllStats(days = 30): Map<string, DailyStats[]> {
 // Prune: xoá row cũ hơn retention. Retention đọc từ settings (logRetentionDays
 // dùng chung — 30 ngày mặc định). Trả về số row đã xoá.
 export function pruneAnalytics(): number {
-  const retentionDays = getAllSettings().logRetentionDays || 30
+  const retentionDays = getAllSettings().analyticsRetentionDays
+  // 0 = giữ mãi (không prune). Analytics dùng retention RIÊNG (analyticsRetentionDays),
+  // không dùng chung logRetentionDays — nhật ký giữ ngắn, chart cần giữ dài.
+  if (!retentionDays || retentionDays <= 0) return 0
   const cutoff = midnightOf(Date.now()) - retentionDays * 86_400_000
   const info = getDb().prepare('DELETE FROM account_stats_daily WHERE day < ?').run(cutoff)
   return info.changes
@@ -133,7 +136,7 @@ export function getAnalyticsStorageStats(): AnalyticsStorageStats {
     rowCount: row.cnt,
     accountCount: row.acct,
     estimatedBytes,
-    retentionDays: getAllSettings().logRetentionDays || 30
+    retentionDays: getAllSettings().analyticsRetentionDays
   }
 }
 

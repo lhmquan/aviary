@@ -139,6 +139,21 @@ export default function SettingsView(): JSX.Element {
           <small className="hint">Log và ảnh lỗi cũ hơn số ngày này sẽ tự xoá khi app khởi động / sau mỗi lần đăng.</small>
         </label>
         <label className="field">
+          <span>Số ngày giữ dữ liệu Analytics (0 = giữ mãi)</span>
+          <input
+            type="number"
+            min={0}
+            max={3650}
+            value={settings.analyticsRetentionDays}
+            onChange={(e) => update('analyticsRetentionDays', Number(e.target.value) || 0)}
+            style={{ width: 120 }}
+          />
+          <small className="hint">
+            Snapshot follower/following/bài theo ngày. Tách riêng khỏi nhật ký để chart xu hướng
+            giữ được lâu (mặc định 90 ngày).
+          </small>
+        </label>
+        <label className="field">
           <span>Giới hạn số bình luận / ngày / tài khoản</span>
           <input
             type="number"
