@@ -1,4 +1,4 @@
-import type { BrowserContext, Page } from 'patchright'
+import type { BrowserContext, Page, Locator } from 'patchright'
 import { scrollDown, commentOnTweet, collectTweetContext, type StepReporter } from './XActions'
 import { generateComment } from '../ai/AiClient'
 import { getAllSettings } from '../db/settings'
@@ -52,9 +52,43 @@ function weightedPick(weights: Record<ActionKind, number>): ActionKind {
   return entries[entries.length - 1][0]
 }
 
+// Đọc ngôn ngữ + trạng thái auto-dịch của 1 tweet trong 1 lần evaluate (nhanh, đúng DOM).
+// X gán thuộc tính lang (ISO 639-1) trên tweetText: 'vi'=Việt, 'en'=Anh, 'ja'=Nhật…
+// CẢNH BÁO: khi bật tự-động-dịch, X dịch bài nước ngoài sang ngôn ngữ GIAO DIỆN rồi GHI ĐÈ
+// lang thành ngôn ngữ ĐÃ DỊCH (bài Nhật hiển thị tiếng Anh -> lang="en"). Lúc đó lang KHÔNG
+// phản ánh ngôn ngữ gốc. Nhận diện banner dịch KHÔNG phụ thuộc chữ (chữ "Hiện bản gốc" đổi
+// theo ngôn ngữ giao diện): element ngay TRƯỚC tweetText chứa cả icon (svg) + nút (role=button).
+async function readTweetLangInfo(
+  article: Locator
+): Promise<{ lang: string | null; translated: boolean }> {
+  return article
+    .evaluate((el) => {
+      const tt = el.querySelector('[data-testid="tweetText"]')
+      if (!tt) return { lang: null, translated: false }
+      const prev = tt.previousElementSibling
+      const translated = !!(prev && prev.querySelector('svg') && prev.querySelector('[role="button"]'))
+      return { lang: tt.getAttribute('lang'), translated }
+    })
+    .catch(() => ({ lang: null as string | null, translated: false }))
+}
+
+// So khớp ngôn ngữ bài với thiết đặt tài khoản (aiCommentLang). 'auto'/rỗng = không lọc.
+// Khi đang lọc: (1) bài đã AUTO-DỊCH bị bỏ qua (lang đã dịch, gốc là ngôn ngữ khác — không tin
+// được), (2) bài không có text (lang=null) bị bỏ qua, chỉ khớp bài CHƯA dịch có lang đúng.
+function langMatches(info: { lang: string | null; translated: boolean }, filterLang: string): boolean {
+  if (!filterLang || filterLang === 'auto') return true
+  if (info.translated) return false
+  return info.lang === filterLang
+}
+
 // Like 1 tweet đang hiển thị chưa like. Chống trùng qua Set href đã thao tác.
+// filterLang: lọc theo ngôn ngữ bài trước khi like ('auto' = không lọc).
 // Trả về true nếu like được 1 bài mới.
-async function likeVisibleTweet(page: Page, likedHrefs: Set<string>): Promise<boolean> {
+async function likeVisibleTweet(
+  page: Page,
+  likedHrefs: Set<string>,
+  filterLang: string
+): Promise<boolean> {
   const articles = page.locator('article[data-testid="tweet"]')
   const count = await articles.count().catch(() => 0)
   if (count === 0) return false
@@ -71,6 +105,9 @@ async function likeVisibleTweet(page: Page, likedHrefs: Set<string>): Promise<bo
       .getAttribute('href')
       .catch(() => null)
     if (href && likedHrefs.has(href)) continue
+    // Lọc ngôn ngữ: chỉ like bài đúng ngôn ngữ thiết đặt ('auto' = không lọc).
+    // Bỏ qua bài X đã auto-dịch (lang đã bị đổi sang ngôn ngữ dịch, không tin được).
+    if (!langMatches(await readTweetLangInfo(article), filterLang)) continue
     const likeBtn = article.locator('[data-testid="like"]').first()
     if (!(await likeBtn.isVisible().catch(() => false))) continue
     await likeBtn.scrollIntoViewIfNeeded().catch(() => {})
@@ -86,7 +123,8 @@ async function likeVisibleTweet(page: Page, likedHrefs: Set<string>): Promise<bo
 // Đọc text + link của 1 tweet đang hiển thị chưa comment (để AI sinh bình luận).
 async function readCommentableTweet(
   page: Page,
-  handledHrefs: Set<string>
+  handledHrefs: Set<string>,
+  filterLang: string
 ): Promise<{ text: string; url: string } | null> {
   const articles = page.locator('article[data-testid="tweet"]')
   const count = await articles.count().catch(() => 0)
@@ -109,6 +147,9 @@ async function readCommentableTweet(
     if (!m) continue
     const href = m[1]
     if (handledHrefs.has(href)) continue
+    // Lọc ngôn ngữ: chỉ comment bài đúng ngôn ngữ thiết đặt ('auto' = không lọc).
+    // Bỏ qua bài X đã auto-dịch (lang đã bị đổi sang ngôn ngữ dịch, không tin được).
+    if (!langMatches(await readTweetLangInfo(article), filterLang)) continue
     const text = await article
       .locator('[data-testid="tweetText"]')
       .first()
@@ -232,7 +273,7 @@ export async function runInteractSession(
         report(`Cuộn feed (${scrolls}) · còn ~${remainMin} phút`)
         await sleep(thinkTime(2000, 5000))
       } else if (action === 'like') {
-        const liked = await likeVisibleTweet(page, likedHrefs)
+        const liked = await likeVisibleTweet(page, likedHrefs, opts.aiLang)
         if (liked) {
           likes++
           report(`Thả tim 1 bài (${likes}) · còn ~${remainMin} phút`)
@@ -251,7 +292,7 @@ export async function runInteractSession(
         report(`Nghỉ giây lát · còn ~${remainMin} phút`)
         await sleep(thinkTime(8000, 15000))
       } else if (action === 'comment') {
-        const target = await readCommentableTweet(page, commentedHrefs)
+        const target = await readCommentableTweet(page, commentedHrefs, opts.aiLang)
         if (!target) {
           // Không có bài phù hợp -> cuộn thêm.
           await scrollDown(page)

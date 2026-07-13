@@ -185,10 +185,15 @@ body,
   justify-content: center;
   width: 32px;
   height: 32px;
-  border-radius: var(--r-sm);
+  border-radius: 9px;
   background: linear-gradient(135deg, var(--accent), var(--accent-2));
   color: #fff;
   box-shadow: 0 6px 16px rgba(91, 124, 250, 0.4);
+}
+
+/* Nghiêng lông vũ ~26° hướng lên phải cho khớp với icon app. */
+.brand-icon svg {
+  transform: rotate(8deg);
 }
 
 .brand-name {

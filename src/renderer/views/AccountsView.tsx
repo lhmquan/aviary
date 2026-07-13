@@ -928,10 +928,15 @@ function AccountForm(props: {
         <label className="field">
           <span>Ngôn ngữ bình luận AI</span>
           <select value={aiCommentLang} onChange={(e) => setAiCommentLang(e.target.value)}>
-            <option value="auto">Theo ngôn ngữ bài viết</option>
+            <option value="auto">Theo ngôn ngữ bài viết (không lọc)</option>
             <option value="vi">Tiếng Việt</option>
             <option value="en">Tiếng Anh</option>
           </select>
+          <small className="hint">
+            Cũng dùng để LỌC bài khi tương tác (feed): chọn Việt/Anh thì chỉ like &amp; bình luận
+            bài đúng ngôn ngữ đó, bỏ qua bài tiếng khác (Nhật, Indo…). Chọn "Theo ngôn ngữ bài viết"
+            = tương tác mọi ngôn ngữ như cũ.
+          </small>
         </label>
         <label className="field">
           <span>Định dạng bình luận AI</span>
