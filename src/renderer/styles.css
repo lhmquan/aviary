@@ -1157,6 +1157,22 @@ nav {
   font-size: 13px;
   word-break: break-word;
 }
+/* Nút "Xem đầy đủ / Thu gọn" cho lỗi dài — tách khỏi text 1 chút cho dễ bấm. */
+.error-toggle {
+  margin-left: 6px;
+  white-space: nowrap;
+}
+
+/* Ô lọc tài khoản trong filter-bar Nhật ký — gọn hơn ô tìm kiếm chính. */
+.logs-account-search {
+  flex: 0 0 auto;
+  min-width: 180px;
+  max-width: 240px;
+}
+.logs-account-search input {
+  padding: 5px 30px 5px 30px;
+  font-size: 12.5px;
+}
 
 /* ---------- Danh sách bài đã xoá (tab Nhật ký) ---------- */
 .deleted-cell {
@@ -2456,6 +2472,55 @@ nav {
 .stat-sep {
   color: var(--muted);
   opacity: 0.5;
+}
+
+/* Chấm sức khoẻ tài khoản (cạnh tên): xanh lá ok / đỏ lỗi / cam bất thường */
+.health-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  cursor: help;
+}
+.health-badge.ok { color: var(--success); }
+.health-badge.error { color: var(--danger); }
+.health-badge.abnormal { color: var(--warn); }
+
+/* Dòng "Hoạt động gần nhất" — bấm để mở Nhật ký lọc theo tài khoản */
+.account-activity {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  text-align: left;
+  padding: 6px 9px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--bg-elev, rgba(127, 127, 127, 0.05));
+  font-size: 12.5px;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+.account-activity:hover {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.activity-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+.activity-text.ok { color: var(--success); }
+.activity-text.fail { color: var(--danger); }
+.activity-text.muted {
+  color: var(--muted);
+  font-weight: 500;
+}
+.activity-ago {
+  font-weight: 500;
+  opacity: 0.8;
+  font-variant-numeric: tabular-nums;
 }
 
 /* Dòng proxy */

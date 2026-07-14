@@ -73,6 +73,7 @@ export function listLogs(params?: LogListParams): LogListResult {
   const offset = (page - 1) * pageSize
   const eventType = params?.eventType ?? null
   const onlyErrors = params?.onlyErrors ?? false
+  const accountQuery = params?.accountQuery?.trim() ?? ''
 
   const db = getDb()
 
@@ -88,6 +89,12 @@ export function listLogs(params?: LogListParams): LogListResult {
     args.push(eventType)
   }
   if (onlyErrors) conds.push('ok = 0')
+  if (accountQuery) {
+    // Lọc theo tên tài khoản (không phân biệt hoa/thường). Escape ký tự đặc biệt LIKE.
+    const esc = accountQuery.replace(/[\\%_]/g, (m) => `\\${m}`)
+    conds.push("account_label LIKE ? ESCAPE '\\'")
+    args.push(`%${esc}%`)
+  }
   const where = conds.length > 0 ? `WHERE ${conds.join(' AND ')}` : ''
 
   const totalSql = `SELECT COUNT(*) as c FROM logs ${where}`

@@ -314,11 +314,36 @@ export interface LogListParams {
   eventType?: string | null
   // Chỉ lấy các dòng LỖI (ok = 0). Kết hợp AND với eventType nếu có.
   onlyErrors?: boolean
+  // Lọc theo tên tài khoản (account_label LIKE, không phân biệt hoa/thường). Bỏ trống = tất cả.
+  accountQuery?: string | null
 }
 
 export interface LogListResult {
   rows: LogEntry[]
   total: number
+}
+
+// Tình trạng sức khoẻ 1 tài khoản (suy ra từ nhật ký + analytics + lịch).
+//   ok       = bình thường (checkmark xanh lá)
+//   error    = ≥2 lỗi trong 10 hoạt động gần nhất (cảnh báo đỏ)
+//   abnormal = bất thường: caption trùng lặp, hoặc số bài không tăng dù có lịch đăng (warning cam)
+export type AccountHealth = 'ok' | 'error' | 'abnormal'
+
+// Hoạt động gần nhất + sức khoẻ của 1 tài khoản (dùng cho tab Tài khoản, lấy realtime từ nhật ký).
+export interface AccountActivity {
+  accountId: string
+  // Hoạt động gần nhất (bỏ qua sự kiện hệ thống 'schedule'). null = chưa có hoạt động.
+  last: {
+    ok: boolean
+    // Đã chuẩn hoá: 'post' | 'delete' | 'comment' | 'interact'.
+    kind: string
+    ts: number
+  } | null
+  // Số lỗi trong 10 hoạt động gần nhất (để quyết định icon health).
+  errorCount: number
+  health: AccountHealth
+  // Lý do chi tiết cho tooltip khi health = error/abnormal.
+  reason: string | null
 }
 
 // Trạng thái tiến trình 1 tác vụ (main -> renderer, hiển thị thanh trạng thái).
@@ -386,6 +411,7 @@ export const IpcChannels = {
   logsList: 'logs:list',
   logsClear: 'logs:clear',
   logsCount: 'logs:count',
+  accountsActivity: 'accounts:activity',
   updateCheck: 'update:check',
   updateInstall: 'update:install',
   updateStatus: 'update:status',
@@ -411,6 +437,8 @@ export interface AviaryApi {
     // Fetch follower/following/số bài + tên hiển thị từ username X.
     // accountId (nếu có) dùng để chọn proxy của tài khoản khi gọi.
     lookup: (handle: string, accountId?: string) => Promise<XProfileInfo>
+    // Hoạt động gần nhất + sức khoẻ của tất cả tài khoản (suy ra từ nhật ký + analytics).
+    activity: () => Promise<AccountActivity[]>
   }
   proxies: {
     list: () => Promise<Proxy[]>

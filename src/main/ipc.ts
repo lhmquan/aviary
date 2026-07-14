@@ -50,6 +50,7 @@ import {
 } from './db/schedules'
 import { browserManager } from './browser/BrowserManager'
 import { listLogs, clearLogs, deleteLogsByAccount } from './db/logs'
+import { getAccountActivities } from './db/activity'
 import { deleteAnalyticsByAccount, clearAllAnalytics, pruneAnalytics, getAnalyticsStorageStats } from './db/analytics'
 import { deleteCommentHistoryByAccount } from './db/comment_history'
 import { runPostForAccount, runCommentForAccount, emitProgress } from './scheduler/runner'
@@ -68,6 +69,8 @@ function emitBrowserStatus(accountId: string, open: boolean): void {
 
 export function registerIpc(): void {
   ipcMain.handle(IpcChannels.accountsList, () => listAccounts())
+
+  ipcMain.handle(IpcChannels.accountsActivity, () => getAccountActivities())
 
   ipcMain.handle(IpcChannels.accountsCreate, (_e, input: AccountInput) => createAccount(input))
 

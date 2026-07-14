@@ -25,7 +25,8 @@ const api: AviaryApi = {
       ipcRenderer.invoke(IpcChannels.accountsUpdate, id, input),
     remove: (id: string) => ipcRenderer.invoke(IpcChannels.accountsDelete, id),
     lookup: (handle: string, accountId?: string) =>
-      ipcRenderer.invoke(IpcChannels.accountsLookupX, handle, accountId)
+      ipcRenderer.invoke(IpcChannels.accountsLookupX, handle, accountId),
+    activity: () => ipcRenderer.invoke(IpcChannels.accountsActivity)
   },
   proxies: {
     list: () => ipcRenderer.invoke(IpcChannels.proxiesList),

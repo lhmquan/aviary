@@ -1,11 +1,50 @@
 import { useEffect, useState, useCallback } from 'react'
-import { RefreshCw, Trash2, ExternalLink, CheckCircle2, XCircle, ScrollText, Clock, Settings2, Send, SkipForward, ChevronLeft, ChevronRight, ChevronDown, ChevronUp, Filter, Trash, MessageCircle, Activity } from 'lucide-react'
+import { RefreshCw, Trash2, ExternalLink, CheckCircle2, XCircle, ScrollText, Clock, Settings2, Send, SkipForward, ChevronLeft, ChevronRight, ChevronDown, ChevronUp, Filter, Trash, MessageCircle, Activity, Search, X } from 'lucide-react'
 import type { LogEntry } from '@shared/types'
 
 const PAGE_SIZE = 50
 
 // Số link bài xoá hiển thị mặc định trước khi gập (tránh tràn UI khi xoá nhiều).
 const DELETED_URLS_PREVIEW = 3
+
+// Độ dài tối đa của thông báo lỗi khi CHƯA mở rộng (tránh 1 dòng lỗi dài — như call log
+// Playwright — làm phình cả hàng nhật ký, khó nhìn).
+const ERROR_PREVIEW_LEN = 160
+
+// Làm sạch text lỗi: bỏ mã màu ANSI (\x1b[..m) hiển thị thành ô vuông "□[2m", gộp nhiều
+// khoảng trắng/xuống dòng thành 1 space. Giữ nội dung đọc được.
+function cleanErrorText(raw: string): string {
+  // eslint-disable-next-line no-control-regex
+  const ansi = new RegExp(String.fromCharCode(27) + '\\[[0-9;]*m', 'g')
+  return raw.replace(ansi, '').replace(/\s+/g, ' ').trim()
+}
+
+// Ô hiển thị lỗi: làm sạch ANSI + gập/mở khi quá dài (mặc định cắt ngắn, bấm để xem đầy đủ).
+function ErrorText({ text, step }: { text: string; step?: string | null }): JSX.Element {
+  const [expanded, setExpanded] = useState(false)
+  const clean = cleanErrorText(text)
+  const isLong = clean.length > ERROR_PREVIEW_LEN
+  const shown = expanded || !isLong ? clean : clean.slice(0, ERROR_PREVIEW_LEN) + '…'
+  return (
+    <span className="result-error">
+      {shown}
+      {isLong && (
+        <button type="button" className="link-btn error-toggle" onClick={() => setExpanded((v) => !v)}>
+          {expanded ? (
+            <>
+              <ChevronUp size={12} /> Thu gọn
+            </>
+          ) : (
+            <>
+              <ChevronDown size={12} /> Xem đầy đủ
+            </>
+          )}
+        </button>
+      )}
+      {step && <span className="hint"> · {step}</span>}
+    </span>
+  )
+}
 
 // Badge phân loại sự kiện, mỗi loại 1 màu theo chức năng:
 //   Đăng (post)        → xanh lá  (tạo nội dung)
@@ -102,7 +141,12 @@ function DeletedUrlsList({ urls }: { urls: string[] }): JSX.Element {
   )
 }
 
-export default function LogsView(): JSX.Element {
+export default function LogsView(props: {
+  // Khi user bấm dòng hoạt động ở tab Tài khoản -> điền sẵn ô lọc theo tên tài khoản.
+  accountFilter?: { id: string; label: string } | null
+  onClearAccountFilter?: () => void
+}): JSX.Element {
+  const { accountFilter, onClearAccountFilter } = props
   const [logs, setLogs] = useState<LogEntry[]>([])
   const [loading, setLoading] = useState(false)
   const [page, setPage] = useState(1)
@@ -110,6 +154,8 @@ export default function LogsView(): JSX.Element {
   const [filterEventType, setFilterEventType] = useState<string | null>(null)
   // Lọc chỉ hiện dòng LỖI — độc lập với lọc loại (kết hợp AND).
   const [onlyErrors, setOnlyErrors] = useState(false)
+  // Ô lọc theo tên tài khoản (server-side LIKE trên account_label). Điền sẵn từ tab Tài khoản.
+  const [accountQuery, setAccountQuery] = useState(accountFilter?.label ?? '')
 
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE))
 
@@ -117,7 +163,8 @@ export default function LogsView(): JSX.Element {
     async (
       p: number = page,
       ev: string | null = filterEventType,
-      errs: boolean = onlyErrors
+      errs: boolean = onlyErrors,
+      acct: string = accountQuery
     ) => {
       setLoading(true)
       try {
@@ -125,7 +172,8 @@ export default function LogsView(): JSX.Element {
           page: p,
           pageSize: PAGE_SIZE,
           eventType: ev,
-          onlyErrors: errs
+          onlyErrors: errs,
+          accountQuery: acct
         })
         setLogs(result.rows)
         setTotal(result.total)
@@ -133,7 +181,7 @@ export default function LogsView(): JSX.Element {
         setLoading(false)
       }
     },
-    [page, filterEventType, onlyErrors]
+    [page, filterEventType, onlyErrors, accountQuery]
   )
 
   useEffect(() => {
@@ -146,7 +194,24 @@ export default function LogsView(): JSX.Element {
       }
     })
     return off
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  // Điều hướng từ tab Tài khoản (bấm dòng hoạt động) -> điền tên tài khoản vào ô lọc.
+  useEffect(() => {
+    if (accountFilter) setAccountQuery(accountFilter.label)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [accountFilter?.id])
+
+  // Debounce ô lọc tài khoản: gõ xong 300ms mới truy vấn lại (tránh query mỗi phím).
+  useEffect(() => {
+    const t = setTimeout(() => {
+      setPage(1)
+      refresh(1, filterEventType, onlyErrors, accountQuery)
+    }, 300)
+    return () => clearTimeout(t)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [accountQuery])
 
   // Đổi bộ lọc loại: reset về trang 1 và tải lại theo loại mới (giữ nguyên cờ lỗi).
   function handleFilterChange(ev: string | null): void {
@@ -163,6 +228,12 @@ export default function LogsView(): JSX.Element {
     refresh(1, filterEventType, next)
   }
 
+  // Xoá ô lọc tài khoản (đồng thời báo App bỏ trạng thái điều hướng từ tab Tài khoản).
+  function clearAccountQuery(): void {
+    setAccountQuery('')
+    onClearAccountFilter?.()
+  }
+
   async function clearAll(): Promise<void> {
     if (!confirm('Xóa toàn bộ nhật ký (kèm ảnh lỗi)?')) return
     await window.aviary.logs.clear()
@@ -176,7 +247,7 @@ export default function LogsView(): JSX.Element {
     refresh(next)
   }
 
-  const isFiltered = filterEventType !== null || onlyErrors
+  const isFiltered = filterEventType !== null || onlyErrors || accountQuery.trim() !== ''
 
   return (
     <div className="view">
@@ -223,14 +294,32 @@ export default function LogsView(): JSX.Element {
           >
             <XCircle size={12} /> Lỗi
           </button>
+          {/* Ô lọc theo tài khoản (tên) — điền sẵn khi bấm dòng hoạt động ở tab Tài khoản. */}
+          <div className="search-box logs-account-search">
+            <Search size={14} className="search-icon" />
+            <input
+              type="text"
+              value={accountQuery}
+              onChange={(e) => setAccountQuery(e.target.value)}
+              placeholder="Lọc theo tài khoản (tên)…"
+              spellCheck={false}
+            />
+            {accountQuery && (
+              <button className="search-clear" title="Xoá lọc tài khoản" onClick={clearAccountQuery}>
+                <X size={14} />
+              </button>
+            )}
+          </div>
           {isFiltered && (
             <button
               className="filter-clear"
               onClick={() => {
                 setFilterEventType(null)
                 setOnlyErrors(false)
+                setAccountQuery('')
                 setPage(1)
-                refresh(1, null, false)
+                onClearAccountFilter?.()
+                refresh(1, null, false, '')
               }}
             >
               <XCircle size={13} /> Xoá lọc
@@ -316,10 +405,7 @@ export default function LogsView(): JSX.Element {
                             <span>{l.caption || '—'}</span>
                           )
                         ) : (
-                          <span className="result-error">
-                            {l.error || l.caption}
-                            {l.step && <span className="hint"> · {l.step}</span>}
-                          </span>
+                          <ErrorText text={l.error || l.caption || ''} step={l.step} />
                         )}
                       </td>
                     </tr>

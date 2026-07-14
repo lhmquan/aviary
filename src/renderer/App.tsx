@@ -125,6 +125,10 @@ const UPDATE_LABEL: Record<string, string> = {
 
 export default function App(): JSX.Element {
   const [active, setActive] = useState<Section>('accounts')
+  // Bộ lọc tài khoản chờ áp dụng cho tab Nhật ký (khi user bấm dòng hoạt động ở tab Tài khoản).
+  const [logsAccountFilter, setLogsAccountFilter] = useState<{ id: string; label: string } | null>(
+    null
+  )
   const [info, setInfo] = useState<AppInfo | null>(null)
   const [theme, setTheme] = useState<ThemeMode>(() => {
     try {
@@ -364,11 +368,23 @@ export default function App(): JSX.Element {
           <p className="page-subtitle">{SUBTITLE[active]}</p>
         </header>
 
-        {active === 'accounts' && <AccountsView />}
+        {active === 'accounts' && (
+          <AccountsView
+            onNavigateToLogs={(id, label) => {
+              setLogsAccountFilter({ id, label })
+              setActive('logs')
+            }}
+          />
+        )}
         {active === 'proxies' && <ProxiesView />}
         {active === 'schedule' && <ScheduleView />}
         {active === 'settings' && <SettingsView />}
-        {active === 'logs' && <LogsView />}
+        {active === 'logs' && (
+          <LogsView
+            accountFilter={logsAccountFilter}
+            onClearAccountFilter={() => setLogsAccountFilter(null)}
+          />
+        )}
         {active === 'queue' && <QueueView />}
         {active === 'analytics' && <AnalyticsView />}
       </main>

@@ -23,9 +23,10 @@ import {
   UserCheck,
   FileText,
   Search,
-  AlertTriangle
+  AlertTriangle,
+  AlertCircle
 } from 'lucide-react'
-import type { Account, AccountInput, Proxy, Schedule, WebhookTestResult, XProfileInfo } from '@shared/types'
+import type { Account, AccountInput, AccountActivity, AccountHealth, Proxy, Schedule, WebhookTestResult, XProfileInfo } from '@shared/types'
 import { PROXY_LOCAL, PROXY_RANDOM } from '@shared/types'
 
 const STATUS_LABEL: Record<Account['status'], string> = {
@@ -36,10 +37,36 @@ const STATUS_LABEL: Record<Account['status'], string> = {
   disabled: 'Tắt'
 }
 
-export default function AccountsView(): JSX.Element {
+// Nhãn loại hoạt động hiển thị ở dòng "Hoạt động gần nhất".
+const KIND_LABEL: Record<string, string> = {
+  post: 'Đăng bài',
+  delete: 'Xoá bài',
+  comment: 'Bình luận',
+  interact: 'Tương tác'
+}
+
+// Thời gian đã trôi kể từ mốc ts tới hiện tại, dạng ngắn gọn (s/m/h/d).
+function timeSince(ts: number, now: number): string {
+  const sec = Math.max(0, Math.floor((now - ts) / 1000))
+  if (sec < 60) return `${sec}s`
+  const min = Math.floor(sec / 60)
+  if (min < 60) return `${min}m`
+  const hr = Math.floor(min / 60)
+  if (hr < 24) return `${hr}h`
+  return `${Math.floor(hr / 24)}d`
+}
+
+export default function AccountsView(props: {
+  onNavigateToLogs?: (accountId: string, accountLabel: string) => void
+}): JSX.Element {
+  const { onNavigateToLogs } = props
   const [accounts, setAccounts] = useState<Account[]>([])
   const [proxies, setProxies] = useState<Proxy[]>([])
   const [schedules, setSchedules] = useState<Schedule[]>([])
+  // Hoạt động gần nhất + sức khoẻ mỗi tài khoản (map theo accountId), lấy realtime từ nhật ký.
+  const [activityMap, setActivityMap] = useState<Record<string, AccountActivity>>({})
+  // Nhịp đồng hồ (ms) để dòng "(Ns)" tự đếm lên mỗi giây mà không cần fetch lại.
+  const [nowTick, setNowTick] = useState(() => Date.now())
   const [openMap, setOpenMap] = useState<Record<string, boolean>>({})
   const [showForm, setShowForm] = useState(false)
   const [editing, setEditing] = useState<Account | null>(null)
@@ -64,18 +91,26 @@ export default function AccountsView(): JSX.Element {
   const [tagFilters, setTagFilters] = useState<Set<'scheduled' | 'headless'>>(new Set())
 
   const refresh = useCallback(async () => {
-    const [list, proxList, schedList] = await Promise.all([
+    const [list, proxList, schedList, activity] = await Promise.all([
       window.aviary.accounts.list(),
       window.aviary.proxies.list(),
-      window.aviary.schedules.list()
+      window.aviary.schedules.list(),
+      window.aviary.accounts.activity()
     ])
     setAccounts(list)
     setProxies(proxList)
     setSchedules(schedList)
+    setActivityMap(Object.fromEntries(activity.map((a) => [a.accountId, a])))
     const entries = await Promise.all(
       list.map(async (a) => [a.id, (await window.aviary.browser.status(a.id)).open] as const)
     )
     setOpenMap(Object.fromEntries(entries))
+  }, [])
+
+  // Chỉ tải lại hoạt động + sức khoẻ (nhẹ hơn refresh đầy đủ) — gọi khi có tác vụ hoàn thành.
+  const refreshActivity = useCallback(async () => {
+    const activity = await window.aviary.accounts.activity()
+    setActivityMap(Object.fromEntries(activity.map((a) => [a.accountId, a])))
   }, [])
 
   useEffect(() => {
@@ -88,6 +123,8 @@ export default function AccountsView(): JSX.Element {
     const offProgress = window.aviary.post.onProgress((p) => {
       if (!p.accountId || p.accountId === '__system__') return
       const id = p.accountId
+      // Tác vụ vừa hoàn thành (busy -> false) -> tải lại hoạt động gần nhất realtime.
+      if (!p.busy) void refreshActivity()
       setRunningIds((prev) => {
         const has = prev.has(id)
         if (p.busy === has) return prev // không đổi -> giữ nguyên reference
@@ -101,7 +138,13 @@ export default function AccountsView(): JSX.Element {
       off()
       offProgress()
     }
-  }, [refresh])
+  }, [refresh, refreshActivity])
+
+  // Đồng hồ 1s để dòng "(Ns)" tự đếm lên (thời gian kể từ hoạt động gần nhất).
+  useEffect(() => {
+    const t = setInterval(() => setNowTick(Date.now()), 1000)
+    return () => clearInterval(t)
+  }, [])
 
   // Khi danh sách account thay đổi (xoá...), xoá selectedIds không còn tồn tại.
   useEffect(() => {
@@ -461,6 +504,7 @@ export default function AccountsView(): JSX.Element {
             const isBusy = busy === a.id
             const statusKey = isOpen ? 'open' : a.status
             const initial = a.label.trim().charAt(0).toUpperCase() || '?'
+            const act = activityMap[a.id]
             return (
               <div key={a.id} className={`account-card${isSelected ? ' row-selected' : ''}`}>
                 {/* ---- Header: checkbox + avatar + tên + menu ---- */}
@@ -481,6 +525,7 @@ export default function AccountsView(): JSX.Element {
                     )}
                   </span>
                   <span className="account-name" title={a.label}>{a.label}</span>
+                  <HealthBadge health={act?.health ?? 'ok'} reason={act?.reason ?? null} />
                   {/* Nút nhanh ngoài card: chạy ngầm + test webhook (icon + tooltip) */}
                   <div className="card-quick-actions">
                     <button
@@ -623,6 +668,22 @@ export default function AccountsView(): JSX.Element {
                     )}
                   </select>
                 </div>
+
+                {/* ---- Hoạt động gần nhất (realtime từ Nhật ký) — bấm để mở Nhật ký lọc theo tài khoản ---- */}
+                <button
+                  className="account-activity"
+                  title="Xem nhật ký của tài khoản này"
+                  onClick={() => onNavigateToLogs?.(a.id, a.label)}
+                >
+                  {act?.last ? (
+                    <span className={`activity-text ${act.last.ok ? 'ok' : 'fail'}`}>
+                      {act.last.ok ? 'Thành công' : 'Lỗi'}: {KIND_LABEL[act.last.kind] ?? act.last.kind}{' '}
+                      <span className="activity-ago">({timeSince(act.last.ts, nowTick)})</span>
+                    </span>
+                  ) : (
+                    <span className="activity-text muted">Chưa có hoạt động</span>
+                  )}
+                </button>
 
                 {/* ---- Actions chính: Mở/Đóng + Đăng ---- */}
                 <div className="account-actions">
@@ -1160,6 +1221,29 @@ function ActionMenu({ items }: { items: MenuItem[] }): JSX.Element {
         </div>
       )}
     </div>
+  )
+}
+
+// Chấm sức khoẻ tài khoản: xanh lá (bình thường), đỏ (≥2 lỗi), cam (bất thường).
+function HealthBadge({ health, reason }: { health: AccountHealth; reason: string | null }): JSX.Element {
+  if (health === 'error') {
+    return (
+      <span className="health-badge error" title={reason ?? 'Lỗi'}>
+        <AlertCircle size={15} />
+      </span>
+    )
+  }
+  if (health === 'abnormal') {
+    return (
+      <span className="health-badge abnormal" title={reason ?? 'Bất thường'}>
+        <AlertTriangle size={15} />
+      </span>
+    )
+  }
+  return (
+    <span className="health-badge ok" title="Bình thường">
+      <CheckCircle2 size={15} />
+    </span>
   )
 }
 
