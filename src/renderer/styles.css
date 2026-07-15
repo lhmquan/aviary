@@ -309,6 +309,20 @@ nav {
 
 .page-header {
   margin-bottom: 20px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.page-header-titles {
+  min-width: 0;
+}
+/* Nút Back (quay lại section trước) — mờ khi không có lịch sử. */
+.page-back {
+  flex-shrink: 0;
+}
+.page-back:disabled {
+  opacity: 0.35;
+  cursor: default;
 }
 
 .page-header h1 {
@@ -2348,6 +2362,24 @@ nav {
   background: var(--accent-soft);
 }
 
+/* Tô màu card theo sức khoẻ — chỉ tài khoản CÓ VẤN ĐỀ mới nổi bật (viền trái đậm + nền nhạt),
+   tài khoản bình thường giữ trung tính để mắt tập trung vào chỗ cần chú ý. */
+.account-card.health-error {
+  border-color: color-mix(in srgb, var(--danger) 55%, var(--border));
+  border-left: 4px solid var(--danger);
+  background: color-mix(in srgb, var(--danger) 6%, var(--panel));
+}
+.account-card.health-abnormal {
+  border-color: color-mix(in srgb, var(--warn) 55%, var(--border));
+  border-left: 4px solid var(--warn);
+  background: color-mix(in srgb, var(--warn) 7%, var(--panel));
+}
+/* row-selected vẫn ưu tiên viền accent (đang chọn) nhưng giữ dải màu sức khoẻ bên trái. */
+.account-card.health-error.row-selected,
+.account-card.health-abnormal.row-selected {
+  border-color: var(--accent);
+}
+
 /* Header: checkbox + dot trạng thái + tên + menu ⋮ */
 .account-card-header {
   display: flex;
@@ -2481,10 +2513,27 @@ nav {
   justify-content: center;
   flex-shrink: 0;
   cursor: help;
+  border-radius: 50%;
+  width: 22px;
+  height: 22px;
 }
+/* Màu icon trong chip lọc sức khoẻ (giữ màu kể cả khi chip chưa active). */
+.chip-ico-ok { color: var(--success); }
+.chip-ico-error { color: var(--danger); }
+.chip-ico-abnormal { color: var(--warn); }
+
 .health-badge.ok { color: var(--success); }
-.health-badge.error { color: var(--danger); }
-.health-badge.abnormal { color: var(--warn); }
+/* Lỗi/bất thường: thêm nền tròn đậm + viền để nổi bật, nhìn phát thấy ngay. */
+.health-badge.error {
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 16%, transparent);
+  box-shadow: 0 0 0 1.5px color-mix(in srgb, var(--danger) 40%, transparent);
+}
+.health-badge.abnormal {
+  color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 18%, transparent);
+  box-shadow: 0 0 0 1.5px color-mix(in srgb, var(--warn) 45%, transparent);
+}
 
 /* Dòng "Hoạt động gần nhất" — bấm để mở Nhật ký lọc theo tài khoản */
 .account-activity {

@@ -22,7 +22,8 @@ import {
   Trash2,
   Minimize2,
   Maximize2,
-  BarChart3
+  BarChart3,
+  ArrowLeft
 } from 'lucide-react'
 import type { AppInfo, UpdateStatusPayload, ProgressPayload } from '@shared/types'
 import AccountsView from './views/AccountsView'
@@ -125,10 +126,31 @@ const UPDATE_LABEL: Record<string, string> = {
 
 export default function App(): JSX.Element {
   const [active, setActive] = useState<Section>('accounts')
+  // Lịch sử điều hướng (stack các section đã ghé) để hỗ trợ nút "Back" như trình duyệt.
+  const [navHistory, setNavHistory] = useState<Section[]>([])
   // Bộ lọc tài khoản chờ áp dụng cho tab Nhật ký (khi user bấm dòng hoạt động ở tab Tài khoản).
   const [logsAccountFilter, setLogsAccountFilter] = useState<{ id: string; label: string } | null>(
     null
   )
+
+  // Điều hướng sang section mới: đẩy section hiện tại vào lịch sử để Back quay lại được.
+  const navigate = useCallback((next: Section) => {
+    setActive((cur) => {
+      if (cur === next) return cur
+      setNavHistory((h) => [...h, cur])
+      return next
+    })
+  }, [])
+
+  // Quay lại section trước đó (Back). Không có lịch sử -> bỏ qua.
+  const goBack = useCallback(() => {
+    setNavHistory((h) => {
+      if (h.length === 0) return h
+      const prev = h[h.length - 1]
+      setActive(prev)
+      return h.slice(0, -1)
+    })
+  }, [])
   const [info, setInfo] = useState<AppInfo | null>(null)
   const [theme, setTheme] = useState<ThemeMode>(() => {
     try {
@@ -174,6 +196,34 @@ export default function App(): JSX.Element {
   }, [theme])
 
   useEffect(() => window.aviary.update.onStatus(setUpdateStatus), [])
+
+  // Back như trình duyệt: nút chuột phụ "Back" (mouse button 3) + phím tắt Alt+← / nút Back
+  // trên bàn phím. Không dùng Backspace vì dễ nhầm khi đang gõ trong input.
+  useEffect(() => {
+    const onMouseUp = (e: MouseEvent): void => {
+      // button 3 = nút "Back" trên chuột (một số chuột dùng button 4 cho Forward).
+      if (e.button === 3) {
+        e.preventDefault()
+        goBack()
+      }
+    }
+    const onKeyDown = (e: KeyboardEvent): void => {
+      // Alt+← hoặc phím "BrowserBack" trên bàn phím media.
+      if ((e.altKey && e.key === 'ArrowLeft') || e.key === 'BrowserBack') {
+        e.preventDefault()
+        goBack()
+      }
+    }
+    window.addEventListener('mouseup', onMouseUp)
+    window.addEventListener('keydown', onKeyDown)
+    // Nút "Back" trên chuột trên Windows đi qua app-command ở main -> nhận qua IPC.
+    const offNavBack = window.aviary.onNavBack(goBack)
+    return () => {
+      window.removeEventListener('mouseup', onMouseUp)
+      window.removeEventListener('keydown', onKeyDown)
+      offNavBack()
+    }
+  }, [goBack])
 
   // #6: lắng nghe tiến trình tác vụ để hiển thị terminal trạng thái realtime.
   useEffect(
@@ -298,7 +348,7 @@ export default function App(): JSX.Element {
               <button
                 key={item.id}
                 className={`nav-item ${active === item.id ? 'active' : ''}`}
-                onClick={() => setActive(item.id)}
+                onClick={() => navigate(item.id)}
               >
                 <span className="nav-icon">
                   <Icon size={18} />
@@ -364,15 +414,25 @@ export default function App(): JSX.Element {
 
       <main className="content">
         <header className="page-header">
-          <h1>{NAV.find((n) => n.id === active)?.label}</h1>
-          <p className="page-subtitle">{SUBTITLE[active]}</p>
+          <button
+            className="btn ghost icon-only page-back"
+            title="Quay lại (Alt+←, hoặc nút Back trên chuột)"
+            disabled={navHistory.length === 0}
+            onClick={goBack}
+          >
+            <ArrowLeft size={18} />
+          </button>
+          <div className="page-header-titles">
+            <h1>{NAV.find((n) => n.id === active)?.label}</h1>
+            <p className="page-subtitle">{SUBTITLE[active]}</p>
+          </div>
         </header>
 
         {active === 'accounts' && (
           <AccountsView
             onNavigateToLogs={(id, label) => {
               setLogsAccountFilter({ id, label })
-              setActive('logs')
+              navigate('logs')
             }}
           />
         )}

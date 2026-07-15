@@ -62,6 +62,14 @@ function createWindow(): BrowserWindow {
     return { action: 'deny' }
   })
 
+  // Nút "Back" trên chuột (Windows phát app-command 'browser-backward', không phải DOM event)
+  // -> chuyển tiếp về renderer để quay lại section trước.
+  win.on('app-command', (_e, cmd) => {
+    if (cmd === 'browser-backward') {
+      win.webContents.send(IpcChannels.navBack)
+    }
+  })
+
   // electron-vite cung cấp ELECTRON_RENDERER_URL khi chạy dev (HMR).
   if (process.env['ELECTRON_RENDERER_URL']) {
     win.loadURL(process.env['ELECTRON_RENDERER_URL'])

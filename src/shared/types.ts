@@ -397,6 +397,7 @@ export const IpcChannels = {
   browserOpen: 'browser:open',
   browserClose: 'browser:close',
   browserStatus: 'browser:status',
+  navBack: 'app:navBack',
   settingsGet: 'settings:get',
   settingsSave: 'settings:save',
   webhookTest: 'webhook:test',
@@ -429,6 +430,8 @@ export interface AviaryApi {
   getAppInfo: () => Promise<AppInfo>
   relaunch: () => Promise<void>
   pickFolder: () => Promise<string | null>
+  // Nút "Back" trên chuột (main phát app-command) -> quay lại section trước. Trả về hàm huỷ đăng ký.
+  onNavBack: (cb: () => void) => () => void
   accounts: {
     list: () => Promise<Account[]>
     create: (input: AccountInput) => Promise<Account>

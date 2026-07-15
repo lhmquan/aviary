@@ -68,13 +68,23 @@ const UPLOAD_STALL_MS = 90_000 // 90s không nhích tiến độ -> treo thật
 async function readUploadProgress(page: Page): Promise<number | null> {
   try {
     const v = await page.evaluate(`(() => {
+      let min = null;
+      const consider = (n) => {
+        if (Number.isFinite(n) && (min === null || n < min)) min = n;
+      };
+      // 1) Text kiểu "Uploading (NN%)" — VIDEO hay hiện, ảnh thường không.
       const txt = document.body ? document.body.innerText : '';
       const re = /(?:Uploading|Đang tải lên|Đang tải)\\s*\\((\\d{1,3})\\s*%\\)/gi;
-      let m, min = null;
-      while ((m = re.exec(txt)) !== null) {
-        const n = Number(m[1]);
-        if (Number.isFinite(n) && (min === null || n < min)) min = n;
-      }
+      let m;
+      while ((m = re.exec(txt)) !== null) consider(Number(m[1]));
+      // 2) Thanh upload media của X: [data-testid="progressBar-bar"] có style width:N% (màu xanh
+      //    trên thumbnail). Đây là tín hiệu tiến độ khi tải ẢNH (ảnh không có text %). Nhiều ảnh
+      //    -> nhiều bar; lấy MIN để bám ảnh chậm nhất. Chỉ tính bar đang chạy (0<w<100) để tránh
+      //    nhiễu từ bar idle 0% (compose trống) hoặc bar đã xong 100%.
+      document.querySelectorAll('[data-testid="progressBar-bar"]').forEach((el) => {
+        const w = el.style && el.style.width ? parseFloat(el.style.width) : NaN;
+        if (Number.isFinite(w) && w > 0 && w < 100) consider(w);
+      });
       return min;
     })()`)
     return typeof v === 'number' ? v : null
@@ -582,12 +592,19 @@ export async function postTweet(
     // — media nặng qua proxy chậm thì rất lâu, nên timeout giãn theo dung lượng (mediaTimeout,
     // sàn 2' / trần 15'). Poll 1s/lần để bắt tín hiệu NGAY khi xảy ra, không chờ hết timeout.
     // :visible lọc sẵn dialog ẩn vốn tồn tại trong DOM.
-    const modalCloseTimeout = hasMedia ? mediaTimeout : 45_000
+    // Sau khi bấm Post, X upload media full-res lên server rồi mới đóng modal. Với media —
+    // nhất là NHIỀU ẢNH qua proxy chậm — thời gian này biến động lớn (X upload tuần tự từng
+    // ảnh, không hiện % dạng text mà chỉ có thanh xanh [progressBar-bar]). Nên chờ theo TIẾN
+    // ĐỘ THẬT: còn nhích % thì reset đồng hồ, chỉ bỏ khi đứng yên quá UPLOAD_STALL_MS. Trần
+    // cứng UPLOAD_CEIL_MS chặn kẹt vô hạn. Không media -> deadline phẳng 45s là đủ.
     report('Đang chờ X xác nhận đăng bài…')
     const dialog = page.locator('[role="dialog"]:visible').first()
-    const deadline = Date.now() + modalCloseTimeout
+    const hardDeadline = Date.now() + (hasMedia ? UPLOAD_CEIL_MS : 45_000)
+    let lastProgress = -1
+    let lastProgressAt = Date.now()
+    let announcedPct = -1
     let posted = false
-    while (Date.now() < deadline) {
+    while (Date.now() < hardDeadline) {
       // User bấm Dừng -> ngừng chờ. Báo cờ để runner ghi log 'stopped' (không markDone).
       if (isStopRequested(acc)) {
         report('Đã dừng đăng bài theo yêu cầu.')
@@ -613,6 +630,22 @@ export async function postTweet(
         posted = true
         break
       }
+      // Modal còn mở + có media: bám tiến độ upload để không bail oan khi còn đang tải.
+      if (hasMedia) {
+        const pct = await readUploadProgress(page)
+        if (pct != null) {
+          if (pct >= announcedPct + 5) {
+            report(`Đang tải media lên X… ${Math.round(pct)}%`)
+            announcedPct = pct
+          }
+          if (pct > lastProgress) {
+            lastProgress = pct
+            lastProgressAt = Date.now()
+          }
+        }
+        // Đứng yên quá lâu (không nhích % VÀ modal vẫn mở) -> treo thật, bỏ.
+        if (Date.now() - lastProgressAt > UPLOAD_STALL_MS) break
+      }
       await sleep(1000)
     }
 
@@ -635,10 +668,11 @@ export async function postTweet(
 
     // Không có tín hiệu thành công nào -> báo thất bại rõ để user kiểm tra (tránh đánh
     // dấu n8n done nhầm khi thực ra chưa đăng).
+    const lastPct = hasMedia ? await readUploadProgress(page) : null
     return {
       ok: false,
       error: hasMedia
-        ? `Đã bấm Post nhưng modal chưa đóng sau ${Math.round(modalCloseTimeout / 60_000)} phút chờ upload media (video nặng qua proxy chậm hoặc X báo lỗi). Vui lòng kiểm tra lại trên X trước khi thử lại.`
+        ? `Đã bấm Post nhưng modal chưa đóng — upload media đứng yên quá ${Math.round(UPLOAD_STALL_MS / 1000)}s${lastPct != null ? ` (dừng ở ${Math.round(lastPct)}%)` : ''} (proxy chậm hoặc X báo lỗi). Vui lòng kiểm tra lại trên X trước khi thử lại.`
         : 'Đã bấm Post nhưng modal chưa đóng sau thời gian chờ (overlay/đường truyền chậm hoặc X báo lỗi). Vui lòng kiểm tra lại trên X trước khi thử lại.',
       step: 'post'
     }

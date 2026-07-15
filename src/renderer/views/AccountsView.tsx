@@ -89,6 +89,8 @@ export default function AccountsView(props: {
   const [query, setQuery] = useState('')
   const [statusFilter, setStatusFilter] = useState<string>('all')
   const [tagFilters, setTagFilters] = useState<Set<'scheduled' | 'headless'>>(new Set())
+  // Lọc theo sức khoẻ tài khoản (từ activityMap): 'all' | 'ok' | 'error' | 'abnormal'.
+  const [healthFilter, setHealthFilter] = useState<string>('all')
 
   const refresh = useCallback(async () => {
     const [list, proxList, schedList, activity] = await Promise.all([
@@ -315,11 +317,16 @@ export default function AccountsView(props: {
         if (!hasSched) return false
       }
       if (tagFilters.has('headless') && !a.headless) return false
+      if (healthFilter !== 'all') {
+        const h = activityMap[a.id]?.health ?? 'ok'
+        if (h !== healthFilter) return false
+      }
       return true
     })
-  }, [accounts, query, statusFilter, tagFilters, openMap, schedules])
+  }, [accounts, query, statusFilter, tagFilters, healthFilter, openMap, schedules, activityMap])
 
-  const isFiltering = query.trim() !== '' || statusFilter !== 'all' || tagFilters.size > 0
+  const isFiltering =
+    query.trim() !== '' || statusFilter !== 'all' || tagFilters.size > 0 || healthFilter !== 'all'
 
   function toggleTagFilter(tag: 'scheduled' | 'headless'): void {
     setTagFilters((prev) => {
@@ -334,7 +341,18 @@ export default function AccountsView(props: {
     setQuery('')
     setStatusFilter('all')
     setTagFilters(new Set())
+    setHealthFilter('all')
   }
+
+  // Số lượng tài khoản theo từng mức sức khoẻ (cho badge trên chip lọc).
+  const healthCounts = useMemo(() => {
+    const c = { ok: 0, error: 0, abnormal: 0 }
+    for (const a of accounts) {
+      const h = activityMap[a.id]?.health ?? 'ok'
+      c[h]++
+    }
+    return c
+  }, [accounts, activityMap])
 
   const hasSelection = selectedIds.size > 0
   const allSelected = filteredAccounts.length > 0 && selectedIds.size === filteredAccounts.length
@@ -452,6 +470,24 @@ export default function AccountsView(props: {
             ))}
           </div>
           <div className="filter-chips">
+            <span className="filter-label">Sức khoẻ:</span>
+            <FilterChip active={healthFilter === 'all'} onClick={() => setHealthFilter('all')}>
+              Tất cả
+            </FilterChip>
+            <FilterChip active={healthFilter === 'ok'} onClick={() => setHealthFilter('ok')}>
+              <CheckCircle2 size={12} className="chip-ico-ok" /> Bình thường ({healthCounts.ok})
+            </FilterChip>
+            <FilterChip active={healthFilter === 'error'} onClick={() => setHealthFilter('error')}>
+              <AlertCircle size={12} className="chip-ico-error" /> Lỗi ({healthCounts.error})
+            </FilterChip>
+            <FilterChip
+              active={healthFilter === 'abnormal'}
+              onClick={() => setHealthFilter('abnormal')}
+            >
+              <AlertTriangle size={12} className="chip-ico-abnormal" /> Bất thường ({healthCounts.abnormal})
+            </FilterChip>
+          </div>
+          <div className="filter-chips">
             <span className="filter-label">Nhãn:</span>
             <FilterChip
               active={tagFilters.has('scheduled')}
@@ -505,8 +541,12 @@ export default function AccountsView(props: {
             const statusKey = isOpen ? 'open' : a.status
             const initial = a.label.trim().charAt(0).toUpperCase() || '?'
             const act = activityMap[a.id]
+            const health = act?.health ?? 'ok'
             return (
-              <div key={a.id} className={`account-card${isSelected ? ' row-selected' : ''}`}>
+              <div
+                key={a.id}
+                className={`account-card health-${health}${isSelected ? ' row-selected' : ''}`}
+              >
                 {/* ---- Header: checkbox + avatar + tên + menu ---- */}
                 <div className="account-card-header">
                   <input

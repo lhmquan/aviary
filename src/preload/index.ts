@@ -18,6 +18,11 @@ const api: AviaryApi = {
   getAppInfo: () => ipcRenderer.invoke(IpcChannels.getAppInfo),
   relaunch: () => ipcRenderer.invoke(IpcChannels.appRelaunch),
   pickFolder: () => ipcRenderer.invoke(IpcChannels.pickFolder),
+  onNavBack: (cb: () => void) => {
+    const listener = (): void => cb()
+    ipcRenderer.on(IpcChannels.navBack, listener)
+    return () => ipcRenderer.removeListener(IpcChannels.navBack, listener)
+  },
   accounts: {
     list: () => ipcRenderer.invoke(IpcChannels.accountsList),
     create: (input: AccountInput) => ipcRenderer.invoke(IpcChannels.accountsCreate, input),
