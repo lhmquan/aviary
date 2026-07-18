@@ -2,12 +2,14 @@ import type { BrowserContext, Page, Locator } from 'patchright'
 import { existsSync, mkdirSync, statSync } from 'fs'
 import { join } from 'path'
 import { app } from 'electron'
-import type { PostResult, DeleteResult, DeleteMode, CommentResult } from '../../shared/types'
+import type { PostResult, DeleteResult, DeleteMode, CommentResult, ViewsReadResult } from '../../shared/types'
+import { canonicalizeTweetUrl } from '../../shared/url'
 import { isStopRequested } from '../scheduler/cancel'
 
 export type { PostResult }
 export type { DeleteResult }
 export type { CommentResult }
+export type { ViewsReadResult }
 
 // Callback báo tiến trình chi tiết của thao tác browser ra ngoài (statusbar terminal).
 // Chỉ cần message — runner.ts sẽ bọc thêm accountId/accountLabel/stage khi emit.
@@ -1376,6 +1378,279 @@ export async function collectTweetContext(
     return { caption: captionTrim, replies }
   } catch {
     return { caption: '', replies: [] }
+  } finally {
+    if (page && !page.isClosed()) {
+      await page.close().catch(() => {})
+    }
+  }
+}
+
+// ---- Đọc lượt xem (views) từ đúng anchor analytics ----
+
+// Phân tích số nguyên ĐẦY ĐỦ từ aria-label của nút analytics. X đặt aria-label kiểu:
+//   "12345 views. View Tweet analytics"  /  "1,234,567 lượt xem. Xem số liệu…"
+// aria-label chứa SỐ NGUYÊN ĐẦY ĐỦ (không rút gọn "1.2M" như text hiển thị) -> tin cậy để
+// so ngưỡng. Lấy CỤM SỐ ĐẦU tiên, bỏ dấu phân tách (",", ".", khoảng trắng, " ").
+// Trả null nếu không có cụm số nào.
+const VIEWS_WORD_RE = /(lượt xem|lần xem|views?|view)/i
+
+function digitsToInt(raw: string): number | null {
+  const digits = raw.replace(/[^\d]/g, '')
+  if (!digits) return null
+  const n = Number(digits)
+  return Number.isFinite(n) ? n : null
+}
+
+// Phân tích số LƯỢT XEM đầy đủ từ 1 chuỗi (aria-label [role="group"], anchor, hoặc innerText).
+// "1 thích, 5893 lượt xem" -> 5893 (số NGAY TRƯỚC "lượt xem", không lấy "1 thích").
+// "5.893 Lượt xem" -> 5893. "12,345 views. View analytics" -> 12345.
+function parseViewsFromText(text: string | null | undefined): number | null {
+  if (!text) return null
+  const str = String(text)
+  const wordMatch = str.match(VIEWS_WORD_RE)
+  if (wordMatch && wordMatch.index !== undefined) {
+    const before = str.slice(0, wordMatch.index)
+    const nums = before.match(/[0-9][0-9.,\s]*/g)
+    if (nums && nums.length > 0) {
+      const n = digitsToInt(nums[nums.length - 1])
+      if (n != null) return n
+    }
+  }
+  const m = str.match(/[0-9][0-9.,\s]*/)
+  return m ? digitsToInt(m[0]) : null
+}
+
+/**
+ * Mở 1 tweet, đọc LƯỢT XEM (views) từ ĐÚNG anchor analytics của BÀI CHÍNH.
+ * Cách đọc CHÍNH XÁC theo yêu cầu:
+ *   - Chỉ đọc trên BÀI CHÍNH (article tabindex="-1") — không nhầm sang reply/quote.
+ *   - Anchor phải là link có href KẾT THÚC bằng "/analytics" (a[href$="/analytics"]).
+ *   - Số views lấy từ aria-label (SỐ NGUYÊN ĐẦY ĐỦ), KHÔNG lấy text rút gọn ("1.2M").
+ * Không tìm thấy anchor -> { views: null, noAnchor: true } (bài quá cũ X ẩn nút, hoặc chưa
+ * đăng nhập, hoặc layout đổi). Caller quyết định: KHÔNG cache, thử lại lần sau.
+ *
+ * @param context  Browser context đã mở (có session X)
+ * @param tweetUrl URL đầy đủ của tweet
+ * @param accountId ID tài khoản (để log/screenshot)
+ */
+export async function readTweetViews(
+  context: BrowserContext,
+  tweetUrl: string,
+  accountId?: string,
+  report: StepReporter = noop
+): Promise<ViewsReadResult> {
+  const acc = accountId ?? 'unknown'
+  let page: Page | null = null
+  try {
+    page = await context.newPage()
+    report(`Đang mở bài để đọc lượt xem…`)
+    await page.goto(tweetUrl, { waitUntil: 'domcontentloaded', timeout: 30_000 }).catch(() => {})
+    await sleep(1500)
+
+    // Session hết hạn -> báo lỗi rõ (không cache, thử lại sau khi đăng nhập lại).
+    if (page.url().includes('/login') || page.url().includes('/i/flow/login')) {
+      return { views: null, error: 'Session hết hạn — bị chuyển về trang đăng nhập.' }
+    }
+
+    // Chờ bài chính (tabindex="-1") hiển thị. Không thấy -> coi như không đọc được views.
+    const mainTweet = page.locator('article[data-testid="tweet"][tabindex="-1"]').first()
+    const mainVisible = await mainTweet
+      .waitFor({ timeout: 10_000, state: 'visible' })
+      .then(() => true)
+      .catch(() => false)
+    if (!mainVisible) {
+      return { views: null, noAnchor: true, error: 'Không thấy bài chính để đọc lượt xem.' }
+    }
+
+    // Đọc lượt xem trong BÀI CHÍNH. TRÊN TRANG CHI TIẾT, anchor .../analytics thường có
+    // aria-label = null; số lượt xem đầy đủ nằm ở:
+    //   (1) [role="group"] aria-label: "1 thích, 5893 lượt xem"  (số nguyên đầy đủ)
+    //   (2) innerText của anchor .../analytics: "5.893 Lượt xem"
+    //   (3) aria-label của anchor (một số layout): "12345 views…"
+    // Gom NHIỀU nguồn rồi parse theo từ khoá "lượt xem/views" -> lấy đúng số views (không nhầm
+    // sang số like). Thử tối đa ~3 lần (X nạp số views trễ sau khi render bài).
+    let views: number | null = null
+    for (let attempt = 0; attempt < 3 && views == null; attempt++) {
+      if (attempt > 0) await sleep(1200)
+      const texts = await mainTweet
+        .evaluate((root) => {
+          const out: string[] = []
+          const grp = root.querySelector('[role="group"]')
+          if (grp) {
+            const a = grp.getAttribute('aria-label')
+            if (a) out.push(a)
+          }
+          const anchor = root.querySelector('a[href$="/analytics"]')
+          if (anchor) {
+            const a = anchor.getAttribute('aria-label')
+            if (a) out.push(a)
+            const t = (anchor as { innerText?: string }).innerText
+            if (t) out.push(t)
+          }
+          return out
+        })
+        .catch(() => [] as string[])
+      for (const t of texts) {
+        const v = parseViewsFromText(t)
+        if (v != null) {
+          views = v
+          break
+        }
+      }
+    }
+    if (views == null) {
+      // Không đọc được số -> KHÔNG cache, thử lại lần chạy sau.
+      return { views: null, noAnchor: true, error: 'Không đọc được số lượt xem của bài.' }
+    }
+    report(`Lượt xem đọc được: ${views.toLocaleString('en-US')}`)
+    // Đọc luôn caption bài chính TRONG CÙNG lần mở này (tiết kiệm 1 lần điều hướng) — dùng cho
+    // AI sinh bình luận theo lịch. KHÔNG cào reply (lịch bình luận không cần ngữ cảnh reply).
+    // Bài chỉ có ảnh/video (không chữ) -> caption rỗng, caller vẫn sinh bình luận theo chỉ dẫn.
+    const caption = await mainTweet
+      .locator('[data-testid="tweetText"]')
+      .first()
+      .innerText()
+      .then((t) => t.trim())
+      .catch(() => '')
+    return { views, caption }
+  } catch (e) {
+    const shot = screenshotPath(acc, 'views_read')
+    await page?.screenshot({ path: shot }).catch(() => {})
+    return { views: null, error: (e as Error).message }
+  } finally {
+    if (page && !page.isClosed()) {
+      await page.close().catch(() => {})
+    }
+  }
+}
+
+/**
+ * Cuộn trang profile thu thập URL các bài MỚI NHẤT của CHÍNH tài khoản (canonical), mới->cũ.
+ * LỌC: chỉ giữ bài GỐC của tài khoản; BỎ QUA bài ghim, repost/retweet, quảng cáo/Promoted, và
+ * "Discover more"/gợi ý của X. KHÔNG lọc reply ở đây (trang profile mọi article đều tabindex=0)
+ * — reply thật sẽ được commentOnTweet phát hiện và bỏ qua vĩnh viễn khi mở từng bài.
+ * Dừng khi đủ `count` bài hoặc chạm đáy timeline.
+ *
+ * @param context  Browser context đã mở (có session X)
+ * @param handle   Username X của chính tài khoản (có thể kèm @)
+ * @param count    Số URL cần thu thập (N bài mới nhất)
+ * @param accountId ID tài khoản (để log/screenshot)
+ */
+export async function crawlNewestOwnPostUrls(
+  context: BrowserContext,
+  handle: string,
+  count: number,
+  accountId?: string,
+  report: StepReporter = noop
+): Promise<{ urls: string[]; error?: string; screenshot?: string }> {
+  const acc = accountId ?? 'unknown'
+  const cleanHandle = normalizeHandle(handle)
+  let page: Page | null = null
+  const urls: string[] = []
+  const seenCanon = new Set<string>()
+
+  try {
+    page = await context.newPage()
+    report(`Đang mở trang profile @${cleanHandle}…`)
+    await page.goto(`https://x.com/${cleanHandle}`, {
+      waitUntil: 'domcontentloaded',
+      timeout: 30_000
+    })
+    await sleep(2000)
+
+    if (page.url().includes('/login') || page.url().includes('/i/flow/login')) {
+      const shot = screenshotPath(acc, 'comment_collect')
+      await page.screenshot({ path: shot }).catch(() => {})
+      return {
+        urls: [],
+        error: 'Session hết hạn — bị chuyển về trang đăng nhập. Hãy mở profile và đăng nhập lại.',
+        screenshot: existsSync(shot) ? shot : undefined
+      }
+    }
+
+    // Chỉ xét article có link permalink CỦA CHÍNH tài khoản (case-insensitive) -> lọc bỏ
+    // quote-tweet của người khác + phần lớn card gợi ý (chúng trỏ handle khác).
+    const statusHref = `a[href*="/${cleanHandle}/status/" i]`
+    const tweetSelector = `article[data-testid="tweet"]:visible:has(${statusHref})`
+
+    // Đọc socialContext 1 lần: bắt repost/retweet, bài ghim (pinned) VÀ gợi ý ("Discover more"/
+    // "You might like"…). Text theo ngôn ngữ giao diện nên khớp cả EN lẫn VI.
+    async function contextKind(a: Locator): Promise<'repost' | 'pinned' | 'suggest' | null> {
+      const sc = a.locator('[data-testid="socialContext"]').first()
+      if (!(await sc.isVisible().catch(() => false))) return null
+      const ctx = (await sc.textContent({ timeout: 300 }).catch(() => null)) ?? ''
+      if (/repost|reposted|đăng lại|retweet/i.test(ctx)) return 'repost'
+      if (/pinned|đã ghim|ghim/i.test(ctx)) return 'pinned'
+      if (/discover more|you might like|suggested|gợi ý|có thể bạn thích|khám phá thêm/i.test(ctx))
+        return 'suggest'
+      return null
+    }
+
+    // Bài quảng cáo (Promoted/Được quảng cáo) có nhãn riêng — bỏ qua (không phải bài mình đăng).
+    async function isPromoted(a: Locator): Promise<boolean> {
+      const txt = (await a.innerText().catch(() => '')) ?? ''
+      return /(^|\s)(promoted|được quảng cáo|quảng cáo)(\s|$)/i.test(txt)
+    }
+
+    let stuckScrolls = 0
+    let iterations = 0
+    const MAX_ITERATIONS_COLLECT = 500
+
+    while (urls.length < count && iterations < MAX_ITERATIONS_COLLECT) {
+      iterations++
+      const articles = await page.locator(tweetSelector).all()
+      let foundNew = false
+
+      for (const a of articles) {
+        if (urls.length >= count) break
+        const href = await a
+          .locator(statusHref)
+          .first()
+          .getAttribute('href')
+          .catch(() => null)
+        const canon = canonicalizeTweetUrl(href)
+        if (!canon || seenCanon.has(canon)) continue
+        seenCanon.add(canon)
+
+        const kind = await contextKind(a)
+        if (kind) continue // repost / pinned / suggest -> bỏ qua
+        if (await isPromoted(a)) continue // quảng cáo -> bỏ qua
+
+        urls.push(canon)
+        foundNew = true
+        report(`Đã thu thập ${urls.length}/${count} bài mới nhất…`)
+      }
+
+      if (urls.length >= count) break
+
+      const hBefore = await page
+        .evaluate<number>('document.documentElement.scrollHeight')
+        .catch(() => 0)
+      const seenBefore = seenCanon.size
+      report(`Đang cuộn tìm thêm bài… (đáy ${stuckScrolls}/${MAX_EMPTY_SCROLLS_COLLECT})`)
+      await scrollDown(page)
+      await sleep(1200)
+      const hAfter = await page
+        .evaluate<number>('document.documentElement.scrollHeight')
+        .catch(() => 0)
+      const grew = hAfter > hBefore + 4
+      const revealed = seenCanon.size > seenBefore
+      if (grew || revealed || foundNew) {
+        stuckScrolls = 0
+      } else {
+        stuckScrolls++
+        if (stuckScrolls >= MAX_EMPTY_SCROLLS_COLLECT) {
+          report('Đã chạm đáy timeline profile — không còn bài mới.')
+          break
+        }
+      }
+    }
+
+    return { urls }
+  } catch (e) {
+    const shot = screenshotPath(acc, 'comment_collect')
+    await page?.screenshot({ path: shot }).catch(() => {})
+    return { urls, error: (e as Error).message, screenshot: existsSync(shot) ? shot : undefined }
   } finally {
     if (page && !page.isClosed()) {
       await page.close().catch(() => {})

@@ -1025,21 +1025,24 @@ nav {
 /* 2 field cạnh nhau trên 1 hàng (VD: số bài + thời gian giữa mỗi bình luận) */
 .field-row-2 {
   display: flex;
+  flex-wrap: wrap;
   gap: 12px;
   margin-bottom: 14px;
 }
 .field-row-2 .field {
   margin-bottom: 0;
-  /* Chiều rộng tự động theo label — field dài hơn sẽ rộng hơn */
-  flex: 0 1 auto;
+  /* Chia đều không gian, cho phép co lại + xuống dòng khi hẹp (tránh tràn modal). */
+  flex: 1 1 120px;
+  min-width: 0;
 }
 .field-row-2 .field span {
-  white-space: nowrap;
+  /* Cho phép label dài xuống dòng thay vì đẩy field tràn ngang. */
+  white-space: normal;
 }
 .field-row-2 .field input,
 .field-row-2 .field select {
   width: 100%;
-  min-width: 80px;
+  min-width: 0;
 }
 
 .field span {
@@ -1121,6 +1124,144 @@ nav {
   color: var(--muted);
   font-size: 12px;
   margin: 4px 0 0;
+}
+.hint b {
+  color: var(--text-2);
+  font-weight: 600;
+}
+
+/* Icon nhỏ nội tuyến trong nhãn field. */
+.inline-ic {
+  vertical-align: -2px;
+  margin-right: 3px;
+  color: var(--muted);
+}
+
+/* ---------- Form section (nhóm field có tiêu đề) ---------- */
+.form-section {
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--panel-2);
+  padding: 14px 14px 4px;
+  margin-bottom: 14px;
+}
+.form-section-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--text-2);
+  margin-bottom: 12px;
+}
+.form-section-title svg {
+  color: var(--accent);
+}
+.form-section .hint:last-child {
+  margin-bottom: 12px;
+}
+
+/* ---------- Segmented control (chọn 1 trong nhiều) ---------- */
+.segmented {
+  display: flex;
+  gap: 6px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  padding: 4px;
+}
+.segmented-item {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 9px 10px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-2);
+  font-size: 13px;
+  font-weight: 500;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background var(--ease), color var(--ease), box-shadow var(--ease);
+}
+.segmented-item:hover {
+  color: var(--text);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+.segmented-item.active {
+  background: var(--accent);
+  color: #fff;
+  box-shadow: var(--shadow-sm);
+}
+.segmented-item.active svg {
+  color: #fff;
+}
+.segmented-label {
+  white-space: nowrap;
+}
+
+/* ---------- Xem trước bình luận + đếm 280 ký tự ---------- */
+.comment-preview {
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--bg);
+  padding: 10px 12px;
+  margin-bottom: 12px;
+}
+.comment-preview.over {
+  border-color: color-mix(in srgb, var(--danger) 40%, transparent);
+  background: var(--danger-soft);
+}
+.comment-preview-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-2);
+  margin-bottom: 6px;
+}
+.comment-preview-count {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+  font-weight: 500;
+}
+.comment-preview-count.over {
+  color: var(--danger);
+  font-weight: 600;
+}
+.comment-preview-body {
+  font-size: 13px;
+  color: var(--text);
+  line-height: 1.5;
+  word-break: break-word;
+  white-space: pre-wrap;
+}
+.comment-preview-warn {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--danger);
+  line-height: 1.45;
+}
+
+/* Responsive: màn hẹp -> segmented xuống dòng, field-row-2 xếp dọc. */
+@media (max-width: 520px) {
+  .segmented {
+    flex-direction: column;
+  }
+  .field-row-2 {
+    flex-direction: column;
+    gap: 0;
+  }
+  .field-row-2 .field {
+    margin-bottom: 14px;
+  }
 }
 
 /* ---------- Post result block ---------- */

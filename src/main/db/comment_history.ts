@@ -1,4 +1,5 @@
 import { getDb } from './index'
+import { canonicalizeTweetUrl } from '../../shared/url'
 
 interface CommentHistoryRow {
   id: number
@@ -19,11 +20,16 @@ export function insertCommentedLink(
   status: 'collected' | 'commented' | 'reply_skip' | 'fail' = 'commented',
   at = Date.now()
 ): void {
+  const canonical = canonicalizeTweetUrl(tweetUrl)
+  if (!canonical) return
   getDb()
     .prepare(
-      'INSERT INTO comment_history (account_id, tweet_url, commented_at, status) VALUES (?, ?, ?, ?)'
+      'INSERT OR IGNORE INTO comment_history (account_id, tweet_url, commented_at, status) VALUES (?, ?, ?, ?)'
     )
-    .run(accountId, tweetUrl, at, status)
+    .run(accountId, canonical, at, status)
+  getDb()
+    .prepare('UPDATE comment_history SET status = ?, commented_at = ? WHERE account_id = ? AND tweet_url = ?')
+    .run(status, at, accountId, canonical)
 }
 
 // Thêm hàng loạt link vào cache (status='collected'). Bỏ qua link đã có (tránh trùng).
@@ -84,6 +90,21 @@ export function listCommentedLinksOnly(accountId: string, count = 100): string[]
     )
     .all(accountId, count) as Pick<CommentHistoryRow, 'tweet_url'>[]
   return rows.map((r) => r.tweet_url)
+}
+
+// Tập URL đã xử lý VĨNH VIỄN cho 1 tài khoản: chỉ 'commented' (đã bình luận thành công) và
+// 'reply_skip' (bài là reply thật). Đây là 2 trạng thái DUY NHẤT được bỏ qua vĩnh viễn theo
+// thiết kế mới. Bài dưới ngưỡng views KHÔNG nằm ở đây (không được cache) nên sẽ được xét lại.
+// Dùng Set để tra O(1) khi lọc danh sách N bài mới nhất mỗi lần chạy.
+export function listPermanentlySkippedSet(accountId: string, count = 500): Set<string> {
+  const rows = getDb()
+    .prepare(
+      `SELECT tweet_url FROM comment_history
+       WHERE account_id = ? AND status IN ('commented', 'reply_skip')
+       ORDER BY commented_at DESC LIMIT ?`
+    )
+    .all(accountId, count) as Pick<CommentHistoryRow, 'tweet_url'>[]
+  return new Set(rows.map((r) => r.tweet_url))
 }
 
 // Đếm số comment đã thực hiện trong ngày hôm nay (chỉ status='commented').

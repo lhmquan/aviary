@@ -105,6 +105,8 @@ export interface XProfileInfo {
 export type ScheduleKind = 'interval' | 'fixed'
 export type ScheduleAction = 'post' | 'delete' | 'comment' | 'interact'
 export type DeleteMode = 'newest' | 'by_date'
+// Nguồn nội dung cho lịch bình luận: câu cố định n8n (Google Sheet) hoặc AI sinh theo bài.
+export type CommentContentSource = 'n8n' | 'ai'
 
 export interface Schedule {
   id: string
@@ -119,10 +121,27 @@ export interface Schedule {
   deleteMode: DeleteMode | null // action='delete': 'newest' | 'by_date'
   deleteBeforeDate: string | null // action='delete' + deleteMode='by_date': "YYYY-MM-DD"
   deleteCount: number // action='delete': số bài xoá mỗi lần (0 = xoá tất cả)
-  // action='comment' — bình luận trên bài của chính tài khoản (trang profile).
-  commentCount: number // số bài bình luận trong 1 lần chạy
+  // action='comment' — bình luận trên bài MỚI NHẤT của chính tài khoản.
+  commentCount: number // số bài bình luận TỐI ĐA trong 1 lần chạy
   commentIntervalSeconds: number // thời gian giữa các lần bình luận trong 1 lần chạy
-  commentSourceUrl: string | null // link Google Sheet chứa nội dung bình luận
+  commentSourceUrl: string | null // link Google Sheet chứa nội dung bình luận (nguồn n8n)
+  // Mỗi lần chạy chỉ xét N bài MỚI NHẤT của chính tài khoản (ưu tiên URL từ nhật ký đăng
+  // thành công, chỉ cuộn profile khi thiếu). Mặc định 20.
+  commentNewestCount: number
+  // Ngưỡng lượt xem: chỉ bình luận bài có views > ngưỡng này (strict). Bài chưa đạt KHÔNG bị
+  // cache là đã xử lý — lần chạy sau vẫn đọc lại views nếu còn nằm trong N bài mới nhất.
+  commentViewThreshold: number
+  // Nguồn nội dung bình luận: 'n8n' (câu cố định từ Google Sheet) | 'ai' (AI sinh theo từng
+  // bài, dùng chỉ dẫn commentAiInstruction). Mặc định 'n8n' (giữ hành vi cũ).
+  commentSource: CommentContentSource
+  // Chỉ dẫn riêng cho AI khi sinh bình luận theo lịch (nguồn 'ai'). Trống = dùng mặc định.
+  commentAiInstruction: string | null
+  // Số KÝ TỰ tối đa cho bình luận AI (0 = theo giới hạn ký tự chung ở Cài đặt).
+  commentMaxChars: number
+  // Tiền tố ghép vào ĐẦU bình luận (vd "GM! "). Trống = không ghép.
+  commentPrefix: string | null
+  // Link ghép vào CUỐI bình luận (vd link giới thiệu). Trống = không ghép.
+  commentLink: string | null
   // action='interact' — phiên tương tác feed (scroll/like/comment AI/refresh) theo thời lượng.
   interactDurationMinutes: number // thời lượng 1 phiên tương tác (phút)
   // Số bình luận MỤC TIÊU trong 1 phiên tương tác. 0 = tự tính theo thời lượng (như cũ:
@@ -151,6 +170,13 @@ export interface ScheduleInput {
   commentCount?: number
   commentIntervalSeconds?: number
   commentSourceUrl?: string | null
+  commentNewestCount?: number
+  commentViewThreshold?: number
+  commentSource?: CommentContentSource
+  commentAiInstruction?: string | null
+  commentMaxChars?: number
+  commentPrefix?: string | null
+  commentLink?: string | null
   interactDurationMinutes?: number
   interactCommentTarget?: number
 }
@@ -277,10 +303,22 @@ export interface CommentResult {
   screenshot?: string
   // Đã chạm limit comment/ngày -> tạm dừng, mai chạy tiếp.
   limitReached?: boolean
-  // Tweet là reply (không phải bài gốc) -> bỏ qua, không bình luận.
+  // Tweet là reply (không phải bài gốc) -> bỏ qua VĨNH VIỄN, không bình luận.
   skipped?: boolean
   // User bấm Dừng giữa chừng -> ghi log 'stopped', trả về số bài đã bình luận tới lúc đó.
   stopped?: boolean
+}
+
+// Kết quả đọc lượt xem (views) của 1 bài từ đúng anchor analytics.
+export interface ViewsReadResult {
+  // Số lượt xem đọc được (số nguyên đầy đủ). null = không đọc được (không có anchor / lỗi).
+  views: number | null
+  // Không tìm thấy anchor .../analytics — có thể bài quá cũ (X ẩn nút) hoặc layout đổi.
+  noAnchor?: boolean
+  // Caption bài chính đọc được ngay trong cùng lần mở (dùng cho AI sinh bình luận theo lịch —
+  // không cần mở bài lần 2 để cào ngữ cảnh). Rỗng nếu bài chỉ có media/không có chữ.
+  caption?: string
+  error?: string
 }
 
 // Một dòng nhật ký đăng bài (lưu DB, hiển thị ở tab Nhật ký).

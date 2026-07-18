@@ -132,6 +132,19 @@ function migrate(d: Database.Database): void {
   addColumnIfMissing(d, 'schedules', 'comment_count', 'INTEGER NOT NULL DEFAULT 1')
   addColumnIfMissing(d, 'schedules', 'comment_interval_seconds', 'INTEGER NOT NULL DEFAULT 60')
   addColumnIfMissing(d, 'schedules', 'comment_source_url', 'TEXT')
+  // Redesign lịch bình luận: mỗi lần chạy chỉ xét N bài MỚI NHẤT của chính tài khoản, chỉ
+  // bình luận bài có views > ngưỡng. Bài dưới ngưỡng KHÔNG bao giờ bị cache là đã xử lý.
+  // comment_newest_count: số bài mới nhất xét mỗi lần chạy (mặc định 20).
+  // comment_view_threshold: ngưỡng lượt xem (strict >), mặc định 0 (không lọc theo views).
+  addColumnIfMissing(d, 'schedules', 'comment_newest_count', 'INTEGER NOT NULL DEFAULT 20')
+  addColumnIfMissing(d, 'schedules', 'comment_view_threshold', 'INTEGER NOT NULL DEFAULT 0')
+  // Nguồn nội dung bình luận: 'n8n' (câu cố định từ Sheet) | 'ai' (AI sinh theo từng bài).
+  addColumnIfMissing(d, 'schedules', 'comment_source', "TEXT NOT NULL DEFAULT 'n8n'")
+  // Chỉ dẫn riêng cho AI + số từ tối đa + tiền tố + link (nguồn 'ai'). Cũ = NULL/0.
+  addColumnIfMissing(d, 'schedules', 'comment_ai_instruction', 'TEXT')
+  addColumnIfMissing(d, 'schedules', 'comment_max_words', 'INTEGER NOT NULL DEFAULT 0')
+  addColumnIfMissing(d, 'schedules', 'comment_prefix', 'TEXT')
+  addColumnIfMissing(d, 'schedules', 'comment_link', 'TEXT')
 
   // Cột cho lịch tương tác feed (action='interact'): thời lượng 1 phiên (phút).
   addColumnIfMissing(d, 'schedules', 'interact_duration_minutes', 'INTEGER NOT NULL DEFAULT 15')
@@ -139,8 +152,14 @@ function migrate(d: Database.Database): void {
   addColumnIfMissing(d, 'schedules', 'interact_comment_target', 'INTEGER NOT NULL DEFAULT 0')
 
   // Bảng cache link đã bình luận — để so sánh tránh bình luận trùng bài.
-  // Prune: chỉ giữ 10 lần chạy gần nhất (theo commented_at) cho mỗi account.
-  // status: 'commented' = đã comment thành công; 'reply_skip' = tweet là reply, đã bỏ qua.
+  // Prune: chỉ giữ N link gần nhất (theo commented_at) cho mỗi account.
+  // status:
+  //   'commented'  = đã comment thành công -> BỎ QUA VĨNH VIỄN các lần sau.
+  //   'reply_skip' = bài là reply (không phải bài gốc) -> BỎ QUA VĨNH VIỄN.
+  //   'collected'  = (LEGACY) link đã thu thập, chưa xử lý — flow cũ. Flow mới không dùng.
+  //   'fail'       = lỗi comment, sẽ thử lại.
+  // LƯU Ý QUAN TRỌNG: bài DƯỚI ngưỡng views KHÔNG được ghi vào bảng này (không cache) — để
+  // mỗi lần chạy sau vẫn đọc lại views nếu bài còn nằm trong N bài mới nhất.
   d.exec(`
     CREATE TABLE IF NOT EXISTS comment_history (
       id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -154,6 +173,15 @@ function migrate(d: Database.Database): void {
   `)
   // Migration cột status cho DB cũ (an toàn nếu đã tồn tại).
   addColumnIfMissing(d, 'comment_history', 'status', 'TEXT')
+  // Dọn bản ghi trùng trước khi tạo unique index; giữ bản ghi mới nhất của mỗi URL/tài khoản.
+  d.exec(`
+    DELETE FROM comment_history
+    WHERE id NOT IN (
+      SELECT MAX(id) FROM comment_history GROUP BY account_id, tweet_url
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_comment_history_account_url
+      ON comment_history (account_id, tweet_url);
+  `)
 
   // Bảng Analytics: snapshot thống kê X theo ngày cho từng tài khoản.
   // 1 row/account/day (upsert qua unique index). Retention 30 ngày.

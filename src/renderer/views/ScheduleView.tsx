@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback, useMemo } from 'react'
-import { Plus, Pencil, Trash2, RefreshCw, Loader2, Clock, CalendarClock, Trash, MessageSquare, Activity, Send, MessageCircle, BarChart3, ListOrdered, Copy, X, Check, Search } from 'lucide-react'
-import type { Account, Schedule, ScheduleInput, ScheduleKind, ScheduleAction, DeleteMode } from '@shared/types'
+import { Plus, Pencil, Trash2, RefreshCw, Loader2, Clock, CalendarClock, Trash, MessageSquare, Activity, Send, MessageCircle, BarChart3, ListOrdered, Copy, X, Check, Search, Eye, Bot, Globe, Link2 } from 'lucide-react'
+import type { Account, Schedule, ScheduleInput, ScheduleKind, ScheduleAction, DeleteMode, CommentContentSource } from '@shared/types'
 
 const REFRESH_MS = 15_000
 
@@ -706,7 +706,14 @@ function CloneScheduleModal(props: {
       deleteCount: schedule.deleteCount,
       commentCount: schedule.commentCount,
       commentIntervalSeconds: schedule.commentIntervalSeconds,
+      commentNewestCount: schedule.commentNewestCount,
+      commentViewThreshold: schedule.commentViewThreshold,
+      commentSource: schedule.commentSource,
       commentSourceUrl: schedule.commentSourceUrl,
+      commentAiInstruction: schedule.commentAiInstruction,
+      commentMaxChars: schedule.commentMaxChars,
+      commentLink: schedule.commentLink,
+      commentPrefix: schedule.commentPrefix,
       interactDurationMinutes: schedule.interactDurationMinutes,
       interactCommentTarget: schedule.interactCommentTarget
     }
@@ -798,10 +805,17 @@ function ScheduleForm(props: {
   const [deleteMode, setDeleteMode] = useState<DeleteMode>(schedule?.deleteMode ?? 'newest')
   const [deleteBeforeDate, setDeleteBeforeDate] = useState(schedule?.deleteBeforeDate ?? '')
   const [deleteCount, setDeleteCount] = useState(String(schedule?.deleteCount ?? 1))
-  // Comment fields
+  // Comment fields — redesign: quét N bài MỚI NHẤT của chính tài khoản mỗi lần chạy,
+  // lọc theo lượt xem, chọn nguồn nội dung (webhook Google Sheet | AI tự sinh), tiền tố/link tuỳ chọn.
   const [commentCount, setCommentCount] = useState(String(schedule?.commentCount ?? 1))
   const [commentIntervalSeconds, setCommentIntervalSeconds] = useState(String(schedule?.commentIntervalSeconds ?? 60))
-  const [commentSourceUrl, setCommentSourceUrl] = useState(schedule?.commentSourceUrl ?? '')
+  const [commentViewThreshold, setCommentViewThreshold] = useState(String(schedule?.commentViewThreshold ?? 0))
+  const [commentSource, setCommentContentSource] = useState<CommentContentSource>(schedule?.commentSource ?? 'n8n')
+  const [commentSourceUrl, setCommentContentSourceUrl] = useState(schedule?.commentSourceUrl ?? '')
+  const [commentAiInstruction, setCommentAiInstruction] = useState(schedule?.commentAiInstruction ?? '')
+  const [commentMaxChars, setCommentMaxChars] = useState(String(schedule?.commentMaxChars ?? 0))
+  const [commentLink, setCommentLink] = useState(schedule?.commentLink ?? '')
+  const [commentPrefix, setCommentPrefix] = useState(schedule?.commentPrefix ?? '')
   // Interact fields
   const [interactDurationMinutes, setInteractDurationMinutes] = useState(String(schedule?.interactDurationMinutes ?? 15))
   // Số bình luận mục tiêu/phiên: '' hoặc '0' = tự tính theo thời lượng (như cũ).
@@ -892,6 +906,25 @@ function ScheduleForm(props: {
       setError(warning)
       return
     }
+    // Validate nguồn nội dung bình luận theo lựa chọn.
+    if (action === 'comment') {
+      if (commentSource === 'n8n') {
+        const url = commentSourceUrl.trim()
+        if (!url) {
+          setError('Phải nhập nguồn bình luận (link Google Sheet) khi dùng nguồn Webhook.')
+          return
+        }
+        if (!/^https?:\/\//i.test(url)) {
+          setError('Nguồn bình luận phải là URL hợp lệ (http/https).')
+          return
+        }
+      } else if (commentSource === 'ai') {
+        if (!commentAiInstruction.trim()) {
+          setError('Phải nhập chỉ dẫn cho AI sinh bình luận khi dùng nguồn AI.')
+          return
+        }
+      }
+    }
     const parsedDeleteCount = deleteCount.trim() === '' ? 1 : Number(deleteCount)
     const parsedCommentCount = commentCount.trim() === '' ? 1 : Number(commentCount)
     const baseInput = {
@@ -915,9 +948,24 @@ function ScheduleForm(props: {
           : null,
       deleteCount: action === 'delete' ? Math.max(0, parsedDeleteCount) : 1,
       commentCount: action === 'comment' ? Math.max(1, parsedCommentCount) : 1,
+      commentNewestCount: action === 'comment' ? Math.max(1, parsedCommentCount) : 20,
       commentIntervalSeconds:
         action === 'comment' ? Math.max(5, Number(commentIntervalSeconds) || 60) : 60,
-      commentSourceUrl: action === 'comment' ? commentSourceUrl.trim() || null : null,
+      commentViewThreshold:
+        action === 'comment' ? Math.max(0, Math.floor(Number(commentViewThreshold) || 0)) : 0,
+      commentSource: action === 'comment' ? commentSource : 'n8n',
+      // Nguồn webhook -> giữ link Sheet; nguồn AI -> bỏ link Sheet (không dùng).
+      commentSourceUrl:
+        action === 'comment' && commentSource === 'n8n' ? commentSourceUrl.trim() || null : null,
+      // Chỉ dẫn AI -> chỉ giữ khi nguồn AI.
+      commentAiInstruction:
+        action === 'comment' && commentSource === 'ai' ? commentAiInstruction.trim() || null : null,
+      commentMaxChars:
+        action === 'comment' && commentSource === 'ai'
+          ? Math.max(0, Math.min(280, Math.floor(Number(commentMaxChars) || 0)))
+          : 0,
+      commentLink: action === 'comment' ? commentLink.trim() || null : null,
+      commentPrefix: action === 'comment' ? commentPrefix.trim() || null : null,
       interactDurationMinutes: action === 'interact' ? Math.max(1, Number(interactDurationMinutes) || 15) : 15,
       interactCommentTarget:
         action === 'interact' ? Math.max(0, Math.floor(Number(interactCommentTarget) || 0)) : 0
@@ -1048,56 +1096,140 @@ function ScheduleForm(props: {
 
         {action === 'comment' && (
           <>
-            <div className="field-row-2">
-              <label className="field">
-                <span>Số bài bình luận / lần chạy *</span>
-                <input
-                  type="number"
-                  min={1}
-                  value={commentCount}
-                  onChange={(e) => setCommentCount(e.target.value)}
-                  placeholder="VD: 1"
-                />
-              </label>
-              {Number(commentCount) > 1 && (
+            {/* --- Mục tiêu: quét N bài mới nhất, lọc lượt xem, giãn cách --- */}
+            <div className="form-section">
+              <div className="form-section-title">
+                <MessageCircle size={14} /> Mục tiêu bình luận
+              </div>
+              <div className="field-row-2">
                 <label className="field">
-                  <span>Thời gian giữa mỗi bình luận (giây) *</span>
+                  <span>Số bài cần quét mỗi lần *</span>
                   <input
                     type="number"
-                    min={5}
-                    value={commentIntervalSeconds}
-                    onChange={(e) => setCommentIntervalSeconds(e.target.value)}
-                    placeholder="VD: 60"
+                    min={1}
+                    value={commentCount}
+                    onChange={(e) => setCommentCount(e.target.value)}
+                    placeholder="VD: 1"
                   />
                 </label>
-              )}
+                <label className="field">
+                  <span>Lượt xem tối thiểu (0 = bỏ lọc)</span>
+                  <input
+                    type="number"
+                    min={0}
+                    value={commentViewThreshold}
+                    onChange={(e) => setCommentViewThreshold(e.target.value)}
+                    placeholder="VD: 1000"
+                  />
+                </label>
+                {Number(commentCount) > 1 && (
+                  <label className="field">
+                    <span>Giãn cách mỗi bình luận (giây) *</span>
+                    <input
+                      type="number"
+                      min={5}
+                      value={commentIntervalSeconds}
+                      onChange={(e) => setCommentIntervalSeconds(e.target.value)}
+                      placeholder="VD: 60"
+                    />
+                  </label>
+                )}
+              </div>
+              <p className="hint">
+                Mỗi lần lịch chạy, app mở profile và quét <b>{Math.max(1, Number(commentCount) || 1)}</b> bài
+                mới nhất của chính tài khoản{Number(commentViewThreshold) > 0 ? `, chỉ bình luận bài có > ${Number(commentViewThreshold).toLocaleString()} lượt xem` : ''}.
+                Bình luận tôn trọng giới hạn comment/ngày ở tab Cài đặt (gộp cả lịch bình luận lẫn lịch tương tác).
+              </p>
             </div>
-            <label className="field">
-              <span>Nguồn bình luận (link Google Sheet) *</span>
-              <div className="field-row">
+            {/* --- Nguồn nội dung: webhook | AI --- */}
+            <CommentContentSourcePicker value={commentSource} onChange={setCommentContentSource} />
+            {commentSource === 'n8n' ? (
+              <label className="field">
+                <span>
+                  <Globe size={13} className="inline-ic" /> Nguồn bình luận (link Google Sheet) *
+                </span>
+                <div className="field-row">
+                  <input
+                    type="url"
+                    value={commentSourceUrl}
+                    onChange={(e) => setCommentContentSourceUrl(e.target.value)}
+                    placeholder="https://docs.google.com/spreadsheets/d/..."
+                  />
+                  <button
+                    type="button"
+                    className="btn"
+                    disabled={testingComment || !commentSourceUrl.trim()}
+                    onClick={testCommentWebhook}
+                    title="Test webhook để xem nội dung bình luận n8n trả về"
+                  >
+                    {testingComment ? <Loader2 size={15} className="spin" /> : <RefreshCw size={15} />}
+                    Test Webhook
+                  </button>
+                </div>
+                {commentTestResult && (
+                  <p className={`test-result ${commentTestResult.startsWith('OK') ? 'pass' : 'fail'}`}>
+                    {commentTestResult}
+                  </p>
+                )}
+              </label>
+            ) : (
+              <>
+                <label className="field">
+                  <span>
+                    <Bot size={13} className="inline-ic" /> Chỉ dẫn cho AI sinh bình luận *
+                  </span>
+                  <textarea
+                    value={commentAiInstruction}
+                    onChange={(e) => setCommentAiInstruction(e.target.value)}
+                    placeholder="VD: Cảm ơn người xem, mời follow kênh, giọng thân thiện, tránh sáo rỗng…"
+                    rows={3}
+                  />
+                </label>
+                <label className="field">
+                  <span>Số ký tự tối đa (0 = theo cấu hình AI chung, tối đa 280)</span>
+                  <input
+                    type="number"
+                    min={0}
+                    max={280}
+                    value={commentMaxChars}
+                    onChange={(e) => setCommentMaxChars(e.target.value)}
+                    placeholder="VD: 200"
+                  />
+                </label>
+                <p className="hint">
+                  AI sinh nội dung theo bài + chỉ dẫn trên. Cần cấu hình AI ở tab{' '}
+                  <b>Cài đặt → AI sinh bình luận</b>. Giọng điệu/ngôn ngữ lấy theo cấu hình riêng của tài khoản.
+                </p>
+              </>
+            )}
+            {/* --- Tiền tố / link tuỳ chọn + xem trước --- */}
+            <div className="form-section">
+              <div className="form-section-title">
+                <Link2 size={14} /> Tiền tố & link (tuỳ chọn)
+              </div>
+              <label className="field">
+                <span>Tiền tố ghép ĐẦU bình luận</span>
+                <input
+                  value={commentPrefix}
+                  onChange={(e) => setCommentPrefix(e.target.value)}
+                  placeholder="VD: 🔥 "
+                />
+              </label>
+              <label className="field">
+                <span>Link ghép CUỐI bình luận</span>
                 <input
                   type="url"
-                  value={commentSourceUrl}
-                  onChange={(e) => setCommentSourceUrl(e.target.value)}
-                  placeholder="https://docs.google.com/spreadsheets/d/..."
+                  value={commentLink}
+                  onChange={(e) => setCommentLink(e.target.value)}
+                  placeholder="https://x.com/kênh_của_bạn"
                 />
-                <button
-                  type="button"
-                  className="btn"
-                  disabled={testingComment || !commentSourceUrl.trim()}
-                  onClick={testCommentWebhook}
-                  title="Test webhook để xem nội dung bình luận n8n trả về"
-                >
-                  {testingComment ? <Loader2 size={15} className="spin" /> : <RefreshCw size={15} />}
-                  Test Webhook
-                </button>
-              </div>
-            </label>
-            {commentTestResult && (
-              <p className={`test-result ${commentTestResult.startsWith('OK') ? 'pass' : 'fail'}`}>
-                {commentTestResult}
-              </p>
-            )}
+              </label>
+              <CommentPreview
+                prefix={commentPrefix}
+                link={commentLink}
+                aiHint={commentSource === 'ai' ? commentAiInstruction : ''}
+              />
+            </div>
             {commentTimingWarning() && (
               <p className="test-result fail">{commentTimingWarning()}</p>
             )}
@@ -1215,13 +1347,81 @@ function describe(s: Schedule): string {
     return `Xoá ${countText} (${modeText}) · ${timing}`
   }
   if (s.action === 'comment') {
-    return `Bình luận ${s.commentCount ?? 1} bài · ${timing}`
+    const srcText = s.commentSource === 'ai' ? 'AI' : 'Sheet'
+    const viewsText = (s.commentViewThreshold ?? 0) > 0 ? ` >${s.commentViewThreshold!.toLocaleString()} view` : ''
+    return `Bình luận ${s.commentCount ?? 1} bài mới (${srcText})${viewsText} · ${timing}`
   }
   if (s.action === 'interact') {
     return `Tương tác ${s.interactDurationMinutes ?? 15} phút · ${timing}`
   }
 
   return timing
+}
+
+// Chọn nguồn nội dung bình luận (segmented: Webhook | AI) — style đồng bộ với card hiện tại.
+function CommentContentSourcePicker(props: {
+  value: CommentContentSource
+  onChange: (v: CommentContentSource) => void
+}): JSX.Element {
+  const { value, onChange } = props
+  const options: { key: CommentContentSource; label: string; hint: string; Icon: typeof Send }[] = [
+    { key: 'n8n', label: 'Webhook (Google Sheet)', hint: 'Nội dung lấy sẵn từ Sheet qua n8n', Icon: Globe },
+    { key: 'ai', label: 'AI tự sinh', hint: 'AI viết bình luận theo bài + chỉ dẫn', Icon: Bot }
+  ]
+  return (
+    <div className="field">
+      <span>Nguồn nội dung bình luận *</span>
+      <div className="segmented" role="tablist">
+        {options.map((o) => {
+          const active = value === o.key
+          return (
+            <button
+              key={o.key}
+              type="button"
+              role="tab"
+              aria-selected={active}
+              className={`segmented-item${active ? ' active' : ''}`}
+              onClick={() => onChange(o.key)}
+              title={o.hint}
+            >
+              <o.Icon size={14} />
+              <span className="segmented-label">{o.label}</span>
+            </button>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+// Xem trước bình luận + cảnh báo giới hạn 280 ký tự của X. Ghép tiền tố + nội dung mẫu + link.
+const X_MAX_LEN = 280
+function CommentPreview(props: { prefix: string; link: string; aiHint: string }): JSX.Element {
+  const { prefix, link, aiHint } = props
+  // Nội dung mẫu: nếu nguồn AI thì minh hoạ bằng chỉ dẫn, ngược lại dùng câu mẫu chung.
+  const body = aiHint.trim() ? '[AI sinh nội dung theo bài]' : '[nội dung bình luận]'
+  const parts = [prefix.trim(), body, link.trim()].filter(Boolean)
+  const preview = parts.join(' ').trim()
+  // Ước tính độ dài phần CỐ ĐỊNH (tiền tố + link + khoảng trắng ngăn cách) — phần app luôn ghép thêm.
+  const fixed = [prefix.trim(), link.trim()].filter(Boolean)
+  const fixedLen = fixed.join(' ').length
+  const over = fixedLen > X_MAX_LEN
+  return (
+    <div className={`comment-preview${over ? ' over' : ''}`}>
+      <div className="comment-preview-head">
+        <Eye size={13} /> Xem trước
+        <span className={`comment-preview-count${over ? ' over' : ''}`}>
+          {fixedLen}/{X_MAX_LEN}
+        </span>
+      </div>
+      <div className="comment-preview-body">{preview || '(trống)'}</div>
+      {over && (
+        <div className="comment-preview-warn">
+          Phần tiền tố + link đã vượt {X_MAX_LEN} ký tự — bình luận sẽ bị X cắt hoặc từ chối. Rút ngắn lại.
+        </div>
+      )}
+    </div>
+  )
 }
 
 function fmtTime(ms: number): string {

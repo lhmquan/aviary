@@ -235,6 +235,8 @@ export async function runInteractSession(
       return { ok: true, scrolls, likes, comments, refreshes, commentedUrls, stopped: true }
     }
     // Xác định có được phép comment ở vòng này không.
+    // commentedToday đếm MỌI comment 'commented' hôm nay của tài khoản (gồm cả lịch bình luận
+    // lẫn các phiên tương tác trước) -> giới hạn/ngày là TỔNG dùng chung, không tách riêng.
     const nowMs = Date.now()
     const commentedToday = countCommentsToday(accountId)
     const underCap = comments < commentCap && commentedToday < dailyLimit

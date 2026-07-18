@@ -5,7 +5,14 @@ import { getAccount } from './accounts'
 import { getAllSettings } from './settings'
 import { getLastFetchDay } from './analytics'
 import { isAnalyticsRunning } from '../analytics/scheduler'
-import type { Schedule, ScheduleInput, ScheduleKind, ScheduleAction, DeleteMode } from '../../shared/types'
+import type {
+  Schedule,
+  ScheduleInput,
+  ScheduleKind,
+  ScheduleAction,
+  DeleteMode,
+  CommentContentSource
+} from '../../shared/types'
 
 interface ScheduleRow {
   id: string
@@ -23,6 +30,13 @@ interface ScheduleRow {
   comment_count: number
   comment_interval_seconds: number
   comment_source_url: string | null
+  comment_newest_count: number
+  comment_view_threshold: number
+  comment_source: string
+  comment_ai_instruction: string | null
+  comment_max_words: number
+  comment_prefix: string | null
+  comment_link: string | null
   interact_duration_minutes: number
   interact_comment_target: number
   last_run_at: number | null
@@ -55,6 +69,13 @@ function toSchedule(r: ScheduleRow): Schedule {
     commentCount: r.comment_count ?? 1,
     commentIntervalSeconds: r.comment_interval_seconds ?? 60,
     commentSourceUrl: r.comment_source_url ?? null,
+    commentNewestCount: r.comment_newest_count ?? 20,
+    commentViewThreshold: r.comment_view_threshold ?? 0,
+    commentSource: (r.comment_source === 'ai' ? 'ai' : 'n8n') as CommentContentSource,
+    commentAiInstruction: r.comment_ai_instruction ?? null,
+    commentMaxChars: r.comment_max_words ?? 0,
+    commentPrefix: r.comment_prefix ?? null,
+    commentLink: r.comment_link ?? null,
     interactDurationMinutes: r.interact_duration_minutes ?? 15,
     interactCommentTarget: r.interact_comment_target ?? 0,
     lastRunAt: r.last_run_at,
@@ -114,6 +135,76 @@ function logScheduleEvent(accountId: string, ok: boolean, message: string): void
   })
 }
 
+// Chuẩn hoá TẤT CẢ giá trị cột (delete/comment/interact) từ input theo action. Dùng chung
+// cho create + update để không lệch logic. Field không thuộc action hiện tại -> giá trị mặc
+// định an toàn (giữ schema NOT NULL hợp lệ).
+function computeScheduleCols(input: ScheduleInput): {
+  deleteMode: string | null
+  deleteBeforeDate: string | null
+  deleteCount: number
+  commentCount: number
+  commentIntervalSeconds: number
+  commentSourceUrl: string | null
+  commentNewestCount: number
+  commentViewThreshold: number
+  commentSource: CommentContentSource
+  commentAiInstruction: string | null
+  commentMaxChars: number
+  commentPrefix: string | null
+  commentLink: string | null
+  interactDurationMinutes: number
+  interactCommentTarget: number
+} {
+  const action = input.action ?? 'post'
+  const isComment = action === 'comment'
+  const source: CommentContentSource = isComment
+    ? input.commentSource === 'ai'
+      ? 'ai'
+      : 'n8n'
+    : 'n8n'
+  return {
+    deleteMode: action === 'delete' ? (input.deleteMode ?? 'newest') : null,
+    deleteBeforeDate:
+      action === 'delete' && (input.deleteMode ?? 'newest') === 'by_date'
+        ? (input.deleteBeforeDate ?? null)
+        : null,
+    deleteCount:
+      action === 'delete'
+        ? Math.max(0, input.deleteCount === undefined ? 1 : Number(input.deleteCount))
+        : 1,
+    commentCount: isComment
+      ? Math.max(1, input.commentCount === undefined ? 1 : Number(input.commentCount))
+      : 1,
+    commentIntervalSeconds: isComment
+      ? Math.max(5, input.commentIntervalSeconds === undefined ? 60 : Number(input.commentIntervalSeconds))
+      : 60,
+    // Nguồn n8n cần link Sheet; nguồn ai không cần (để null).
+    commentSourceUrl: isComment && source === 'n8n' ? (input.commentSourceUrl?.trim() || null) : null,
+    commentNewestCount: isComment
+      ? Math.max(1, input.commentNewestCount === undefined ? 20 : Math.floor(Number(input.commentNewestCount)))
+      : 20,
+    commentViewThreshold: isComment
+      ? Math.max(0, input.commentViewThreshold === undefined ? 0 : Math.floor(Number(input.commentViewThreshold)))
+      : 0,
+    commentSource: source,
+    commentAiInstruction: isComment && source === 'ai' ? (input.commentAiInstruction?.trim() || null) : null,
+    commentMaxChars:
+      isComment && source === 'ai'
+        ? Math.max(0, input.commentMaxChars === undefined ? 0 : Math.floor(Number(input.commentMaxChars)))
+        : 0,
+    commentPrefix: isComment ? (input.commentPrefix?.trim() || null) : null,
+    commentLink: isComment ? (input.commentLink?.trim() || null) : null,
+    interactDurationMinutes:
+      action === 'interact'
+        ? Math.max(1, input.interactDurationMinutes === undefined ? 15 : Number(input.interactDurationMinutes))
+        : 15,
+    interactCommentTarget:
+      action === 'interact'
+        ? Math.max(0, input.interactCommentTarget === undefined ? 0 : Math.floor(Number(input.interactCommentTarget)))
+        : 0
+  }
+}
+
 export function createSchedule(input: ScheduleInput): Schedule {
   validateInput(input)
   const id = randomUUID()
@@ -122,35 +213,17 @@ export function createSchedule(input: ScheduleInput): Schedule {
   const schedule = buildScheduleObject({ ...input, times })
   const nextRunAt = computeNextRun(schedule, now)
 
-  // Tính giá trị cột delete
   const action = input.action ?? 'post'
-  const deleteMode = action === 'delete' ? (input.deleteMode ?? 'newest') : null
-  const deleteBeforeDate = action === 'delete' && deleteMode === 'by_date' ? (input.deleteBeforeDate ?? null) : null
-  const deleteCount = action === 'delete'
-    ? Math.max(0, input.deleteCount === undefined ? 1 : Number(input.deleteCount))
-    : 1
-  // Tính giá trị cột comment
-  const commentCount = action === 'comment'
-    ? Math.max(1, input.commentCount === undefined ? 1 : Number(input.commentCount))
-    : 1
-  const commentIntervalSeconds = action === 'comment'
-    ? Math.max(5, input.commentIntervalSeconds === undefined ? 60 : Number(input.commentIntervalSeconds))
-    : 60
-  const commentSourceUrl = action === 'comment' ? (input.commentSourceUrl?.trim() || null) : null
-  // Tính giá trị cột interact
-  const interactDurationMinutes = action === 'interact'
-    ? Math.max(1, input.interactDurationMinutes === undefined ? 15 : Number(input.interactDurationMinutes))
-    : 15
-  const interactCommentTarget = action === 'interact'
-    ? Math.max(0, input.interactCommentTarget === undefined ? 0 : Math.floor(Number(input.interactCommentTarget)))
-    : 0
+  const cols = computeScheduleCols(input)
 
   getDb()
     .prepare(
       `INSERT INTO schedules (id, account_id, label, enabled, action, kind, interval_minutes, times, jitter_seconds,
         delete_mode, delete_before_date, delete_count, comment_count, comment_interval_seconds, comment_source_url,
-        interact_duration_minutes, interact_comment_target, last_run_at, next_run_at, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)`
+        comment_newest_count, comment_view_threshold, comment_source, comment_ai_instruction, comment_max_words,
+        comment_prefix, comment_link, interact_duration_minutes, interact_comment_target, last_run_at, next_run_at,
+        created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)`
     )
     .run(
       id,
@@ -162,14 +235,21 @@ export function createSchedule(input: ScheduleInput): Schedule {
       input.kind === 'interval' ? Number(input.intervalMinutes) || null : null,
       input.kind === 'fixed' ? JSON.stringify(times) : null,
       Number(input.jitterSeconds) || 0,
-      deleteMode,
-      deleteBeforeDate,
-      deleteCount,
-      commentCount,
-      commentIntervalSeconds,
-      commentSourceUrl,
-      interactDurationMinutes,
-      interactCommentTarget,
+      cols.deleteMode,
+      cols.deleteBeforeDate,
+      cols.deleteCount,
+      cols.commentCount,
+      cols.commentIntervalSeconds,
+      cols.commentSourceUrl,
+      cols.commentNewestCount,
+      cols.commentViewThreshold,
+      cols.commentSource,
+      cols.commentAiInstruction,
+      cols.commentMaxChars,
+      cols.commentPrefix,
+      cols.commentLink,
+      cols.interactDurationMinutes,
+      cols.interactCommentTarget,
       nextRunAt,
       now,
       now
@@ -202,6 +282,13 @@ export function updateSchedule(id: string, input: Partial<ScheduleInput>): Sched
     commentCount: existing.commentCount,
     commentIntervalSeconds: existing.commentIntervalSeconds,
     commentSourceUrl: existing.commentSourceUrl,
+    commentNewestCount: existing.commentNewestCount,
+    commentViewThreshold: existing.commentViewThreshold,
+    commentSource: existing.commentSource,
+    commentAiInstruction: existing.commentAiInstruction,
+    commentMaxChars: existing.commentMaxChars,
+    commentPrefix: existing.commentPrefix,
+    commentLink: existing.commentLink,
     interactDurationMinutes: existing.interactDurationMinutes,
     interactCommentTarget: existing.interactCommentTarget,
     ...input
@@ -212,34 +299,16 @@ export function updateSchedule(id: string, input: Partial<ScheduleInput>): Sched
   const nextRunAt = computeNextRun(schedule, Date.now())
   const now = Date.now()
 
-  // Tính giá trị cột delete
   const action = merged.action ?? 'post'
-  const deleteMode = action === 'delete' ? (merged.deleteMode ?? 'newest') : null
-  const deleteBeforeDate = action === 'delete' && deleteMode === 'by_date' ? (merged.deleteBeforeDate ?? null) : null
-  const deleteCount = action === 'delete'
-    ? Math.max(0, merged.deleteCount === undefined ? 1 : Number(merged.deleteCount))
-    : 1
-  // Tính giá trị cột comment
-  const commentCount = action === 'comment'
-    ? Math.max(1, merged.commentCount === undefined ? 1 : Number(merged.commentCount))
-    : 1
-  const commentIntervalSeconds = action === 'comment'
-    ? Math.max(5, merged.commentIntervalSeconds === undefined ? 60 : Number(merged.commentIntervalSeconds))
-    : 60
-  const commentSourceUrl = action === 'comment' ? (merged.commentSourceUrl?.trim() || null) : null
-  // Tính giá trị cột interact
-  const interactDurationMinutes = action === 'interact'
-    ? Math.max(1, merged.interactDurationMinutes === undefined ? 15 : Number(merged.interactDurationMinutes))
-    : 15
-  const interactCommentTarget = action === 'interact'
-    ? Math.max(0, merged.interactCommentTarget === undefined ? 0 : Math.floor(Number(merged.interactCommentTarget)))
-    : 0
+  const cols = computeScheduleCols(merged)
 
   getDb()
     .prepare(
       `UPDATE schedules SET account_id = ?, label = ?, enabled = ?, action = ?, kind = ?, interval_minutes = ?,
        times = ?, jitter_seconds = ?, delete_mode = ?, delete_before_date = ?, delete_count = ?,
-       comment_count = ?, comment_interval_seconds = ?, comment_source_url = ?, interact_duration_minutes = ?,
+       comment_count = ?, comment_interval_seconds = ?, comment_source_url = ?, comment_newest_count = ?,
+       comment_view_threshold = ?, comment_source = ?, comment_ai_instruction = ?, comment_max_words = ?,
+       comment_prefix = ?, comment_link = ?, interact_duration_minutes = ?,
        interact_comment_target = ?, next_run_at = ?, updated_at = ? WHERE id = ?`
     )
     .run(
@@ -251,14 +320,21 @@ export function updateSchedule(id: string, input: Partial<ScheduleInput>): Sched
       merged.kind === 'interval' ? Number(merged.intervalMinutes) || null : null,
       merged.kind === 'fixed' ? JSON.stringify(times) : null,
       Number(merged.jitterSeconds) || 0,
-      deleteMode,
-      deleteBeforeDate,
-      deleteCount,
-      commentCount,
-      commentIntervalSeconds,
-      commentSourceUrl,
-      interactDurationMinutes,
-      interactCommentTarget,
+      cols.deleteMode,
+      cols.deleteBeforeDate,
+      cols.deleteCount,
+      cols.commentCount,
+      cols.commentIntervalSeconds,
+      cols.commentSourceUrl,
+      cols.commentNewestCount,
+      cols.commentViewThreshold,
+      cols.commentSource,
+      cols.commentAiInstruction,
+      cols.commentMaxChars,
+      cols.commentPrefix,
+      cols.commentLink,
+      cols.interactDurationMinutes,
+      cols.interactCommentTarget,
       nextRunAt,
       now,
       id
@@ -388,12 +464,34 @@ function validateInput(input: ScheduleInput): void {
     if (!Number.isFinite(interval) || interval < 5) {
       throw new Error('Thời gian giữa mỗi bình luận phải ≥ 5 giây')
     }
-    const url = input.commentSourceUrl?.trim() ?? ''
-    if (!url) {
-      throw new Error('Phải nhập nguồn bình luận (link Google Sheet)')
+    // N bài mới nhất xét mỗi lần chạy: phải ≥ 1 (và ≥ số bài bình luận để đủ ứng viên).
+    const newest = input.commentNewestCount === undefined ? 20 : Number(input.commentNewestCount)
+    if (!Number.isFinite(newest) || newest < 1) {
+      throw new Error('Số bài mới nhất xét mỗi lần phải ≥ 1')
     }
-    if (!/^https?:\/\//i.test(url)) {
-      throw new Error('Nguồn bình luận phải là URL hợp lệ (http/https)')
+    if (newest < count) {
+      throw new Error('Số bài mới nhất xét mỗi lần phải ≥ số bài bình luận')
+    }
+    // Ngưỡng lượt xem: ≥ 0 (0 = không lọc theo views).
+    const vt = input.commentViewThreshold === undefined ? 0 : Number(input.commentViewThreshold)
+    if (!Number.isFinite(vt) || vt < 0) {
+      throw new Error('Ngưỡng lượt xem phải ≥ 0')
+    }
+    // Nguồn nội dung: 'n8n' bắt buộc link Sheet; 'ai' không cần link nhưng phải cấu hình AI.
+    const source: CommentContentSource = input.commentSource === 'ai' ? 'ai' : 'n8n'
+    if (source === 'n8n') {
+      const url = input.commentSourceUrl?.trim() ?? ''
+      if (!url) {
+        throw new Error('Phải nhập nguồn bình luận (link Google Sheet) khi dùng nguồn n8n')
+      }
+      if (!/^https?:\/\//i.test(url)) {
+        throw new Error('Nguồn bình luận phải là URL hợp lệ (http/https)')
+      }
+    } else {
+      const chars = input.commentMaxChars === undefined ? 0 : Number(input.commentMaxChars)
+      if (!Number.isFinite(chars) || chars < 0 || chars > 280) {
+        throw new Error('Số ký tự tối đa phải trong khoảng 0–280')
+      }
     }
     // Ràng buộc thời gian: tổng thời gian thực thi + buffer ≤ khoảng cách giữa 2 tác vụ.
     validateCommentTiming(input)
@@ -507,9 +605,11 @@ export function commentTimingInfo(input: ScheduleInput): {
   }
 }
 
-// Build object Schedule (thiếu id/timestamps) đủ dùng cho computeNextRun.
+// Build object Schedule (thiếu id/timestamps) đủ dùng cho computeNextRun. Dùng chung
+// computeScheduleCols để không lệch logic chuẩn hoá cột với create/update.
 function buildScheduleObject(input: ScheduleInput): Schedule {
   const action = input.action ?? 'post'
+  const cols = computeScheduleCols(input)
   return {
     id: '',
     accountId: input.accountId,
@@ -520,24 +620,21 @@ function buildScheduleObject(input: ScheduleInput): Schedule {
     intervalMinutes: input.kind === 'interval' ? Number(input.intervalMinutes) || null : null,
     times: sanitizeTimes(input.times),
     jitterSeconds: Number(input.jitterSeconds) || 0,
-    deleteMode: action === 'delete' ? (input.deleteMode ?? 'newest') : null,
-    deleteBeforeDate: action === 'delete' && input.deleteMode === 'by_date' ? (input.deleteBeforeDate ?? null) : null,
-    deleteCount: action === 'delete'
-      ? Math.max(0, input.deleteCount === undefined ? 1 : Number(input.deleteCount))
-      : 1,
-    commentCount: action === 'comment'
-      ? Math.max(1, input.commentCount === undefined ? 1 : Number(input.commentCount))
-      : 1,
-    commentIntervalSeconds: action === 'comment'
-      ? Math.max(5, input.commentIntervalSeconds === undefined ? 60 : Number(input.commentIntervalSeconds))
-      : 60,
-    commentSourceUrl: action === 'comment' ? (input.commentSourceUrl?.trim() || null) : null,
-    interactDurationMinutes: action === 'interact'
-      ? Math.max(1, input.interactDurationMinutes === undefined ? 15 : Number(input.interactDurationMinutes))
-      : 15,
-    interactCommentTarget: action === 'interact'
-      ? Math.max(0, input.interactCommentTarget === undefined ? 0 : Math.floor(Number(input.interactCommentTarget)))
-      : 0,
+    deleteMode: cols.deleteMode as DeleteMode | null,
+    deleteBeforeDate: cols.deleteBeforeDate,
+    deleteCount: cols.deleteCount,
+    commentCount: cols.commentCount,
+    commentIntervalSeconds: cols.commentIntervalSeconds,
+    commentSourceUrl: cols.commentSourceUrl,
+    commentNewestCount: cols.commentNewestCount,
+    commentViewThreshold: cols.commentViewThreshold,
+    commentSource: cols.commentSource,
+    commentAiInstruction: cols.commentAiInstruction,
+    commentMaxChars: cols.commentMaxChars,
+    commentPrefix: cols.commentPrefix,
+    commentLink: cols.commentLink,
+    interactDurationMinutes: cols.interactDurationMinutes,
+    interactCommentTarget: cols.interactCommentTarget,
     lastRunAt: null,
     nextRunAt: null,
     running: false,
@@ -588,7 +685,7 @@ export function computeNextRun(schedule: Pick<Schedule, 'kind' | 'intervalMinute
 }
 
 // Mô tả lịch dạng text cho log/UI. Bao gồm cả tác vụ (đăng/xoá/bình luận).
-export function describeSchedule(s: Pick<Schedule, 'kind' | 'intervalMinutes' | 'times' | 'jitterSeconds'> & Partial<Pick<Schedule, 'action' | 'deleteMode' | 'deleteBeforeDate' | 'deleteCount' | 'commentCount' | 'interactDurationMinutes' | 'interactCommentTarget'>>): string {
+export function describeSchedule(s: Pick<Schedule, 'kind' | 'intervalMinutes' | 'times' | 'jitterSeconds'> & Partial<Pick<Schedule, 'action' | 'deleteMode' | 'deleteBeforeDate' | 'deleteCount' | 'commentCount' | 'commentViewThreshold' | 'commentSource' | 'interactDurationMinutes' | 'interactCommentTarget'>>): string {
   const timing =
     s.kind === 'interval'
       ? `Mỗi ${s.intervalMinutes} phút${s.jitterSeconds ? ` ±${s.jitterSeconds}s` : ''}`
@@ -601,7 +698,10 @@ export function describeSchedule(s: Pick<Schedule, 'kind' | 'intervalMinutes' | 
     return `Xoá ${countText} (${modeText}) · ${timing}`
   }
   if (action === 'comment') {
-    return `Bình luận ${s.commentCount ?? 1} bài · ${timing}`
+    const srcText = s.commentSource === 'ai' ? 'AI' : 'n8n'
+    const vt = s.commentViewThreshold ?? 0
+    const vtText = vt > 0 ? ` · views > ${vt.toLocaleString('en-US')}` : ''
+    return `Bình luận ${s.commentCount ?? 1} bài (${srcText})${vtText} · ${timing}`
   }
   if (action === 'interact') {
     const target = s.interactCommentTarget ?? 0
@@ -665,6 +765,13 @@ function buildAnalyticsSchedule(): Schedule {
     commentCount: 0,
     commentIntervalSeconds: 0,
     commentSourceUrl: null,
+    commentNewestCount: 20,
+    commentViewThreshold: 0,
+    commentSource: 'n8n',
+    commentAiInstruction: null,
+    commentMaxChars: 0,
+    commentPrefix: null,
+    commentLink: null,
     interactDurationMinutes: 15,
     interactCommentTarget: 0,
     lastRunAt,

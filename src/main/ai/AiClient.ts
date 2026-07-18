@@ -198,6 +198,111 @@ export async function generateComment(
   }
 }
 
+// Tuỳ chọn sinh bình luận cho LỊCH bình luận (nguồn 'ai'). Khác phiên tương tác feed: dùng
+// CHỈ DẪN tự do của user (instruction) thay preset tone/format, kèm giới hạn KÝ TỰ + tiền tố +
+// link ghép sẵn. lang vẫn theo cấu hình tài khoản (aiCommentLang).
+export interface ScheduledCommentOptions {
+  // Chỉ dẫn riêng cho AI (user nhập ở form lịch). Trống -> dùng chỉ dẫn mặc định tự nhiên.
+  instruction?: string | null
+  lang: string // 'auto' | 'vi' | 'en'
+  // Số KÝ TỰ tối đa cho phần AI sinh (X giới hạn theo ký tự). 0 = theo giới hạn ký tự chung.
+  // LƯU Ý: đây là giới hạn cho PHẦN NỘI DUNG AI; tiền tố + link ghép thêm SAU (không bị cắt).
+  maxChars?: number
+  // Tiền tố ghép vào ĐẦU + link ghép vào CUỐI (sau khi AI sinh xong). Trống -> bỏ qua.
+  prefix?: string | null
+  link?: string | null
+}
+
+// System prompt cho lịch bình luận AI: ưu tiên CHỈ DẪN của user, ràng buộc KÝ TỰ + ngôn ngữ.
+function buildScheduledSystemPrompt(instruction: string, lang: string, maxLen: number): string {
+  return [
+    instruction.trim() || 'Viết một bình luận tự nhiên, thân thiện cho bài viết mạng xã hội.',
+    `Viết một bình luận ngắn, TỐI ĐA ${maxLen} ký tự.`,
+    'Không dùng hashtag, không emoji quá đà, không lặp lại nguyên văn nội dung bài.',
+    'Chỉ trả về đúng câu bình luận, không giải thích, không thêm dấu ngoặc kép.',
+    langInstruction(lang)
+  ].join(' ')
+}
+
+// Ghép tiền tố + nội dung + link. Chèn khoảng trắng/xuống dòng hợp lý, tránh dính chữ.
+function decorateComment(body: string, prefix?: string | null, link?: string | null): string {
+  let out = body.trim()
+  const p = (prefix ?? '').trim()
+  const l = (link ?? '').trim()
+  if (p) out = `${p} ${out}`.trim()
+  if (l) out = `${out}\n${l}`.trim()
+  return out
+}
+
+// Gọi AI sinh 1 bình luận cho LỊCH bình luận theo từng bài (nguồn 'ai'). KHÔNG throw.
+// Áp dụng chỉ dẫn user + giới hạn số từ + ghép tiền tố/link. lang theo cấu hình tài khoản.
+export async function generateScheduledComment(
+  tweetText: string,
+  opts: ScheduledCommentOptions
+): Promise<{ ok: boolean; comment?: string; error?: string; status?: number }> {
+  const s = getAllSettings()
+  if (!s.aiBaseUrl.trim() || !s.aiApiKey.trim() || !s.aiModel.trim()) {
+    return { ok: false, error: 'AI chưa được cấu hình (base URL / API key / model).' }
+  }
+  const text = (tweetText ?? '').trim()
+  if (!text) return { ok: false, error: 'Không có nội dung bài để sinh bình luận.' }
+
+  // Giới hạn ký tự chung ở Cài đặt (trần cứng 280 của X).
+  const globalMax = Math.max(20, Math.min(280, s.aiCommentMaxLen || 200))
+  // Giới hạn ký tự riêng của lịch (nếu user đặt >0). Lấy min với giới hạn chung.
+  const perSchedule = Math.max(0, Math.floor(opts.maxChars ?? 0))
+  const wanted = perSchedule > 0 ? Math.min(perSchedule, globalMax) : globalMax
+  // Chừa chỗ cho tiền tố + link (ghép sau) để TỔNG bình luận vẫn < 280 ký tự của X.
+  const prefixLen = (opts.prefix ?? '').trim().length
+  const linkLen = (opts.link ?? '').trim().length
+  const decorationLen = (prefixLen ? prefixLen + 1 : 0) + (linkLen ? linkLen + 1 : 0)
+  const maxLen = Math.max(20, Math.min(wanted, 280 - decorationLen))
+
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), 20_000)
+  try {
+    const res = await fetch(resolveEndpoint(s.aiBaseUrl), {
+      method: 'POST',
+      signal: controller.signal,
+      headers: {
+        Authorization: `Bearer ${s.aiApiKey}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: s.aiModel,
+        max_tokens: 150,
+        temperature: 0.9,
+        messages: [
+          {
+            role: 'system',
+            content: buildScheduledSystemPrompt(opts.instruction ?? '', opts.lang, maxLen)
+          },
+          { role: 'user', content: buildUserPrompt(text, undefined, opts.lang) }
+        ]
+      })
+    })
+    if (!res.ok) {
+      const body = await res.text().catch(() => '')
+      return { ok: false, status: res.status, error: `HTTP ${res.status}: ${body.slice(0, 200)}` }
+    }
+    const data = (await res.json()) as { choices?: { message?: { content?: string } }[] }
+    const raw = data?.choices?.[0]?.message?.content ?? ''
+    const cleaned = raw.trim().replace(/^["'“”]+|["'“”]+$/g, '').trim()
+    if (!cleaned) return { ok: false, error: 'AI trả về nội dung trống.' }
+    // Cắt cứng phần AI theo KÝ TỰ (đã chừa chỗ cho tiền tố/link). Ghép tiền tố + link SAU
+    // để không bị cắt mất link -> TỔNG luôn < 280 ký tự của X.
+    const body = clampLength(cleaned, maxLen)
+    const comment = decorateComment(body, opts.prefix, opts.link)
+    return { ok: true, comment }
+  } catch (e) {
+    const err = e as Error
+    if (err.name === 'AbortError') return { ok: false, error: 'AI timeout (20s).' }
+    return { ok: false, error: err.message }
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 // Test cấu hình AI từ UI Cài đặt: gửi 1 đoạn text mẫu -> nhận câu bình luận.
 // Dùng tone/lang/format mặc định (vì cấu hình này giờ theo từng tài khoản).
 export async function testAi(sampleText: string): Promise<AiTestResult> {

@@ -3,6 +3,7 @@ import { join } from 'path'
 import { rmSync } from 'fs'
 import { getDb } from './index'
 import { getAllSettings } from './settings'
+import { canonicalizeTweetUrl } from '../../shared/url'
 import type { LogEntry, LogListParams, LogListResult } from '../../shared/types'
 
 interface LogRow {
@@ -103,6 +104,32 @@ export function listLogs(params?: LogListParams): LogListResult {
   const rowsSql = `SELECT * FROM logs ${where} ORDER BY ts DESC LIMIT ? OFFSET ?`
   const rows = db.prepare(rowsSql).all(...args, pageSize, offset) as LogRow[]
   return { rows: rows.map(toLog), total }
+}
+
+// Lấy URL các bài ĐĂNG THÀNH CÔNG của 1 tài khoản từ nhật ký, MỚI NHẤT trước.
+// Nguồn ưu tiên để xác định "N bài mới nhất" của chính tài khoản mà KHÔNG cần cuộn profile:
+//   - ok = 1 (đăng thành công), url không rỗng.
+//   - eventType 'post' (nút Đăng) hoặc 'run' (lịch đăng), bao gồm log cũ (event_type NULL).
+//   - url có dạng permalink tweet hợp lệ (chuẩn hoá qua canonicalizeTweetUrl).
+// Khử trùng theo URL chuẩn hoá, GIỮ THỨ TỰ mới->cũ (bài mới nhất đứng đầu).
+export function listSuccessfulPostUrls(accountId: string, limit = 100): string[] {
+  const rows = getDb()
+    .prepare(
+      `SELECT url FROM logs
+       WHERE account_id = ? AND ok = 1 AND url IS NOT NULL AND url <> ''
+         AND (event_type IS NULL OR event_type = 'post' OR event_type = 'run')
+       ORDER BY ts DESC LIMIT ?`
+    )
+    .all(accountId, limit) as { url: string }[]
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (const r of rows) {
+    const canon = canonicalizeTweetUrl(r.url)
+    if (!canon || seen.has(canon)) continue
+    seen.add(canon)
+    out.push(canon)
+  }
+  return out
 }
 
 // Xoá log cũ hơn retentionDays; xoá luôn file screenshot trên đĩa.

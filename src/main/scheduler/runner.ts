@@ -8,7 +8,8 @@ import {
   type DeleteResult,
   type CommentResult,
   type ProgressPayload,
-  type DeleteMode
+  type DeleteMode,
+  type CommentContentSource
 } from '../../shared/types'
 import { getAccount, setAccountStatus, decodeCaptionPrefix } from '../db/accounts'
 import { getAllSettings } from '../db/settings'
@@ -20,17 +21,25 @@ import {
   BrokenMediaError
 } from '../n8n/N8nConnector'
 import { browserManager } from '../browser/BrowserManager'
-import { postTweet, deleteTweetsFromProfile, scrollProfileCollectTweetUrls, commentOnTweet } from '../actions/XActions'
-import { runInteractSession } from '../actions/InteractSession'
-import { isStopRequested, clearStop } from './cancel'
-import { insertLog, pruneLogs } from '../db/logs'
 import {
-  insertCollectedLinks,
+  postTweet,
+  deleteTweetsFromProfile,
+  crawlNewestOwnPostUrls,
+  readTweetViews,
+  commentOnTweet
+} from '../actions/XActions'
+import { runInteractSession } from '../actions/InteractSession'
+import { generateScheduledComment } from '../ai/AiClient'
+import { isStopRequested, clearStop } from './cancel'
+import { insertLog, pruneLogs, listSuccessfulPostUrls } from '../db/logs'
+import {
+  insertCommentedLink,
   updateLinkStatus,
-  listUnprocessedLinks,
+  listPermanentlySkippedSet,
   countCommentsToday,
   pruneCommentHistory
 } from '../db/comment_history'
+import { canonicalizeTweetUrl } from '../../shared/url'
 
 // Broadcast tiến trình tới mọi renderer window (dùng chung cho manual + schedule).
 export function emitProgress(p: ProgressPayload): void {
@@ -514,9 +523,35 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
-// Pipeline bình luận trên bài của chính tài khoản (trang profile). Dùng chung cho
-// nút "Bình luận" (manual) và scheduler (schedule).
-// source để phân biệt nguồn khi ghi log (eventType: schedule->'run_comment', manual->'comment').
+// Ghép tiền tố + link vào câu bình luận CỐ ĐỊNH (nguồn n8n). Tiền tố đứng đầu, link xuống
+// dòng cuối. Trống -> giữ nguyên. (Nguồn AI ghép sẵn trong generateScheduledComment.)
+function decorateFixedComment(
+  body: string,
+  prefix?: string | null,
+  link?: string | null
+): string {
+  let out = body.trim()
+  const p = (prefix ?? '').trim()
+  const l = (link ?? '').trim()
+  if (p) out = `${p} ${out}`.trim()
+  if (l) out = `${out}\n${l}`.trim()
+  return out
+}
+
+// Pipeline bình luận trên bài MỚI NHẤT của chính tài khoản. Dùng chung cho nút "Bình luận"
+// (manual) và scheduler (schedule). source để phân biệt log (schedule->'run_comment').
+//
+// THIẾT KẾ (redesign):
+//   - Mỗi lần chạy chỉ xét N bài MỚI NHẤT của chính tài khoản (commentNewestCount).
+//   - Ứng viên URL: ƯU TIÊN lấy từ nhật ký đăng THÀNH CÔNG (không cần cuộn); chỉ cuộn profile
+//     bổ sung khi số URL từ log < N. Lọc bài ghim/quảng cáo/repost/gợi ý ở bước cuộn.
+//   - Đọc lượt xem (views) từ ĐÚNG anchor .../analytics (aria-label số nguyên đầy đủ). CHỈ
+//     bình luận bài có views > ngưỡng (strict). Bài DƯỚI ngưỡng (hoặc chưa đọc được views)
+//     KHÔNG bao giờ cache là đã xử lý -> lần chạy sau vẫn đọc lại nếu còn trong N bài mới nhất.
+//   - Bỏ qua VĨNH VIỄN chỉ 2 loại: đã bình luận thành công ('commented') và reply thật
+//     ('reply_skip') — cache trong comment_history.
+//   - Nội dung bình luận: nguồn 'n8n' (câu cố định từ Sheet, dùng cho MỌI bài) hoặc 'ai'
+//     (sinh riêng theo từng bài, dùng chỉ dẫn + số từ + tiền tố + link).
 export async function runCommentForAccount(
   accountId: string,
   opts?: {
@@ -524,6 +559,13 @@ export async function runCommentForAccount(
     commentCount?: number
     commentIntervalSeconds?: number
     commentSourceUrl?: string | null
+    commentNewestCount?: number
+    commentViewThreshold?: number
+    commentSource?: CommentContentSource
+    commentAiInstruction?: string | null
+    commentMaxChars?: number
+    commentPrefix?: string | null
+    commentLink?: string | null
   }
 ): Promise<CommentResult> {
   const account = getAccount(accountId)
@@ -535,11 +577,17 @@ export async function runCommentForAccount(
   const commentCount = Math.max(1, opts?.commentCount ?? 1)
   const commentIntervalSeconds = Math.max(5, opts?.commentIntervalSeconds ?? 60)
   const sourceUrl = opts?.commentSourceUrl ?? null
+  const newestCount = Math.max(1, Math.floor(opts?.commentNewestCount ?? 20))
+  const viewThreshold = Math.max(0, Math.floor(opts?.commentViewThreshold ?? 0))
+  const contentSource: CommentContentSource = opts?.commentSource === 'ai' ? 'ai' : 'n8n'
   const dailyLimit = getAllSettings().commentDailyLimit
 
   emitProgress({ accountId, accountLabel: label, stage: 'prepare', message: 'Đang kiểm tra profile…', busy: true })
 
   // 1. Kiểm tra limit comment/ngày — chạm -> báo, dừng, mai chạy tiếp.
+  // countCommentsToday đếm MỌI dòng status='commented' trong ngày -> GỘP CHUNG cả comment
+  // từ lịch bình luận LẪN lịch tương tác feed (cả 2 đều ghi insertCommentedLink('commented')).
+  // Nhờ vậy 1 tài khoản không vượt tổng giới hạn/ngày dù chạy song song 2 loại lịch.
   const countToday = countCommentsToday(accountId)
   if (countToday >= dailyLimit) {
     emitProgress({
@@ -572,7 +620,7 @@ export async function runCommentForAccount(
   // Nếu count + commentCount > limit -> chỉ comment số còn lại được phép.
   const allowedThisRun = Math.min(commentCount, dailyLimit - countToday)
 
-  // 2. Lấy nội dung bình luận từ n8n.
+  // 2. Bắt buộc có username X (để vào đúng profile).
   if (!account.handle) {
     emitProgress({ accountId, accountLabel: label, stage: 'error', message: 'Tài khoản chưa có username X.', busy: false })
     return {
@@ -585,51 +633,57 @@ export async function runCommentForAccount(
   }
   const handle = account.handle.replace(/^@+/, '')
 
-  emitProgress({ accountId, accountLabel: label, stage: 'fetch', message: 'Đang lấy nội dung bình luận từ n8n…', busy: true })
-  let payload
-  try {
-    payload = await fetchCommentPayload(handle, sourceUrl)
-  } catch (e) {
-    insertLog({
-      accountId,
-      accountLabel: label,
-      ts: Date.now(),
-      ok: false,
-      caption: 'Lấy nội dung bình luận lỗi',
-      url: null,
-      error: (e as Error).message,
-      step: 'fetch',
-      screenshot: null,
-      eventType: logEventType
-    })
-    emitProgress({ accountId, accountLabel: label, stage: 'error', message: `Lỗi: ${(e as Error).message}`, busy: false })
-    return { ok: false, commentedCount: 0, urls: [], error: (e as Error).message, step: 'fetch' }
+  // 3. Nếu nguồn = n8n: lấy 1 câu bình luận cố định dùng chung cho mọi bài trong lần chạy.
+  //    Nếu nguồn = ai: sinh riêng theo từng bài -> chưa lấy ở đây.
+  let fixedComment = ''
+  if (contentSource === 'n8n') {
+    emitProgress({ accountId, accountLabel: label, stage: 'fetch', message: 'Đang lấy nội dung bình luận từ n8n…', busy: true })
+    let payload
+    try {
+      payload = await fetchCommentPayload(handle, sourceUrl)
+    } catch (e) {
+      insertLog({
+        accountId,
+        accountLabel: label,
+        ts: Date.now(),
+        ok: false,
+        caption: 'Lấy nội dung bình luận lỗi',
+        url: null,
+        error: (e as Error).message,
+        step: 'fetch',
+        screenshot: null,
+        eventType: logEventType
+      })
+      emitProgress({ accountId, accountLabel: label, stage: 'error', message: `Lỗi: ${(e as Error).message}`, busy: false })
+      return { ok: false, commentedCount: 0, urls: [], error: (e as Error).message, step: 'fetch' }
+    }
+    if (payload.skip || !payload.comment) {
+      emitProgress({
+        accountId,
+        accountLabel: label,
+        stage: 'done',
+        message: 'Không có nội dung bình luận (n8n trả SKIP/trống) — bỏ qua lần chạy.',
+        busy: false
+      })
+      insertLog({
+        accountId,
+        accountLabel: label,
+        ts: Date.now(),
+        ok: true,
+        caption: 'Bỏ qua — không có nội dung bình luận',
+        url: null,
+        error: null,
+        step: 'no_content',
+        screenshot: null,
+        eventType: logEventType
+      })
+      return { ok: true, commentedCount: 0, urls: [], step: 'no_content' }
+    }
+    // Ghép tiền tố + link vào câu cố định (n8n) nếu user cấu hình.
+    fixedComment = decorateFixedComment(payload.comment, opts?.commentPrefix, opts?.commentLink)
   }
-  if (payload.skip || !payload.comment) {
-    emitProgress({
-      accountId,
-      accountLabel: label,
-      stage: 'done',
-      message: 'Không có nội dung bình luận (n8n trả SKIP/trống) — bỏ qua lần chạy.',
-      busy: false
-    })
-    insertLog({
-      accountId,
-      accountLabel: label,
-      ts: Date.now(),
-      ok: true,
-      caption: 'Bỏ qua — không có nội dung bình luận',
-      url: null,
-      error: null,
-      step: 'no_content',
-      screenshot: null,
-      eventType: logEventType
-    })
-    return { ok: true, commentedCount: 0, urls: [], step: 'no_content' }
-  }
-  const commentText = payload.comment
 
-  // 3. Mở profile nếu chưa mở.
+  // 4. Mở profile nếu chưa mở.
   let openedByUs = false
   let context = browserManager.getContext(accountId)
   if (!context) {
@@ -645,68 +699,74 @@ export async function runCommentForAccount(
   let commentedCount = 0
 
   try {
-    // 4. Check link chưa xử lý (status='collected') trong cache từ lần trước.
-    //    Nếu còn đủ → KHÔNG cần cuộn profile → xử lý thẳng (tiết kiệm thời gian).
-    //    Nếu không đủ → cuộn profile collect thêm → cache → xử lý.
-    let unprocessed = listUnprocessedLinks(accountId, 50)
+    // 5. Dựng danh sách N bài MỚI NHẤT của chính tài khoản.
+    //    (a) ƯU TIÊN URL đăng thành công từ nhật ký (không cần cuộn).
+    //    (b) Nếu < N -> cuộn profile bổ sung, gộp (khử trùng canonical, giữ mới->cũ).
+    const fromLogs = listSuccessfulPostUrls(accountId, newestCount)
+    const candidateSet = new Set<string>()
+    const candidates: string[] = []
+    for (const u of fromLogs) {
+      if (candidates.length >= newestCount) break
+      if (candidateSet.has(u)) continue
+      candidateSet.add(u)
+      candidates.push(u)
+    }
 
-    if (unprocessed.length < allowedThisRun) {
-      // 5. Cuộn profile thu thập link bài (collect 20 link, không early-stop).
-      const collectCount = 20
+    if (candidates.length < newestCount) {
       emitProgress({
         accountId,
         accountLabel: label,
         stage: 'collect',
-        message: `Cache còn ${unprocessed.length} link, cần thêm — đang cuộn profile…`,
+        message: `Nhật ký có ${candidates.length}/${newestCount} bài — cuộn profile lấy thêm…`,
         busy: true
       })
-      const collected = await scrollProfileCollectTweetUrls(
+      const crawled = await crawlNewestOwnPostUrls(
         context,
         handle,
-        collectCount,
+        newestCount,
         accountId,
         (message) => emitProgress({ accountId, accountLabel: label, stage: 'collect', message, busy: true })
       )
-      if (collected.error) {
+      if (crawled.error && candidates.length === 0) {
+        // Chỉ fail cứng khi KHÔNG có ứng viên nào từ log (không thể tiếp tục).
         insertLog({
           accountId,
           accountLabel: label,
           ts: Date.now(),
           ok: false,
-          caption: 'Thu thập link bài lỗi',
+          caption: 'Thu thập bài mới nhất lỗi',
           url: null,
-          error: collected.error,
+          error: crawled.error,
           step: 'collect',
-          screenshot: collected.screenshot ?? null,
+          screenshot: crawled.screenshot ?? null,
           eventType: logEventType
         })
-        emitProgress({ accountId, accountLabel: label, stage: 'error', message: `Lỗi: ${collected.error}`, busy: false })
-        return { ok: false, commentedCount: 0, urls: [], error: collected.error, step: 'collect', screenshot: collected.screenshot }
+        emitProgress({ accountId, accountLabel: label, stage: 'error', message: `Lỗi: ${crawled.error}`, busy: false })
+        return { ok: false, commentedCount: 0, urls: [], error: crawled.error, step: 'collect', screenshot: crawled.screenshot }
       }
-
-      // 6. Cache TẤT CẢ link vừa thu thập (status='collected'). Link trùng → IGNORE.
-      if (collected.urls.length > 0) {
-        insertCollectedLinks(accountId, collected.urls)
+      for (const u of crawled.urls) {
+        if (candidates.length >= newestCount) break
+        const canon = canonicalizeTweetUrl(u) ?? u
+        if (candidateSet.has(canon)) continue
+        candidateSet.add(canon)
+        candidates.push(canon)
       }
-
-      // 7. Lấy lại danh sách chưa xử lý (gồm link mới + link cũ còn dư).
-      unprocessed = listUnprocessedLinks(accountId, 50)
     } else {
       emitProgress({
         accountId,
         accountLabel: label,
         stage: 'collect',
-        message: `Cache còn ${unprocessed.length} link chưa xử lý — bỏ qua cuộn profile.`,
+        message: `Đủ ${candidates.length} bài mới nhất từ nhật ký — bỏ qua cuộn profile.`,
         busy: true
       })
     }
 
-    if (unprocessed.length === 0) {
+    if (candidates.length === 0) {
       emitProgress({
         accountId,
         accountLabel: label,
         stage: 'done',
-        message: 'Không có link mới phù hợp (tất cả đã xử lý trước đó) — bỏ qua lần chạy.',
+        message: 'Không tìm thấy bài nào của tài khoản để bình luận — bỏ qua lần chạy.',
         busy: false
       })
       insertLog({
@@ -714,7 +774,7 @@ export async function runCommentForAccount(
         accountLabel: label,
         ts: Date.now(),
         ok: true,
-        caption: 'Bỏ qua — không có link mới (tất cả đã xử lý)',
+        caption: 'Bỏ qua — không có bài nào để bình luận',
         url: null,
         error: null,
         step: 'no_match',
@@ -724,59 +784,141 @@ export async function runCommentForAccount(
       return { ok: true, commentedCount: 0, urls: [], step: 'no_match' }
     }
 
+    // 6. Loại các bài đã xử lý VĨNH VIỄN (đã bình luận / là reply thật) khỏi ứng viên.
+    const permaSkip = listPermanentlySkippedSet(accountId)
+    const pending = candidates.filter((u) => !permaSkip.has(u))
+
     emitProgress({
       accountId,
       accountLabel: label,
       stage: 'comment',
-      message: `Có ${unprocessed.length} link chờ xử lý. Cần bình luận ${allowedThisRun} bài (đã comment ${countToday}/${dailyLimit} hôm nay).`,
+      message: `${pending.length}/${candidates.length} bài mới nhất chờ xét (ngưỡng views > ${viewThreshold.toLocaleString('en-US')}). Cần ${allowedThisRun} bài (đã comment ${countToday}/${dailyLimit} hôm nay).`,
       busy: true
     })
 
-    // 8. Duyệt tuần tự từng link chưa xử lý. Mở tweet -> check reply/gốc -> comment.
-    //    Dừng khi đủ target HOẶC hết link. Reply -> update status='reply_skip'.
-    //    Gốc -> comment -> update 'commented'. Lỗi -> update 'fail' (thử lại lần sau).
+    // 7. Duyệt tuần tự. Với mỗi bài: đọc views -> chỉ bình luận nếu views > ngưỡng.
+    //    Bài dưới ngưỡng / không đọc được views -> KHÔNG cache (thử lại lần sau).
     let failCount = 0
+    let belowThreshold = 0
     let processedIndex = 0
     let stoppedEarly = false
-    while (commentedCount < allowedThisRun && processedIndex < unprocessed.length) {
-      // User bấm Dừng -> thoát vòng, ghi log 'stopped' bên dưới.
+    for (const url of pending) {
+      if (commentedCount >= allowedThisRun) break
       if (isStopRequested(accountId)) {
         stoppedEarly = true
         break
       }
-      const url = unprocessed[processedIndex]
       processedIndex++
-      const isLast = processedIndex >= unprocessed.length || commentedCount + 1 >= allowedThisRun
       emitProgress({
         accountId,
         accountLabel: label,
         stage: 'comment',
-        message: `Đang kiểm tra bài ${processedIndex}/${unprocessed.length} (đã comment ${commentedCount}/${allowedThisRun})…`,
+        message: `Đang đọc lượt xem bài ${processedIndex}/${pending.length} (đã comment ${commentedCount}/${allowedThisRun})…`,
         busy: true
       })
-      const r = await commentOnTweet(
-        context,
-        url,
-        commentText,
-        accountId,
-        (message) => emitProgress({ accountId, accountLabel: label, stage: 'comment', message, busy: true })
+
+      // 7a. Đọc views từ đúng anchor analytics. null -> KHÔNG cache, bỏ qua bài này lần này.
+      const vr = await readTweetViews(context, url, accountId, (message) =>
+        emitProgress({ accountId, accountLabel: label, stage: 'comment', message, busy: true })
       )
-      if (r.ok) {
-        commentedCount++
-        commentedUrls.push(url)
-        updateLinkStatus(accountId, url, 'commented')
-      } else if (r.skipped) {
-        updateLinkStatus(accountId, url, 'reply_skip')
+      if (vr.views == null) {
         emitProgress({
           accountId,
           accountLabel: label,
           stage: 'comment',
-          message: `Bài ${processedIndex} là reply — bỏ qua, thử bài kế…`,
+          message: `Bài ${processedIndex}: chưa đọc được lượt xem — bỏ qua lần này (không cache).`,
+          busy: true
+        })
+        continue
+      }
+      // 7b. STRICT: chỉ bình luận nếu views > ngưỡng. Dưới ngưỡng -> KHÔNG cache.
+      if (!(vr.views > viewThreshold)) {
+        belowThreshold++
+        emitProgress({
+          accountId,
+          accountLabel: label,
+          stage: 'comment',
+          message: `Bài ${processedIndex}: ${vr.views.toLocaleString('en-US')} views ≤ ngưỡng — chưa bình luận (sẽ xét lại sau).`,
+          busy: true
+        })
+        continue
+      }
+
+      // 7c. Chuẩn bị nội dung bình luận cho bài này.
+      let commentText = fixedComment
+      if (contentSource === 'ai') {
+        emitProgress({
+          accountId,
+          accountLabel: label,
+          stage: 'comment',
+          message: `Bài ${processedIndex}: ${vr.views.toLocaleString('en-US')} views — nhờ AI sinh bình luận…`,
+          busy: true
+        })
+        // Caption đã đọc SẴN trong readTweetViews (cùng lần mở bài) — KHÔNG mở lại để cào reply.
+        // Lịch bình luận dùng CHỈ DẪN của user là chính; caption chỉ để AI bám nội dung bài.
+        // Bài không có caption (chỉ ảnh/video) -> vẫn sinh theo chỉ dẫn (không bỏ bài).
+        const captionForAi = vr.caption?.trim() ?? ''
+        const ai = await generateScheduledComment(captionForAi, {
+          instruction: opts?.commentAiInstruction ?? null,
+          lang: account.aiCommentLang,
+          maxChars: opts?.commentMaxChars ?? 0,
+          prefix: opts?.commentPrefix ?? null,
+          link: opts?.commentLink ?? null
+        })
+        if (!ai.ok || !ai.comment) {
+          // AI lỗi/chưa cấu hình -> bỏ qua bài này (KHÔNG cache), ghi log để user biết.
+          insertLog({
+            accountId,
+            accountLabel: label,
+            ts: Date.now(),
+            ok: false,
+            caption: `AI không sinh được bình luận cho bài ${processedIndex}`,
+            url,
+            error: ai.error ?? 'AI lỗi',
+            step: 'ai',
+            screenshot: null,
+            eventType: logEventType
+          })
+          emitProgress({
+            accountId,
+            accountLabel: label,
+            stage: 'comment',
+            message: `Bài ${processedIndex}: AI lỗi (${ai.error ?? 'không rõ'}) — bỏ qua.`,
+            busy: true
+          })
+          continue
+        }
+        commentText = ai.comment
+      }
+
+      // 7d. Bình luận. reply thật -> cache reply_skip (vĩnh viễn). ok -> cache commented.
+      //     Lỗi khác -> log, KHÔNG cache (thử lại lần sau).
+      emitProgress({
+        accountId,
+        accountLabel: label,
+        stage: 'comment',
+        message: `Đang bình luận bài ${processedIndex} (${vr.views.toLocaleString('en-US')} views)…`,
+        busy: true
+      })
+      const r = await commentOnTweet(context, url, commentText, accountId, (message) =>
+        emitProgress({ accountId, accountLabel: label, stage: 'comment', message, busy: true })
+      )
+      if (r.ok) {
+        commentedCount++
+        commentedUrls.push(url)
+        insertCommentedLink(accountId, url, 'commented')
+      } else if (r.skipped) {
+        // Reply thật -> bỏ qua VĨNH VIỄN.
+        insertCommentedLink(accountId, url, 'reply_skip')
+        emitProgress({
+          accountId,
+          accountLabel: label,
+          stage: 'comment',
+          message: `Bài ${processedIndex} là reply — bỏ qua vĩnh viễn, thử bài kế…`,
           busy: true
         })
       } else {
         failCount++
-        updateLinkStatus(accountId, url, 'fail')
         insertLog({
           accountId,
           accountLabel: label,
@@ -790,8 +932,8 @@ export async function runCommentForAccount(
           eventType: logEventType
         })
       }
-      // Delay giữa các bài (trừ bài cuối hoặc đã đủ target).
-      if (!isLast && commentedCount < allowedThisRun) {
+      // Delay giữa các lần bình luận thành công (không delay sau bài bỏ qua/lỗi cho nhanh).
+      if (r.ok && commentedCount < allowedThisRun) {
         emitProgress({
           accountId,
           accountLabel: label,
@@ -803,7 +945,7 @@ export async function runCommentForAccount(
       }
     }
 
-    // 9. Prune history, ghi log tổng, báo status.
+    // 8. Prune history, ghi log tổng, báo status.
     pruneCommentHistory(accountId)
     // Bị dừng giữa chừng -> ghi log 'stopped', trả về số đã bình luận tới lúc đó.
     if (stoppedEarly) {
@@ -830,11 +972,15 @@ export async function runCommentForAccount(
       })
       return { ok: true, commentedCount, urls: commentedUrls, step: 'stopped', stopped: true }
     }
+    // ok khi không có bài lỗi. Bài dưới ngưỡng views KHÔNG tính là lỗi (chờ xét lại sau).
     const ok = failCount === 0
+    const belowText = belowThreshold > 0 ? ` · ${belowThreshold} bài chưa đạt ngưỡng views` : ''
     const caption =
       commentedCount > 0
-        ? `Đã bình luận ${commentedCount}/${allowedThisRun} bài${failCount > 0 ? ` (${failCount} lỗi)` : ''}`
-        : `Bình luận lỗi — 0 bài thành công`
+        ? `Đã bình luận ${commentedCount}/${allowedThisRun} bài${failCount > 0 ? ` (${failCount} lỗi)` : ''}${belowText}`
+        : failCount > 0
+          ? `Bình luận lỗi — 0 bài thành công${belowText}`
+          : `Không bài nào đạt ngưỡng để bình luận${belowText}`
     insertLog({
       accountId,
       accountLabel: label,
@@ -855,8 +1001,8 @@ export async function runCommentForAccount(
       accountLabel: label,
       stage: ok ? 'done' : 'error',
       message: ok
-        ? `Hoàn thành — đã bình luận ${commentedCount} bài`
-        : `Hoàn thành (${commentedCount} thành công, ${failCount} lỗi)`,
+        ? `Hoàn thành — đã bình luận ${commentedCount} bài${belowText}`
+        : `Hoàn thành (${commentedCount} thành công, ${failCount} lỗi)${belowText}`,
       busy: false
     })
     return {

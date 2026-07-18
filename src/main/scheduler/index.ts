@@ -202,7 +202,14 @@ async function runScheduledJob(s: ReturnType<typeof listDueSchedules>[number]): 
         source: 'schedule',
         commentCount: s.commentCount,
         commentIntervalSeconds: s.commentIntervalSeconds,
-        commentSourceUrl: s.commentSourceUrl
+        commentSourceUrl: s.commentSourceUrl,
+        commentNewestCount: s.commentNewestCount,
+        commentViewThreshold: s.commentViewThreshold,
+        commentSource: s.commentSource,
+        commentAiInstruction: s.commentAiInstruction,
+        commentMaxChars: s.commentMaxChars,
+        commentPrefix: s.commentPrefix,
+        commentLink: s.commentLink
       }).catch((e) => {
         insertLog({
           accountId: s.accountId,
