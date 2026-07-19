@@ -18,7 +18,9 @@ const DEFAULTS: AppSettings = {
   // Độ dài bình luận tối đa (ký tự). Tone/ngôn ngữ/định dạng đã chuyển per-account.
   aiCommentMaxLen: 200,
   // Mặc định TẮT: giữ nguyên hành vi cũ (hiện đầy đủ ảnh/video). User bật để tiết kiệm proxy.
-  blockMedia: false
+  blockMedia: false,
+  // Số tab mở đồng thời khi check view trong lịch bình luận. Mặc định 3.
+  maxConcurrentTabs: 3
 }
 
 export function getAllSettings(): AppSettings {
@@ -50,7 +52,10 @@ export function getAllSettings(): AppSettings {
     aiCommentMaxLen: map.has('aiCommentMaxLen')
       ? Number(map.get('aiCommentMaxLen'))
       : DEFAULTS.aiCommentMaxLen,
-    blockMedia: map.has('blockMedia') ? map.get('blockMedia') === 'true' : DEFAULTS.blockMedia
+    blockMedia: map.has('blockMedia') ? map.get('blockMedia') === 'true' : DEFAULTS.blockMedia,
+    maxConcurrentTabs: map.has('maxConcurrentTabs')
+      ? Math.max(1, Number(map.get('maxConcurrentTabs')))
+      : DEFAULTS.maxConcurrentTabs
   }
 }
 

@@ -1101,44 +1101,42 @@ function ScheduleForm(props: {
               <div className="form-section-title">
                 <MessageCircle size={14} /> Mục tiêu bình luận
               </div>
-              <div className="field-row-2">
+              <div className="field-row-3">
                 <label className="field">
-                  <span>Số bài cần quét mỗi lần *</span>
+                  <span>Số bài cần quét *</span>
                   <input
                     type="number"
                     min={1}
                     value={commentCount}
                     onChange={(e) => setCommentCount(e.target.value)}
-                    placeholder="VD: 1"
+                    placeholder="VD: 30"
                   />
                 </label>
                 <label className="field">
-                  <span>Lượt xem tối thiểu (0 = bỏ lọc)</span>
+                  <span>Lượt xem tối thiểu</span>
                   <input
                     type="number"
                     min={0}
                     value={commentViewThreshold}
                     onChange={(e) => setCommentViewThreshold(e.target.value)}
-                    placeholder="VD: 1000"
+                    placeholder="0 = bỏ lọc"
                   />
                 </label>
-                {Number(commentCount) > 1 && (
-                  <label className="field">
-                    <span>Giãn cách mỗi bình luận (giây) *</span>
-                    <input
-                      type="number"
-                      min={5}
-                      value={commentIntervalSeconds}
-                      onChange={(e) => setCommentIntervalSeconds(e.target.value)}
-                      placeholder="VD: 60"
-                    />
-                  </label>
-                )}
+                <label className="field">
+                  <span>Giãn cách bình luận (giây)</span>
+                  <input
+                    type="number"
+                    min={5}
+                    value={commentIntervalSeconds}
+                    onChange={(e) => setCommentIntervalSeconds(e.target.value)}
+                    placeholder="VD: 30"
+                  />
+                </label>
               </div>
               <p className="hint">
-                Mỗi lần lịch chạy, app mở profile và quét <b>{Math.max(1, Number(commentCount) || 1)}</b> bài
-                mới nhất của chính tài khoản{Number(commentViewThreshold) > 0 ? `, chỉ bình luận bài có > ${Number(commentViewThreshold).toLocaleString()} lượt xem` : ''}.
-                Bình luận tôn trọng giới hạn comment/ngày ở tab Cài đặt (gộp cả lịch bình luận lẫn lịch tương tác).
+                Quét <b>{Math.max(1, Number(commentCount) || 1)}</b> bài mới nhất của tài khoản
+                {Number(commentViewThreshold) > 0 ? `, chỉ bình luận bài có > ${Number(commentViewThreshold).toLocaleString()} lượt xem` : ''}.
+                Số tab mở đồng thời khi check view được cấu hình ở tab Cài đặt.
               </p>
             </div>
             {/* --- Nguồn nội dung: webhook | AI --- */}

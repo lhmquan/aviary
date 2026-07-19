@@ -168,6 +168,22 @@ export default function SettingsView(): JSX.Element {
             và chạy tiếp vào ngày hôm sau. Tránh bị X đánh dấu spam.
           </small>
         </label>
+        <label className="field">
+          <span>Số tab mở đồng thời khi check view (lịch bình luận)</span>
+          <input
+            type="number"
+            min={1}
+            max={20}
+            value={settings.maxConcurrentTabs}
+            onChange={(e) => update('maxConcurrentTabs', Math.max(1, Number(e.target.value) || 1))}
+            style={{ width: 120 }}
+          />
+          <small className="hint">
+            Lịch bình luận mở nhiều tab đồng thời để đọc lượt xem bài — tăng để quét nhanh hơn
+            nhưng tốn proxy và RAM hơn. Mặc định 3. Lưu ý: chỉ ảnh hưởng bước check view;
+            bước bình luận thật vẫn tuần tự để tránh bị X phát hiện.
+          </small>
+        </label>
         <label className="field checkbox-field">
           <input
             type="checkbox"

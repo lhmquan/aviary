@@ -796,53 +796,88 @@ export async function runCommentForAccount(
       busy: true
     })
 
-    // 7. Duyệt tuần tự. Với mỗi bài: đọc views -> chỉ bình luận nếu views > ngưỡng.
+    // 7. Pha 1 — Đọc views song song theo maxConcurrentTabs.
+    //    Mỗi batch mở nhiều tab cùng lúc để check view; sau đó đóng tất cả.
     //    Bài dưới ngưỡng / không đọc được views -> KHÔNG cache (thử lại lần sau).
-    let failCount = 0
+    const maxConcurrentTabs = Math.max(1, getAllSettings().maxConcurrentTabs)
+    emitProgress({
+      accountId,
+      accountLabel: label,
+      stage: 'comment',
+      message: `Đọc lượt xem ${pending.length} bài (tối đa ${maxConcurrentTabs} tab đồng thời)…`,
+      busy: true
+    })
+
+    type QualifiedPost = { url: string; views: number; caption: string }
+    const qualified: QualifiedPost[] = []
     let belowThreshold = 0
-    let processedIndex = 0
     let stoppedEarly = false
-    for (const url of pending) {
+
+    for (let batchStart = 0; batchStart < pending.length; batchStart += maxConcurrentTabs) {
+      if (isStopRequested(accountId)) {
+        stoppedEarly = true
+        break
+      }
+      const batch = pending.slice(batchStart, batchStart + maxConcurrentTabs)
+      const batchResults = await Promise.all(
+        batch.map((url, i) => {
+          const idx = batchStart + i + 1
+          return readTweetViews(context, url, accountId, (msg) =>
+            emitProgress({
+              accountId,
+              accountLabel: label,
+              stage: 'comment',
+              message: `[${idx}/${pending.length}] ${msg}`,
+              busy: true
+            })
+          ).then((vr) => ({ url, vr, idx }))
+        })
+      )
+      for (const { url, vr, idx } of batchResults) {
+        if (vr.views == null) {
+          emitProgress({
+            accountId,
+            accountLabel: label,
+            stage: 'comment',
+            message: `Bài ${idx}: chưa đọc được lượt xem — bỏ qua lần này (không cache).`,
+            busy: true
+          })
+          continue
+        }
+        if (!(vr.views > viewThreshold)) {
+          belowThreshold++
+          emitProgress({
+            accountId,
+            accountLabel: label,
+            stage: 'comment',
+            message: `Bài ${idx}: ${vr.views.toLocaleString('en-US')} views ≤ ngưỡng — chưa bình luận (sẽ xét lại sau).`,
+            busy: true
+          })
+          continue
+        }
+        qualified.push({ url, views: vr.views, caption: vr.caption ?? '' })
+      }
+    }
+
+    emitProgress({
+      accountId,
+      accountLabel: label,
+      stage: 'comment',
+      message: `Xét xong views: ${qualified.length} bài đạt ngưỡng, ${belowThreshold} bài chưa đủ. Bắt đầu bình luận…`,
+      busy: true
+    })
+
+    // 7b. Pha 2 — Bình luận tuần tự các bài đã đạt ngưỡng views.
+    //     Tuần tự để tránh X phát hiện đăng hàng loạt.
+    let failCount = 0
+    let processedIndex = 0
+    for (const { url, views, caption } of qualified) {
       if (commentedCount >= allowedThisRun) break
       if (isStopRequested(accountId)) {
         stoppedEarly = true
         break
       }
       processedIndex++
-      emitProgress({
-        accountId,
-        accountLabel: label,
-        stage: 'comment',
-        message: `Đang đọc lượt xem bài ${processedIndex}/${pending.length} (đã comment ${commentedCount}/${allowedThisRun})…`,
-        busy: true
-      })
-
-      // 7a. Đọc views từ đúng anchor analytics. null -> KHÔNG cache, bỏ qua bài này lần này.
-      const vr = await readTweetViews(context, url, accountId, (message) =>
-        emitProgress({ accountId, accountLabel: label, stage: 'comment', message, busy: true })
-      )
-      if (vr.views == null) {
-        emitProgress({
-          accountId,
-          accountLabel: label,
-          stage: 'comment',
-          message: `Bài ${processedIndex}: chưa đọc được lượt xem — bỏ qua lần này (không cache).`,
-          busy: true
-        })
-        continue
-      }
-      // 7b. STRICT: chỉ bình luận nếu views > ngưỡng. Dưới ngưỡng -> KHÔNG cache.
-      if (!(vr.views > viewThreshold)) {
-        belowThreshold++
-        emitProgress({
-          accountId,
-          accountLabel: label,
-          stage: 'comment',
-          message: `Bài ${processedIndex}: ${vr.views.toLocaleString('en-US')} views ≤ ngưỡng — chưa bình luận (sẽ xét lại sau).`,
-          busy: true
-        })
-        continue
-      }
 
       // 7c. Chuẩn bị nội dung bình luận cho bài này.
       let commentText = fixedComment
@@ -851,13 +886,13 @@ export async function runCommentForAccount(
           accountId,
           accountLabel: label,
           stage: 'comment',
-          message: `Bài ${processedIndex}: ${vr.views.toLocaleString('en-US')} views — nhờ AI sinh bình luận…`,
+          message: `Bài ${processedIndex}/${qualified.length}: ${views.toLocaleString('en-US')} views — nhờ AI sinh bình luận…`,
           busy: true
         })
         // Caption đã đọc SẴN trong readTweetViews (cùng lần mở bài) — KHÔNG mở lại để cào reply.
         // Lịch bình luận dùng CHỈ DẪN của user là chính; caption chỉ để AI bám nội dung bài.
         // Bài không có caption (chỉ ảnh/video) -> vẫn sinh theo chỉ dẫn (không bỏ bài).
-        const captionForAi = vr.caption?.trim() ?? ''
+        const captionForAi = caption.trim()
         const ai = await generateScheduledComment(captionForAi, {
           instruction: opts?.commentAiInstruction ?? null,
           lang: account.aiCommentLang,
@@ -897,7 +932,7 @@ export async function runCommentForAccount(
         accountId,
         accountLabel: label,
         stage: 'comment',
-        message: `Đang bình luận bài ${processedIndex} (${vr.views.toLocaleString('en-US')} views)…`,
+        message: `Đang bình luận bài ${processedIndex}/${qualified.length} (${views.toLocaleString('en-US')} views)…`,
         busy: true
       })
       const r = await commentOnTweet(context, url, commentText, accountId, (message) =>

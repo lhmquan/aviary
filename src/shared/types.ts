@@ -206,6 +206,9 @@ export interface AppSettings {
   // load nhanh hơn, giảm lỗi do delay. KHÔNG ảnh hưởng upload khi đăng (upload đọc file
   // cục bộ, không phải request tải xuống).
   blockMedia: boolean
+  // Số tab Chromium mở đồng thời khi check view bài (lịch bình luận). Tăng để quét nhanh hơn
+  // nhưng tốn proxy/RAM hơn. Mặc định 3.
+  maxConcurrentTabs: number
 }
 
 // Asset n8n trả về để đăng bài.

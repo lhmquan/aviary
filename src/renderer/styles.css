@@ -1045,6 +1045,28 @@ nav {
   min-width: 0;
 }
 
+/* 3 field cạnh nhau trên 1 hàng (VD: số bài + lượt xem + giãn cách) */
+.field-row-3 {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+.field-row-3 .field {
+  margin-bottom: 0;
+  flex: 1 1 100px;
+  min-width: 0;
+}
+.field-row-3 .field span {
+  white-space: normal;
+}
+.field-row-3 .field input,
+.field-row-3 .field select {
+  width: 100%;
+  min-width: 0;
+}
+
 .field span {
   color: var(--text-2);
   font-size: 13px;
