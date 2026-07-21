@@ -43,3 +43,8 @@ Thumbs.db
 playwright-report/
 test-results/
 .cache/
+
+# PoC Camoufox — ảnh chụp fingerprint có thể chứa IP/proxy thật -> KHÔNG commit
+scripts/camoufox-shots/
+scripts/*-shots/
+**/poc-profile/
