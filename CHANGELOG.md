@@ -5,6 +5,46 @@ Mọi thay đổi đáng chú ý của Aviary được ghi tại đây.
 Định dạng theo [Keep a Changelog](https://keepachangelog.com/vi/1.0.0/),
 phiên bản theo [Semantic Versioning](https://semver.org/lang/vi/).
 
+## [0.22.0] - 2026-07-23
+
+### Tổng quan
+- **Chromium tiếp tục là engine mặc định và ổn định** cho tài khoản hiện có. Luồng đăng bài, xoá bài, bình luận, tương tác feed, scheduler và chặn media của Chromium được giữ nguyên.
+- **Camoufox được phát hành dưới dạng engine beta theo từng tài khoản** để thử nghiệm anti-detect nâng cao. Tính năng đã hoạt động trong các PoC và kiểm tra hiện tại, nhưng vẫn cần tiếp tục kiểm chứng, theo dõi giới hạn phía X và sửa dần theo tình huống sử dụng thực tế.
+
+### Added
+- **Chọn engine theo từng tài khoản**: thêm `BrowserEngine` (`chromium` / `camoufox`), cột DB `accounts.engine`, lựa chọn engine trong form và logo engine trên card/hàng tài khoản. Migration idempotent giữ Chromium làm mặc định cho dữ liệu cũ.
+- **Camoufox persistent profile tách biệt**: profile Firefox anti-detect nằm tại `<profileDir>/camoufox`, không trộn dữ liệu với profile Chromium. Binary Camoufox khoảng 470 MB được tải một lần bằng mạng máy, stream ra file tạm và cache dùng chung; binary không được bundle vào installer.
+- **Fingerprint Camoufox cố định theo account**: BrowserForge identity, OS Windows, screen/window vật lý, WebGL vendor/renderer, canvas/audio/font seed, canvas anti-alias và history length được lưu theo schema riêng để giữ ổn định qua lần mở.
+- **Geo-IP và chống rò rỉ**: timezone/locale/geolocation lấy theo GeoLite2 của Camoufox và IP proxy; WebRTC bị tắt. Diagnostic đối chiếu thêm timezone từ nguồn ngoài nhưng vẫn coi dữ liệu GeoLite2 của engine là nguồn chính.
+- **Bảng chẩn đoán fingerprint**: icon kiểm tra trên từng tài khoản, snapshot runtime có cache, kiểm tra lại thủ công, single-flight chống mở trùng profile và báo cáo IP, timezone, UA/platform, CPU/RAM, WebDriver, màn hình/DPI, WebGL, canvas/audio, WebRTC cùng stored seeds.
+- **Điểm anti-detect 0–100**: đánh giá collision giữa account, che dấu automation, identity/seeds riêng, WebRTC, tính hợp lý UA/platform/WebGL/screen, fingerprint surfaces và timezone khớp GeoLite2.
+- **Chuyển phiên X từ Chromium sang Camoufox**: import đúng `ct0` và `auth_token` trong memory, không đưa credential qua renderer, DB, file, clipboard hoặc log. Chỉ đổi engine sau khi Camoufox xác nhận vào được X Home; thất bại giữ nguyên Chromium.
+- **Giao diện Camoufox dùng được như browser thường**: bookmark bar `Aviary Checks`, tab có thể chọn/đóng, nút tab mới, trạng thái hover/selected rõ ràng và window controls không chồng lên tab.
+- **Hai chế độ xem tài khoản**: giữ dạng thẻ và thêm dạng hàng ngang hiện đại, responsive. Lựa chọn `Thẻ / Hàng ngang` được ghi nhớ trên máy; hàng ngang vẫn có đủ identity, trạng thái, proxy, thống kê, hoạt động, tag và action.
+- **Tài liệu nghiên cứu anti-detect**: bổ sung log PoC, benchmark, quyết định kỹ thuật và script đo fingerprint Camoufox phục vụ kiểm chứng nội bộ.
+
+### Changed
+- **Mọi action dùng chung cơ chế mở page tác vụ**: với Camoufox, page mới được mở thành tab trong cửa sổ hiện tại; Chromium tiếp tục dùng hành vi `newPage()` ổn định sẵn có. Áp dụng cho đăng, xoá, thu thập profile, đọc context/reply, đọc views, crawl, bình luận, fingerprint và chuyển phiên.
+- **Camoufox chạy ngầm trên Windows bằng headful ẩn cửa sổ** thay cho headless persistent context dễ tự thoát. Thêm preference chống background timer/render throttling, focus loss và window occlusion để tác vụ tiếp tục khi tab hoặc cửa sổ không onscreen.
+- **Tối ưu tài nguyên Camoufox**: giới hạn content process, cache RAM/media, bật unload tab khi thiếu RAM, tắt prefetch/predictor/speculative connections và bỏ uBlock mặc định; vẫn giữ disk cache/session history để X tải nhanh và nút Back hoạt động.
+- **Chặn media theo từng engine**: Chromium giữ CDP `Network.setBlockedURLs`; Camoufox dùng chặn ảnh native và route video X, không chặn `blob:` preview hoặc endpoint upload.
+- **Mở Camoufox tuần tự** để giảm spike CPU/RAM khi mở nhiều account, nhưng không áp giới hạn cứng số profile hoặc lượng RAM trống.
+- **Ghim `playwright-core` đúng `1.53.1`** để tương thích protocol của Camoufox; tích hợp `camoufox-js` ESM bằng dynamic import an toàn trong main bundle CommonJS.
+
+### Fixed
+- **Camoufox mở cửa sổ mới cho mỗi action**: thay bằng tab mới trong đúng cửa sổ profile hiện có trên toàn bộ pipeline.
+- **Camoufox dừng hoặc chậm khi chạy nền**: vô hiệu background throttling và dùng cửa sổ headful ẩn cho chế độ ngầm trên Windows.
+- **Tab Camoufox không click được, mất nút đóng/tab mới và bookmark bar bị ẩn**: override chrome UI idempotent bằng marker riêng của Aviary.
+- **Cửa sổ Camoufox có dải đen khi Windows scale 125%**: quy đổi kích thước DIP sang physical pixel, dùng viewport native và maximize đúng cửa sổ.
+- **Nút Back không hoạt động**: bật cache và session history có giới hạn.
+- **Canvas stability báo thay đổi giả**: hash pixel RGBA bằng `getImageData()` thay vì hash byte PNG có metadata biến động.
+- **Rò rỉ dữ liệu nhạy cảm qua thông báo lỗi**: không đưa browser log, command line dài hoặc proxy credential ra UI/log.
+
+### Known limitations
+- Camoufox là tính năng **beta** trong `0.22.0`; cần tiếp tục test các pipeline dài, chế độ chạy ngầm và hành vi khi X áp checkpoint/anti-spam/rate-limit.
+- X có thể chặn submit bằng cơ chế chống automation phía server. Đây không phải lỗi xác định được chỉ từ browser engine và không nên regression submit lặp lại trên tài khoản thật đang bị hạn chế.
+- Thay đổi main/preload hoặc engine yêu cầu **tắt hẳn Aviary rồi mở lại**; nút Reload trong app không rebuild main process.
+
 ## [0.7.0] - 2026-06-28
 
 ### Added

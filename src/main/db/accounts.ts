@@ -2,7 +2,7 @@ import { randomUUID } from 'crypto'
 import { app } from 'electron'
 import { join } from 'path'
 import { getDb } from './index'
-import type { Account, AccountInput, AccountStatus } from '../../shared/types'
+import type { Account, AccountInput, AccountStatus, BrowserEngine } from '../../shared/types'
 import { PROXY_LOCAL } from '../../shared/types'
 
 interface AccountRow {
@@ -24,6 +24,7 @@ interface AccountRow {
   following: number | null
   statuses: number | null
   avatar_url: string | null
+  engine: string | null
   created_at: number
   updated_at: number
 }
@@ -48,6 +49,7 @@ function toAccount(r: AccountRow): Account {
     following: r.following ?? null,
     statusesCount: r.statuses ?? null,
     avatarUrl: r.avatar_url ?? null,
+    engine: (r.engine as BrowserEngine) ?? 'chromium',
     createdAt: r.created_at,
     updatedAt: r.updated_at
   }
@@ -73,8 +75,8 @@ export function createAccount(input: AccountInput): Account {
   const profileDir = join(app.getPath('userData'), 'profiles', id)
   getDb()
     .prepare(
-      `INSERT INTO accounts (id, label, handle, proxy_id, profile_dir, fingerprint, status, asset_url, headless, hashtag, caption_prefix, ai_comment_tone, ai_comment_lang, ai_comment_format, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, NULL, 'new', ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO accounts (id, label, handle, proxy_id, profile_dir, fingerprint, status, asset_url, headless, hashtag, caption_prefix, ai_comment_tone, ai_comment_lang, ai_comment_format, engine, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, NULL, 'new', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       id,
@@ -89,6 +91,7 @@ export function createAccount(input: AccountInput): Account {
       input.aiCommentTone ?? 'random',
       input.aiCommentLang ?? 'en',
       input.aiCommentFormat ?? 'random',
+      normalizeEngine(input.engine),
       now,
       now
     )
@@ -109,11 +112,12 @@ export function updateAccount(id: string, input: Partial<AccountInput>): Account
     aiCommentTone: input.aiCommentTone !== undefined ? input.aiCommentTone : existing.aiCommentTone,
     aiCommentLang: input.aiCommentLang !== undefined ? input.aiCommentLang : existing.aiCommentLang,
     aiCommentFormat:
-      input.aiCommentFormat !== undefined ? input.aiCommentFormat : existing.aiCommentFormat
+      input.aiCommentFormat !== undefined ? input.aiCommentFormat : existing.aiCommentFormat,
+    engine: input.engine !== undefined ? input.engine : existing.engine
   }
   getDb()
     .prepare(
-      'UPDATE accounts SET label = ?, handle = ?, proxy_id = ?, asset_url = ?, headless = ?, hashtag = ?, caption_prefix = ?, ai_comment_tone = ?, ai_comment_lang = ?, ai_comment_format = ?, updated_at = ? WHERE id = ?'
+      'UPDATE accounts SET label = ?, handle = ?, proxy_id = ?, asset_url = ?, headless = ?, hashtag = ?, caption_prefix = ?, ai_comment_tone = ?, ai_comment_lang = ?, ai_comment_format = ?, engine = ?, updated_at = ? WHERE id = ?'
     )
     .run(
       next.label,
@@ -126,6 +130,7 @@ export function updateAccount(id: string, input: Partial<AccountInput>): Account
       next.aiCommentTone,
       next.aiCommentLang,
       next.aiCommentFormat,
+      normalizeEngine(next.engine),
       Date.now(),
       id
     )
@@ -152,10 +157,59 @@ export function updateAccountStats(
   }
 }
 
+// Lưu fingerprint trình duyệt bền vững theo account. Camoufox phải tái dùng cùng fingerprint
+// qua mọi lần mở; nếu sinh lại mỗi launch, X sẽ thấy account đổi thiết bị liên tục.
+export function updateAccountFingerprint(id: string, fingerprint: string): void {
+  getDb()
+    .prepare('UPDATE accounts SET fingerprint = ?, updated_at = ? WHERE id = ?')
+    .run(fingerprint, Date.now(), id)
+}
+
+export function getAccountFingerprintObservation(id: string): string | null {
+  const row = getDb()
+    .prepare('SELECT fingerprint_observation FROM accounts WHERE id = ?')
+    .get(id) as { fingerprint_observation: string | null } | undefined
+  return row?.fingerprint_observation ?? null
+}
+
+export function updateAccountFingerprintObservation(id: string, observation: string): void {
+  getDb()
+    .prepare('UPDATE accounts SET fingerprint_observation = ? WHERE id = ?')
+    .run(observation, id)
+}
+
+export function listAccountFingerprintObservations(): Array<{
+  accountId: string
+  engine: BrowserEngine
+  observation: string
+}> {
+  const rows = getDb()
+    .prepare(
+      `SELECT id, engine, fingerprint_observation
+       FROM accounts
+       WHERE fingerprint_observation IS NOT NULL`
+    )
+    .all() as Array<{
+      id: string
+      engine: string | null
+      fingerprint_observation: string
+    }>
+  return rows.map((row) => ({
+    accountId: row.id,
+    engine: normalizeEngine(row.engine),
+    observation: row.fingerprint_observation
+  }))
+}
+
 // Chuẩn hoá proxyId: rỗng/null -> '__local' (IP máy, mặc định).
 export function normalizeProxyId(raw: string | null | undefined): string {
   const v = (raw ?? '').trim()
   return v || PROXY_LOCAL
+}
+
+// Chuẩn hoá engine: chỉ chấp nhận 'camoufox', còn lại (rỗng/null/không hợp lệ) -> 'chromium'.
+export function normalizeEngine(raw: string | null | undefined): BrowserEngine {
+  return raw === 'camoufox' ? 'camoufox' : 'chromium'
 }
 
 // Chuẩn hoá hashtag user nhập: tách theo khoảng trắng/dòng/phẩy, bỏ ký tự lạ, thêm '#'

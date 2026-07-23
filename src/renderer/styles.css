@@ -2504,6 +2504,150 @@ nav {
   gap: 12px;
 }
 
+/* Bộ chuyển kiểu hiển thị: segmented control gọn, đồng bộ toolbar hiện tại. */
+.account-view-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: auto;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel-2);
+  box-shadow: inset 0 1px 2px color-mix(in srgb, var(--text) 5%, transparent);
+}
+.account-view-switch button {
+  height: 29px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  transition: color var(--ease), background var(--ease), box-shadow var(--ease);
+}
+.account-view-switch button:hover {
+  color: var(--text);
+}
+.account-view-switch button.active {
+  color: var(--accent);
+  background: var(--panel);
+  box-shadow: var(--shadow-sm), 0 0 0 1px color-mix(in srgb, var(--accent) 16%, transparent);
+}
+
+/* Chế độ hàng ngang: mỗi account là một hàng thông tin đầy đủ thay vì card nhiều cột. */
+.account-grid.rows {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 8px;
+}
+.account-card.account-row {
+  display: grid;
+  grid-template-columns: minmax(360px, 1.25fr) minmax(175px, .72fr) minmax(190px, .82fr) minmax(230px, auto);
+  grid-template-areas:
+    'header proxy activity actions'
+    'sub stats tags actions';
+  align-items: center;
+  gap: 7px 18px;
+  min-height: 96px;
+  padding: 12px 14px;
+  border-radius: 11px;
+  position: relative;
+  overflow: visible;
+}
+.account-row::after {
+  content: '';
+  position: absolute;
+  inset: 9px auto 9px 0;
+  width: 2px;
+  border-radius: var(--r-full);
+  background: var(--border-strong);
+  opacity: 0;
+  transition: opacity var(--ease), background var(--ease);
+}
+.account-row:hover::after,
+.account-row.row-selected::after {
+  opacity: 1;
+  background: var(--accent);
+}
+.account-row.health-error::after {
+  opacity: 1;
+  background: var(--danger);
+}
+.account-row.health-abnormal::after {
+  opacity: 1;
+  background: var(--warn);
+}
+.account-row .account-card-header { grid-area: header; min-width: 0; }
+.account-row .account-card-sub { grid-area: sub; justify-content: flex-start; min-width: 0; }
+.account-row .row-tags { grid-area: tags; min-width: 0; }
+.account-row .account-stats { grid-area: stats; min-width: 0; }
+.account-row .account-proxy-row { grid-area: proxy; min-width: 0; }
+.account-row .account-activity { grid-area: activity; min-width: 0; }
+.account-row .account-actions {
+  grid-area: actions;
+  align-self: stretch;
+  align-items: center;
+  padding-left: 16px;
+  border-left: 1px solid var(--border);
+}
+.account-row .account-actions .btn {
+  min-width: 104px;
+}
+.account-row .account-card-sub .username-cell {
+  max-width: 170px;
+}
+.account-row .proxy-select {
+  min-width: 0;
+}
+.account-row .account-activity {
+  background: transparent;
+}
+
+@media (max-width: 1400px) {
+  .account-card.account-row {
+    grid-template-columns: minmax(360px, 1fr) minmax(180px, .75fr) minmax(230px, auto);
+    grid-template-areas:
+      'header proxy actions'
+      'sub stats actions'
+      'activity tags actions';
+  }
+}
+
+@media (max-width: 980px) {
+  .account-card.account-row {
+    grid-template-columns: minmax(0, 1fr) minmax(220px, auto);
+    grid-template-areas:
+      'header actions'
+      'sub actions'
+      'proxy activity'
+      'stats tags';
+  }
+}
+
+@media (max-width: 720px) {
+  .account-view-switch {
+    margin-left: 0;
+  }
+  .account-card.account-row {
+    display: flex;
+    min-height: 0;
+  }
+  .account-row .account-actions {
+    width: 100%;
+    padding: 9px 0 0;
+    border-left: 0;
+    border-top: 1px solid var(--border);
+  }
+}
+
 /* Mỗi card = 1 tài khoản */
 .account-card {
   background: var(--panel);
@@ -2582,6 +2726,314 @@ nav {
 .card-quick-actions .btn.icon-only.active {
   color: var(--accent);
   background: var(--accent-soft);
+}
+.card-quick-actions .fingerprint-trigger {
+  color: var(--accent);
+}
+
+/* ---------- Kiểm tra fingerprint ---------- */
+.modal.fingerprint-modal {
+  width: min(860px, 94vw);
+  padding: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+.fingerprint-modal-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 20px 22px;
+  border-bottom: 1px solid var(--border);
+  background: linear-gradient(135deg, var(--accent-soft), var(--panel));
+}
+.fingerprint-modal-head > div {
+  flex: 1;
+  min-width: 0;
+}
+
+/* Logo engine hiện tại của account, đặt cạnh avatar để nhận biết nhanh. */
+.browser-engine-logo {
+  width: 25px;
+  height: 25px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 25px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  box-shadow: var(--shadow-sm);
+  cursor: help;
+}
+.browser-engine-logo svg {
+  width: 19px;
+  height: 19px;
+  display: block;
+}
+.browser-engine-logo.chromium {
+  background: color-mix(in srgb, #4285f4 8%, var(--panel));
+  border-color: color-mix(in srgb, #4285f4 24%, var(--border));
+}
+.browser-engine-logo.camoufox {
+  background: linear-gradient(135deg,
+    color-mix(in srgb, #7c5cff 14%, var(--panel)),
+    color-mix(in srgb, #ff8a3d 10%, var(--panel)));
+  border-color: color-mix(in srgb, #7c5cff 28%, var(--border));
+}
+.fingerprint-modal-head h2 {
+  margin: 0;
+  font-size: 18px;
+}
+.fingerprint-modal-head p {
+  margin: 2px 0 0;
+  color: var(--text-2);
+  font-size: 12px;
+}
+.fingerprint-hero-icon {
+  width: 42px;
+  height: 42px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  border-radius: 13px;
+  color: #fff;
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  box-shadow: 0 8px 22px color-mix(in srgb, var(--accent) 35%, transparent);
+}
+.fingerprint-loading {
+  min-height: 320px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: var(--accent);
+}
+.fingerprint-loading span {
+  color: var(--muted);
+  font-size: 12px;
+}
+.fingerprint-error,
+.fingerprint-diff {
+  display: flex;
+  gap: 10px;
+  margin: 18px 22px;
+  padding: 12px 14px;
+  border: 1px solid color-mix(in srgb, var(--danger) 30%, transparent);
+  border-radius: var(--r-sm);
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+.fingerprint-error div,
+.fingerprint-diff div {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+.fingerprint-error span,
+.fingerprint-diff span {
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.fingerprint-diff {
+  margin-top: 12px;
+  margin-bottom: 0;
+  border-color: color-mix(in srgb, var(--warn) 35%, transparent);
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+.fingerprint-verdict {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  margin: 18px 22px 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+}
+.fingerprint-verdict.ok { background: var(--success-soft); color: var(--success); border-color: color-mix(in srgb, var(--success) 28%, transparent); }
+.fingerprint-verdict.warn { background: var(--warn-soft); color: var(--warn); border-color: color-mix(in srgb, var(--warn) 32%, transparent); }
+.fingerprint-verdict.info { background: var(--accent-soft); color: var(--accent); border-color: color-mix(in srgb, var(--accent) 28%, transparent); }
+.fingerprint-verdict > div {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.fingerprint-verdict span {
+  font-size: 12px;
+  opacity: .85;
+}
+.fingerprint-verdict code {
+  padding: 5px 8px;
+  border-radius: var(--r-xs);
+  background: color-mix(in srgb, currentColor 10%, var(--panel));
+  font-family: var(--font-mono);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.fingerprint-highlights {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 10px;
+  padding: 0 22px;
+}
+.fingerprint-score {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--panel-2);
+  color: var(--accent);
+  min-width: 0;
+}
+.fingerprint-score.grade-excellent { color: var(--success); background: var(--success-soft); border-color: color-mix(in srgb, var(--success) 25%, transparent); }
+.fingerprint-score.grade-good { color: var(--accent); background: var(--accent-soft); border-color: color-mix(in srgb, var(--accent) 25%, transparent); }
+.fingerprint-score.grade-fair { color: var(--warn); background: var(--warn-soft); border-color: color-mix(in srgb, var(--warn) 28%, transparent); }
+.fingerprint-score.grade-risk { color: var(--danger); background: var(--danger-soft); border-color: color-mix(in srgb, var(--danger) 28%, transparent); }
+.fingerprint-score-ring {
+  --score: 0;
+  position: relative;
+  width: 48px;
+  height: 48px;
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  padding-top: 12px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: conic-gradient(currentColor calc(var(--score) * 1%), color-mix(in srgb, currentColor 14%, transparent) 0);
+}
+.fingerprint-score-ring::after {
+  content: '';
+  position: absolute;
+  inset: 4px;
+  border-radius: 50%;
+  background: var(--panel);
+}
+.fingerprint-score-ring b,
+.fingerprint-score-ring small { position: relative; z-index: 1; }
+.fingerprint-score-ring b { font-size: 14px; line-height: 1; }
+.fingerprint-score-ring small { font-size: 8px; }
+.fingerprint-score > div:last-child { min-width: 0; display: flex; flex-direction: column; }
+.fingerprint-score > div:last-child small { color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: .04em; }
+.fingerprint-score > div:last-child b { color: currentColor; font-size: 13px; }
+.fingerprint-highlight {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 11px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--panel-2);
+  min-width: 0;
+}
+.fingerprint-highlight > span {
+  width: 32px;
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  border-radius: 9px;
+  color: var(--text-2);
+  background: var(--panel);
+}
+.fingerprint-highlight.accent > span { color: var(--accent); background: var(--accent-soft); }
+.fingerprint-highlight div { min-width: 0; display: flex; flex-direction: column; }
+.fingerprint-highlight small { color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: .04em; }
+.fingerprint-highlight b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+.fingerprint-quality-checks {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 7px;
+  padding: 10px 22px 0;
+}
+.quality-check {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 7px;
+  padding: 8px 9px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-xs);
+  background: var(--panel);
+  min-width: 0;
+}
+.quality-check.pass > svg { color: var(--success); }
+.quality-check.warn > svg { color: var(--warn); }
+.quality-check > span { display: flex; flex-direction: column; min-width: 0; }
+.quality-check > span b { font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.quality-check > span small { color: var(--muted); font-size: 9px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.quality-check > strong { color: var(--muted); font-size: 10px; font-variant-numeric: tabular-nums; }
+.quality-check.pass > strong { color: var(--success); }
+.quality-check.warn > strong { color: var(--warn); }
+.fingerprint-sections {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  padding: 12px 22px 0;
+}
+.fingerprint-section {
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--panel);
+  overflow: hidden;
+}
+.fingerprint-section:last-child { grid-column: 1 / -1; }
+.fingerprint-section h3 {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 0;
+  padding: 9px 11px;
+  font-size: 12px;
+  color: var(--text-2);
+  background: var(--panel-2);
+  border-bottom: 1px solid var(--border);
+}
+.fingerprint-section h3 svg { color: var(--accent); }
+.fingerprint-rows { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.fingerprint-row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 11px;
+  min-width: 0;
+  border-bottom: 1px solid var(--border);
+}
+.fingerprint-row.wide { grid-column: 1 / -1; }
+.fingerprint-row > span { color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: .035em; }
+.fingerprint-row > strong { font-size: 12px; font-weight: 600; overflow-wrap: anywhere; }
+.fingerprint-row > strong.good { color: var(--success); }
+.fingerprint-note {
+  margin: 10px 22px 0;
+  color: var(--muted);
+  font-size: 11px;
+}
+.fingerprint-actions {
+  align-items: center;
+  margin: 14px 0 0;
+  padding: 13px 22px;
+  border-top: 1px solid var(--border);
+  background: var(--panel-2);
+}
+.fingerprint-actions > span {
+  flex: 1;
+  color: var(--muted);
+  font-size: 11px;
+}
+@media (max-width: 760px) {
+  .fingerprint-highlights,
+  .fingerprint-sections,
+  .fingerprint-quality-checks { grid-template-columns: 1fr; }
+  .fingerprint-section:last-child { grid-column: auto; }
+  .fingerprint-verdict { align-items: flex-start; flex-wrap: wrap; }
+  .fingerprint-verdict code { margin-left: 32px; }
 }
 
 /* Avatar tài khoản — tròn, viền màu theo trạng thái */

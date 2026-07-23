@@ -1,4 +1,5 @@
 import type { BrowserContext, Page, Locator } from 'patchright'
+import { openTaskPage } from '../browser/BrowserPages'
 import { existsSync, mkdirSync, statSync } from 'fs'
 import { join } from 'path'
 import { app } from 'electron'
@@ -399,7 +400,7 @@ export async function postTweet(
   const mediaTimeout = hasMedia ? mediaWaitTimeout(mediaPaths!) : UPLOAD_FLOOR_MS
 
   try {
-    page = await context.newPage()
+    page = await openTaskPage(context)
 
     // 1. Vào trang compose
     report('Đang mở trang soạn bài (compose)…')
@@ -754,7 +755,7 @@ export async function deleteTweetsFromProfile(
   let deletedCount = 0
 
   try {
-    page = await context.newPage()
+    page = await openTaskPage(context)
 
     // 1. Vào trang profile
     const cleanHandle = normalizeHandle(handle)
@@ -1069,7 +1070,7 @@ export async function scrollProfileCollectTweetUrls(
   const cache = knownUrls ?? new Set<string>()
 
   try {
-    page = await context.newPage()
+    page = await openTaskPage(context)
     report(`Đang mở trang profile @${cleanHandle}…`)
     await page.goto(`https://x.com/${cleanHandle}`, {
       waitUntil: 'domcontentloaded',
@@ -1259,7 +1260,7 @@ export async function collectTweetContext(
   const CONTEXT_DEADLINE_MS = 55_000
   const ctxDeadline = Date.now() + CONTEXT_DEADLINE_MS
   try {
-    page = await context.newPage()
+    page = await openTaskPage(context)
     // goto chờ 'commit' (nhanh hơn 'domcontentloaded' — chỉ cần điều hướng bắt đầu) + timeout
     // ngắn để không treo ở đây. Bài chính render sau đó, ta chờ ở waitFor bên dưới.
     report('Đang mở bài viết để đọc ngữ cảnh…')
@@ -1442,7 +1443,7 @@ export async function readTweetViews(
   const acc = accountId ?? 'unknown'
   let page: Page | null = null
   try {
-    page = await context.newPage()
+    page = await openTaskPage(context)
     report(`Đang mở bài để đọc lượt xem…`)
     await page.goto(tweetUrl, { waitUntil: 'domcontentloaded', timeout: 30_000 }).catch(() => {})
     await sleep(1500)
@@ -1550,7 +1551,7 @@ export async function crawlNewestOwnPostUrls(
   const seenCanon = new Set<string>()
 
   try {
-    page = await context.newPage()
+    page = await openTaskPage(context)
     report(`Đang mở trang profile @${cleanHandle}…`)
     await page.goto(`https://x.com/${cleanHandle}`, {
       waitUntil: 'domcontentloaded',
@@ -1678,7 +1679,7 @@ export async function commentOnTweet(
   let page: Page | null = null
 
   try {
-    page = await context.newPage()
+    page = await openTaskPage(context)
     report(`Đang mở bài viết ${tweetUrl}…`)
     await page.goto(tweetUrl, { waitUntil: 'domcontentloaded', timeout: 30_000 })
     await sleep(2000)

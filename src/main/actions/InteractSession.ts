@@ -4,6 +4,7 @@ import { generateComment } from '../ai/AiClient'
 import { getAllSettings } from '../db/settings'
 import { countCommentsToday, insertCommentedLink } from '../db/comment_history'
 import { isStopRequested } from '../scheduler/cancel'
+import { openTaskPage } from '../browser/BrowserPages'
 
 // Phiên "tương tác feed" mô phỏng người thật: cuộn feed, thỉnh thoảng like/comment/F5.
 // Chạy theo NGÂN SÁCH THỜI GIAN — lặp tới khi hết thời lượng, mỗi vòng bốc 1 action
@@ -210,7 +211,7 @@ export async function runInteractSession(
   const dailyLimit = getAllSettings().commentDailyLimit
 
   // Mở/lấy page feed rồi vào home.
-  const page = context.pages()[0] ?? (await context.newPage())
+  const page = context.pages()[0] ?? (await openTaskPage(context))
   report('Đang mở feed X…')
   await page.goto('https://x.com/home', { waitUntil: 'domcontentloaded', timeout: 30_000 }).catch(() => {})
   await sleep(2500)
