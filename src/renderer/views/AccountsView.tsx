@@ -33,7 +33,8 @@ import {
   Network,
   RefreshCw,
   LayoutGrid,
-  Rows3
+  Rows3,
+  KeyRound
 } from 'lucide-react'
 import type { Account, AccountInput, AccountActivity, AccountHealth, BrowserEngine, BrowserFingerprintReport, Proxy, Schedule, WebhookTestResult, XProfileInfo } from '@shared/types'
 import { PROXY_LOCAL, PROXY_RANDOM } from '@shared/types'
@@ -109,6 +110,7 @@ export default function AccountsView(props: {
   })
   const [fingerprintAccount, setFingerprintAccount] = useState<Account | null>(null)
   const [migratingSession, setMigratingSession] = useState<string | null>(null)
+  const [authTokenAccount, setAuthTokenAccount] = useState<Account | null>(null)
 
   const refresh = useCallback(async () => {
     const [list, proxList, schedList, activity] = await Promise.all([
@@ -662,6 +664,12 @@ export default function AccountsView(props: {
                   </div>
                   <ActionMenu
                     items={[
+                      {
+                        icon: <KeyRound size={15} />,
+                        label: 'Đăng nhập bằng auth token',
+                        title: `Nhập auth token và mở X bằng ${a.engine === 'camoufox' ? 'Camoufox' : 'Chromium'}`,
+                        onClick: () => setAuthTokenAccount(a)
+                      },
                       ...(a.engine === 'chromium'
                         ? [{
                             icon: migratingSession === a.id
@@ -895,6 +903,84 @@ export default function AccountsView(props: {
           onClose={() => setFingerprintAccount(null)}
         />
       )}
+
+      {authTokenAccount && (
+        <AuthTokenLoginModal
+          account={authTokenAccount}
+          onClose={() => setAuthTokenAccount(null)}
+          onLoggedIn={async () => {
+            setAuthTokenAccount(null)
+            await refresh()
+          }}
+        />
+      )}
+    </div>
+  )
+}
+
+function AuthTokenLoginModal(props: {
+  account: Account
+  onClose: () => void
+  onLoggedIn: () => void
+}): JSX.Element {
+  const { account, onClose, onLoggedIn } = props
+  const [authToken, setAuthToken] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  async function submit(e: React.FormEvent): Promise<void> {
+    e.preventDefault()
+    const token = authToken.trim()
+    if (!token) return
+    setBusy(true)
+    setError(null)
+    try {
+      const result = await window.aviary.browser.loginWithAuthToken(account.id, token)
+      setAuthToken('')
+      alert(result.message)
+      onLoggedIn()
+    } catch (e) {
+      setAuthToken('')
+      setError(formatFingerprintUiError((e as Error).message))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="modal-backdrop" onClick={busy ? undefined : onClose}>
+      <form className="modal modal-sm" onSubmit={submit} onClick={(e) => e.stopPropagation()}>
+        <div className="confirm-head">
+          <span className="confirm-icon auth-token-icon"><KeyRound size={20} /></span>
+          <h2>Đăng nhập bằng auth token</h2>
+        </div>
+        <p className="hint">
+          Aviary sẽ mở <b>{account.engine === 'camoufox' ? 'Camoufox' : 'Chromium'}</b> của tài khoản{' '}
+          <b>{account.label}</b>, nhập cookie trong memory rồi truy cập <b>x.com/home</b>.
+          Aviary không lưu token vào DB, cấu hình hoặc log; trình duyệt sẽ lưu cookie phiên trong profile.
+        </p>
+        <label className="field">
+          <span>Auth token</span>
+          <input
+            type="password"
+            value={authToken}
+            onChange={(e) => setAuthToken(e.target.value)}
+            placeholder="Nhập giá trị cookie auth_token"
+            autoComplete="off"
+            spellCheck={false}
+            autoFocus
+            disabled={busy}
+          />
+        </label>
+        {error && <p className="form-error">{error}</p>}
+        <div className="modal-actions">
+          <button type="button" className="btn" disabled={busy} onClick={onClose}>Huỷ</button>
+          <button type="submit" className="btn primary" disabled={busy || !authToken.trim()}>
+            {busy ? <Loader2 size={15} className="spin" /> : <KeyRound size={15} />}
+            Đăng nhập và mở X
+          </button>
+        </div>
+      </form>
     </div>
   )
 }
@@ -1106,8 +1192,8 @@ function FingerprintModal(props: { account: Account; onClose: () => void }): JSX
 
 function formatFingerprintUiError(message: string): string {
   const cleaned = message
-    .replace(/^Error invoking remote method ['"]browser:fingerprint['"]:\s*/i, '')
-    .replace(/^Error:\s*/i, '')
+    .replace(/^Error invoking remote method ['"][^'"]+['"]:\s*/i, '')
+    .replace(/^(?:Error:\s*)+/i, '')
     .split(/\r?\n|Browser logs:|Call log:/)[0]
     .trim()
   return cleaned || 'Không đọc được fingerprint từ trình duyệt.'

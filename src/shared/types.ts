@@ -89,6 +89,12 @@ export interface BrowserSessionMigrationResult {
   message: string
 }
 
+export interface BrowserAuthTokenLoginResult {
+  ok: boolean
+  destinationUrl: string | null
+  message: string
+}
+
 export interface Account {
   id: string
   label: string
@@ -525,6 +531,7 @@ export const IpcChannels = {
   browserStatus: 'browser:status',
   browserFingerprint: 'browser:fingerprint',
   browserMigrateSession: 'browser:migrateSession',
+  browserLoginWithAuthToken: 'browser:loginWithAuthToken',
   navBack: 'app:navBack',
   settingsGet: 'settings:get',
   settingsSave: 'settings:save',
@@ -597,6 +604,7 @@ export interface AviaryApi {
     // refresh=true: user chủ động bấm "Kiểm tra lại".
     fingerprint: (accountId: string, refresh?: boolean) => Promise<BrowserFingerprintReport>
     migrateSession: (accountId: string) => Promise<BrowserSessionMigrationResult>
+    loginWithAuthToken: (accountId: string, authToken: string) => Promise<BrowserAuthTokenLoginResult>
     onStatusChanged: (cb: (accountId: string, open: boolean) => void) => () => void
   }
   settings: {

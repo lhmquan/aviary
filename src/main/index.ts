@@ -46,7 +46,10 @@ function createWindow(): BrowserWindow {
     }
   })
 
-  win.on('ready-to-show', () => win.show())
+  win.on('ready-to-show', () => {
+    win.maximize()
+    win.show()
+  })
 
   // Nhấn X = thu xuống tray (không thoát). Chỉ thoát thật khi isQuitting=true
   // (từ tray "Thoát", relaunch, update install).

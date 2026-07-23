@@ -5,6 +5,20 @@ Mọi thay đổi đáng chú ý của Aviary được ghi tại đây.
 Định dạng theo [Keep a Changelog](https://keepachangelog.com/vi/1.0.0/),
 phiên bản theo [Semantic Versioning](https://semver.org/lang/vi/).
 
+## [0.22.1] - 2026-07-23
+
+### Added
+- **Đăng nhập X bằng auth token theo từng tài khoản**: thêm action nhập token, tự mở đúng engine Chromium/Camoufox đã cấu hình, thay cookie phiên và điều hướng tới `x.com/home`. Chỉ cập nhật trạng thái tài khoản sau khi xác nhận X Home đã đăng nhập.
+- **Nhận nhiều định dạng auth token**: hỗ trợ giá trị token thuần, `auth_token=...`, cookie header đầy đủ, JSON/DevTools và token được bọc bằng dấu nháy.
+
+### Changed
+- **Aviary tự maximize khi khởi động** để giao diện sử dụng toàn bộ vùng làm việc ngay khi mở app.
+- Auth token không được ghi vào DB, cấu hình hoặc log; browser chỉ lưu cookie phiên trong profile tương ứng để duy trì đăng nhập.
+
+### Fixed
+- **Auth token hợp lệ bị từ chối** khi user dán cookie có dấu `;`, khoảng trắng hoặc kèm `ct0`.
+- **Thông báo lỗi IPC khó đọc** trong modal auth token: loại bỏ tiền tố kỹ thuật `Error invoking remote method` và `Error:` trước khi hiển thị.
+
 ## [0.22.0] - 2026-07-23
 
 ### Tổng quan

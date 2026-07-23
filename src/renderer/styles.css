@@ -999,6 +999,11 @@ nav {
   color: var(--warn);
 }
 
+.confirm-icon.auth-token-icon {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
 /* ---------- Form ---------- */
 .field {
   display: flex;

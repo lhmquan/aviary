@@ -9,6 +9,7 @@ import {
   PROXY_LOCAL,
   PROXY_RANDOM,
   type Account,
+  type BrowserAuthTokenLoginResult,
   type BrowserFingerprintReport,
   type BrowserSessionMigrationResult
 } from '../../shared/types'
@@ -385,6 +386,75 @@ class BrowserManager {
     } catch (error) {
       await this.closeProfile(account.id).catch(() => {})
       throw new Error(formatSessionMigrationError(error))
+    }
+  }
+
+  async loginXWithAuthToken(
+    account: Account,
+    rawAuthToken: string
+  ): Promise<BrowserAuthTokenLoginResult> {
+    const authToken = extractAuthToken(rawAuthToken)
+    if (!authToken) {
+      throw new Error(
+        'Không tìm thấy auth token hợp lệ. Có thể nhập giá trị token, auth_token=..., hoặc toàn bộ cookie header.'
+      )
+    }
+
+    // Aviary không ghi token vào DB/cấu hình/log; browser tự lưu cookie phiên trong profile.
+    // Mở lại để profile đang chạy không tiếp tục dùng cookie cũ trong lúc thay phiên đăng nhập.
+    await this.closeProfile(account.id)
+    try {
+      await this.openProfile(account, {
+        headlessOverride: false,
+        skipInitialNavigation: true
+      })
+      const context = this.getContext(account.id)
+      if (!context) throw new Error('Không mở được profile để đăng nhập X.')
+
+      const oldCookies = await context.cookies(['https://x.com', 'https://twitter.com'])
+      for (const cookie of oldCookies) {
+        if (cookie.name === 'auth_token' || cookie.name === 'ct0') {
+          await context.clearCookies({ name: cookie.name, domain: cookie.domain, path: cookie.path })
+        }
+      }
+      await context.addCookies([
+        {
+          name: 'auth_token',
+          value: authToken,
+          domain: '.x.com',
+          path: '/',
+          httpOnly: true,
+          secure: true,
+          sameSite: 'Lax'
+        }
+      ])
+
+      const page = context.pages()[0] ?? (await openTaskPage(context))
+      await page.goto('https://x.com/home', {
+        waitUntil: 'domcontentloaded',
+        timeout: 30_000
+      })
+      const loggedIn = await page
+        .locator('[data-testid="SideNav_AccountSwitcher_Button"]')
+        .waitFor({ state: 'visible', timeout: 20_000 })
+        .then(() => true)
+        .catch(() => false)
+      if (!loggedIn) {
+        const url = page.url()
+        throw new Error(
+          /\/i\/flow\/login|\/account\/access/i.test(url)
+            ? 'X chưa chấp nhận auth token hoặc đang yêu cầu xác minh. Profile vẫn được mở để bạn kiểm tra.'
+            : 'Không xác nhận được trạng thái đăng nhập tại X Home. Profile vẫn được mở để bạn kiểm tra.'
+        )
+      }
+
+      return {
+        ok: true,
+        destinationUrl: page.url(),
+        message: `Đã đăng nhập X bằng auth token trên ${account.engine === 'camoufox' ? 'Camoufox' : 'Chromium'}.`
+      }
+    } catch (error) {
+      throw new Error(formatAuthTokenLoginError(error, authToken))
     }
   }
 
@@ -904,6 +974,35 @@ function formatSessionMigrationError(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error)
   const firstLine = message.split(/\r?\n|Browser logs:|Call log:/)[0].trim()
   return firstLine || 'Không chuyển được phiên đăng nhập sang Camoufox.'
+}
+
+function formatAuthTokenLoginError(error: unknown, authToken: string): string {
+  const message = error instanceof Error ? error.message : String(error)
+  const firstLine = message
+    .replaceAll(authToken, '[auth_token]')
+    .split(/\r?\n|Browser logs:|Call log:/)[0]
+    .trim()
+  return firstLine || 'Không đăng nhập được X bằng auth token.'
+}
+
+function extractAuthToken(raw: unknown): string | null {
+  if (typeof raw !== 'string') return null
+  const input = raw.trim()
+  if (!input) return null
+
+  // Nhận cookie header như "auth_token=...; ct0=..." và chuỗi export từ DevTools.
+  const named = input.match(
+    /(?:^|[;,\s{])["']?auth_token["']?\s*[=:]\s*(?:"([^"]+)"|'([^']+)'|([^;\s,}]+))/i
+  )
+  const devtoolsRow = input.match(/(?:^|\s)auth_token\s+(?:"([^"]+)"|'([^']+)'|([^;\s,}]+))/i)
+  const candidate = named
+    ? named[1] ?? named[2] ?? named[3]
+    : devtoolsRow
+      ? devtoolsRow[1] ?? devtoolsRow[2] ?? devtoolsRow[3]
+      : input.replace(/^["']|["']$/g, '')
+
+  const token = candidate.trim()
+  return token && !/[\s;,}]/.test(token) ? token : null
 }
 
 function parseStoredCamoufoxIdentity(raw: string | null): StoredCamoufoxIdentity | null {

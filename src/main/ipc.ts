@@ -188,6 +188,17 @@ export function registerIpc(): void {
     return browserManager.migrateXSessionToCamoufox(account)
   })
 
+  ipcMain.handle(
+    IpcChannels.browserLoginWithAuthToken,
+    async (_e, accountId: string, authToken: string) => {
+      const account = getAccount(accountId)
+      if (!account) throw new Error(`Account không tồn tại: ${accountId}`)
+      const result = await browserManager.loginXWithAuthToken(account, authToken)
+      setAccountStatus(accountId, 'logged_in')
+      return result
+    }
+  )
+
   ipcMain.handle(IpcChannels.settingsGet, () => getAllSettings())
 
   ipcMain.handle(IpcChannels.settingsSave, (_e, patch: Partial<AppSettings>) => saveSettings(patch))
