@@ -187,6 +187,145 @@ tz: Asia/Ho_Chi_Minh   ← máy thật, vì CHƯA có proxy (geoip cần proxy)
 
 **CÒN LẠI để quyết định GO/NO-GO**: chạy PoC với **proxy US live** (env TEST_PROXY) + `geoip:true` + `block_webrtc:true` + `viewport:null`, xác nhận pixelscan → Consistent, iphey → Trustworthy, WebRTC không lộ. Nếu đạt → dựng app đầy đủ.
 
+### 12b. PoC VỚI PROXY (2026-07-21, proxy US live qua env)
+
+**BƯỚC NGOẶT — geoip + proxy làm fingerprint TỰ KHỚP:**
+```
+ua: Firefox/152.0 (Windows NT 10.0; Win64; x64)   ← ĐÃ ĐỔI Mac→Windows! khớp proxy US
+platform: Win32   cores: 8
+tz: America/Chicago   ← TỰ động khớp proxy US (geoip hoạt động, hết Asia/Ho_Chi_Minh)
+webdriver: false   webglVendor: Google Inc. (AMD)   webglRenderer: ANGLE AMD Radeon R9 200
+canvasNativeToDataURL: true   canvasHash ổn định: true (8d57ab22)
+```
+→ Đây chính là điều local KHÔNG có: **UA + timezone + geo giờ NHẤT QUÁN với proxy**. Camoufox tự chọn OS profile khớp proxy (US → Windows US điển hình). Đây là cái pixelscan/iphey cần.
+
+**pixelscan (proxy)**: chụp GIỮA lúc scan (proxy chậm, 12s chưa xong) — kịp thấy "Firefox 152 on **Windows**", "No automated behavior detected", Canvas/WebGL/AudioContext hash native. Verdict cuối CHƯA chụp được.
+**browserscan (proxy)**: kịp thấy **"fingerprint authenticity: 100%"** (cao hơn local 92%!), nhưng field khác còn đang load.
+**iphey + creepjs**: timeout 45s (proxy chậm, KHÔNG phải lỗi Camoufox).
+
+**VẤN ĐỀ DUY NHẤT: proxy chậm** → site scan chưa kịp xong trong thời gian chờ. Đang chạy lại vòng "slow" (chờ 30-35s/site) để chụp verdict cuối. Fingerprint cốt lõi đã chứng minh Camoufox làm đúng.
+
+### 12c. PoC ĐO SẠCH — OS ghim Windows + profile cố định + đợi scan xong (2026-07-21)
+
+**BÀI HỌC QUAN TRỌNG (2 lỗi phương pháp đã sửa):**
+1. **Camoufox random OS mỗi profile mới**: lần chạy `rm -rf profile` → có lần bốc Mac (WebGL Apple M1, screen Retina) lệch máy Windows → tăng nguy cơ "masking". **FIX: `os:'windows'` + profile CỐ ĐỊNH** (như app thật: 1 account = 1 fingerprint ổn định).
+2. **Text-match verdict = DƯƠNG TÍNH GIẢ**: grep "consistent/masking" trong `body.innerText` bắt nhầm chữ trong FAQ/mô tả trang, KHÔNG phải verdict thật. **Phải ĐỌC ẢNH** để xác nhận. (User đã cảnh báo: điểm khi đang load nhảy lên rồi tụt — không được đoán.)
+
+**CORE (OS ghim Windows, proxy US Indiana):**
+```
+ua: Firefox/152.0 (Windows NT 10.0; Win64; x64)   platform: Win32   cores: 16
+tz: America/Chicago (khớp proxy)   webdriver: false   canvasNative: true
+```
+
+**browserscan — LOAD XONG HOÀN TOÀN, verdict thật đầy đủ (đọc từ ảnh clean-browserscan.png):**
+- ✅ **fingerprint authenticity: 100%**
+- ✅ **Bot Detection: No Detection**
+- ✅ UA/platform/header nhất quán Firefox 152 + Windows 10
+- ✅ **timezone khớp 3 chiều**: IP Time Zone = Location (Indiana/USA) = JS Time Zone = America/Chicago
+- ✅ **WebRTC: disabled** (block_webrtc OK), STUN=0, IP Count 7d=0 → KHÔNG lộ IP thật
+- ✅ **DNS Leak = 103.105.164.144** (đúng IP proxy, không lộ DNS máy)
+- ✅ WebGL Intel HD (khớp Windows), Canvas native — authenticity vẫn 100%
+
+**pixelscan — KHÔNG scan xong dù đợi 300s (đọc từ ảnh clean-pixelscan.png):** vẫn "scanning..." + Location/Proxy/Fingerprint panel "Collecting Data...". Phần đã load: UA Win32 nhất quán, WebGL Intel (không còn Apple M1). → **Nguyên nhân: pixelscan gọi "Check Geo API" bên thứ 3 qua proxy datacenter chậm/bị chặn → treo. Đây là hạn chế của việc ĐO qua proxy datacenter, KHÔNG phải hạn chế Camoufox.** Chưa lấy được verdict cuối pixelscan.
+
+**iphey — không load được verdict** (widget "Your Digital Identity" trống, chỉ hiện landing). Cần điều tra riêng (có thể chặn Firefox headful qua proxy DC, hoặc cần tương tác).
+
+**KẾT LUẬN 12c**: browserscan (bằng chứng LOAD XONG duy nhất) cho **100% authenticity + bot=No + WebRTC/DNS/timezone khớp proxy hoàn hảo** — vượt trội. Nhưng **CHƯA có verdict pixelscan/iphey hoàn chỉnh** vì proxy datacenter quá chậm cho Check-Geo-API của các site đó. Để chốt GO/NO-GO cần: (a) proxy residential nhanh, HOẶC (b) chấp nhận browserscan 100% + core fingerprint là đủ bằng chứng Camoufox thắng rebrowser+Apify (canvas native + WebRTC disabled + geo khớp — những thứ rebrowser KHÔNG làm được).
+
+### 12d. XÁC NHẬN CUỐI + QUYẾT ĐỊNH GO (2026-07-21, user đọc ảnh browserscan tận mắt)
+
+User tự xem cửa sổ Camoufox headful đang mở, chụp ảnh browserscan load XONG HẲN. Đọc trực tiếp từ ảnh (KHÔNG đoán):
+- **fingerprint authenticity: 100%**
+- **Bot Detection: No Detection**
+- **Proxy: No** ← browserscan KHÔNG phát hiện đây là kết nối qua proxy (cực kỳ quan trọng cho X)
+- Platform: Windows 10 · Browser: Firefox 152.0 · IP Time Zone: America/Chicago
+- Location: 38°N 87°W (Indiana/USA) · language: en-US · Postal 47649 — khớp IP hoàn toàn
+- **DNS Leak: 103.105.164.144** = đúng IP proxy, không lộ DNS máy thật
+
+**pixelscan/iphey treo (không đỏ)**: nguyên nhân là (1) 2 site gọi geo-API bên thứ 3 qua proxy datacenter chậm → treo "Collecting Data"; (2) `block_webrtc:true` làm probe WebRTC của chúng chờ vô hạn. **Treo ≠ đỏ** — nếu fingerprint sai chúng đỏ NGAY (như bản rebrowser trước báo "Masking" tức thì). browserscan tự chấm tại chỗ nên chạy xong.
+
+**BÀI HỌC (đã sửa)**: đừng đoán UI site test (CreepJS trust score KHÔNG ở góc trên — tôi đoán sai, user bắt lỗi). Soi element thật / đọc ảnh trước.
+
+**⇒ QUYẾT ĐỊNH: GO.** Camoufox thắng rõ rebrowser+Apify ở 3 điểm cốt lõi (canvas native, WebRTC disabled, geo/proxy tự khớp → "Proxy: No"). Đủ bằng chứng để dựng app.
+
+**HAI QUYẾT ĐỊNH KIẾN TRÚC (user duyệt 2026-07-21):**
+1. **2 engine trong 1 app** (KHÔNG thay hẳn): giữ Chromium/rebrowser mặc định cho account cũ, thêm Camoufox làm tuỳ chọn per-account. An toàn — account cũ không gãy, account mới test Camoufox.
+2. **Đóng gói: tải lần chạy đầu** (KHÔNG bundle): installer nhẹ như hiện tại; lần đầu tự tải Camoufox ~470MB + GeoIP 66MB về cache máy (`CAMOUFOX_INSTALL_DIR`), có thanh tiến trình.
+
+---
+
+## 13. PoC TÍCH HỢP NHỎ — 2 engine trong app thật (2026-07-21, nhánh feat/camoufox-poc)
+
+**Mục tiêu**: mở được 1 account Camoufox TỪ TRONG app (npm run dev), lộ sớm rủi ro native module — TRƯỚC khi làm packaging.
+
+**Rủi ro native đã ĐO & LOẠI (không đoán):**
+- `camoufox-js@0.11.2` cài chung app: **better-sqlite3 VẪN 12.11.1** (không bị đổi version) → không conflict. App đã dùng better-sqlite3 build cho Electron 33 (ABI 130) OK → dùng chung được.
+- `playwright-core` **pin cứng `1.53.1`** (bỏ `^`) trong package.json → tránh version drift (bản mới gửi field Juggler Camoufox không nhận).
+- `maxmind@5.0.6` (geoip) = **pure-JS, KHÔNG native** → không lo ABI.
+- Binary Camoufox + `GeoLite2-City.mmdb` đã có sẵn trong cache `~/AppData/Local/camoufox`.
+- `npm run build` + `npm run typecheck`: **SẠCH** cả node + web + renderer. camoufox-js bundle vào main process không lỗi.
+
+**Code đã thêm (kiến trúc 2 engine, KHÔNG đụng luồng Chromium cũ):**
+| File | Thay đổi |
+|------|----------|
+| `src/shared/types.ts` | Thêm `type BrowserEngine = 'chromium' \| 'camoufox'` + `Account.engine` + `AccountInput.engine` |
+| `src/main/db/index.ts` | Migration `addColumnIfMissing(accounts, engine, "TEXT NOT NULL DEFAULT 'chromium'")` — DB cũ tự nhận chromium |
+| `src/main/db/accounts.ts` | Đọc/ghi cột engine + hàm `normalizeEngine()` (chỉ 'camoufox' hợp lệ, còn lại → chromium) |
+| `src/main/browser/CamoufoxLauncher.ts` | **MỚI** — `launchCamoufox()`: Camoufox({os:windows, block_webrtc, geoip nếu có proxy, block_images nếu blockMedia, persistent_context}). Ép kiểu Browser→BrowserContext (cùng shape Playwright). |
+| `src/main/browser/BrowserManager.ts` | `openProfile` RẼ theo `account.engine`: camoufox → launchCamoufox (bỏ CDP media block); chromium → NGUYÊN luồng patchright cũ |
+| `src/renderer/views/AccountsView.tsx` | Dropdown chọn engine trong form account (mặc định Chromium) + hint Camoufox |
+
+**Điểm rẽ engine DUY NHẤT = `BrowserManager.openProfile`** (mọi thứ đã đi qua browserManager). XActions/InteractSession chỉ dùng `type` Playwright → tương thích Firefox không cần sửa.
+
+**LỖI RUNTIME ĐÃ GẶP & FIX (2026-07-21)**: chạy `npm run dev` → `ERR_REQUIRE_ESM: require() of ES Module camoufox-js/dist/index.js not supported`.
+- **Nguyên nhân**: `camoufox-js` là **ESM-only**; app build ra **CommonJS** (out/main dùng `require`). `externalizeDepsPlugin()` giữ camoufox-js là external → bundle ra `require('camoufox-js')` → vỡ.
+- **Bẫy phụ**: đổi sang `import()` động KHÔNG đủ — với `tsconfig module=CommonJS`, tsc HẠ CẤP `import()` thành `require()` → vẫn vỡ.
+- **FIX**: dùng `const importESM = new Function('specifier','return import(specifier)')` để giữ nguyên `import()` runtime (tsc không đụng chuỗi trong Function) + cache module. Xác nhận bundle: không còn `require('camoufox-js')`, chỉ còn `importESM("camoufox-js")`.
+- **BÀI HỌC packaging**: mọi ESM-only dep trong main process CommonJS phải load qua `importESM` helper này, KHÔNG import tĩnh.
+
+**TÁCH PROFILE THEO ENGINE (2026-07-21, user duyệt)**: profile Chromium & Camoufox ĐỊNH DẠNG KHÁC NHAU (Chromium: Default/Network/Cookies SQLite mã hoá DPAPI; Firefox/Camoufox: cookies.sqlite + sessionstore) → KHÔNG lẫn được.
+- `BrowserManager.openProfile`: `profileDir = engine==='camoufox' ? join(account.profileDir,'camoufox') : account.profileDir`. Chromium giữ thư mục gốc (không phá session cũ), Camoufox dùng thư mục con riêng.
+- Đổi engine account đã có → **phải đăng nhập X lại** (session không chuyển Chromium↔Firefox). Đã thêm `confirm()` cảnh báo trong form trước khi lưu.
+- **Binary tải KHÔNG qua proxy**: `pkgman.js` gọi `fetch()` trực tiếp từ mạng máy (không đi qua proxy account). Cache chung 1 máy tại `~/AppData/Local/camoufox` (INSTALL_DIR), tải ĐÚNG 1 LẦN — mọi account camoufox dùng chung binary, account sau KHÔNG tải lại. Đã sửa hint UI cho đúng.
+
+**CÒN LẠI ĐỂ CHỐT PoC**: user chạy lại `npm run dev`, tạo/sửa 1 account engine=Camoufox, bấm Mở profile → xác nhận cửa sổ Firefox mở x.com được DƯỚI ELECTRON. Nếu OK → làm tiếp packaging + regression test action X trên Firefox.
+
+### 13b. PoC dưới Electron PASS + hardening runtime (2026-07-21)
+
+User đã mở account Camoufox thành công từ app. Các vấn đề runtime quan sát được và cách xử lý:
+- **Vòng tròn đỏ + thao tác chậm**: do `humanize:true` (Camoufox hiển thị con trỏ mô phỏng và kéo dài mỗi lần di chuột tới ~1,5s). Đã tắt; Playwright vẫn click/type bình thường nhưng không có overlay đỏ và bớt độ trễ.
+- **Cửa sổ 1280x720, không phủ màn hình**: launcher giờ lấy `screen.getPrimaryDisplay().workAreaSize` để sinh fingerprint/window theo vùng làm việc thật.
+- **Ảnh bị chặn nhưng video vẫn phát**: `block_images` chỉ ảnh. Đã bổ sung route chặn `video.twimg.com` + HLS/DASH (`.m3u8/.ts/.m4s/.mpd/.mp4`), không chặn `blob:` preview hoặc `upload.twitter.com`.
+- **Camoufox nặng/chậm hơn Chromium**: Camoufox mặc định tắt cache. Khi không bật chặn media, launcher giờ bật `enable_cache`; khi bật chặn media, Playwright route buộc tắt cache nên vẫn có đánh đổi hiệu năng để chặn video.
+- **Race tải binary lần đầu trong camoufox-js**: `camoufoxPath()` gọi install fire-and-forget, có thể launch trước khi tải xong. Aviary giờ tải có `await`, stream file ~470MB ra temp (không giữ trong RAM), khóa dùng chung tránh nhiều account tải trùng, gửi % tiến trình về terminal UI, rồi mới launch. GeoIP cũng được chuẩn bị có await khi account dùng proxy.
+- **Đóng gói Windows**: `npm run build:win` PASS; electron-builder rebuild `better-sqlite3` cho Electron; installer 112,5MB (không bundle binary Camoufox); `app.asar` có đủ `camoufox-js` + `playwright-core`; bản `win-unpacked` smoke test chạy được với user-data tạm.
+
+**BUG AN TOÀN ACCOUNT QUAN TRỌNG ĐÃ SỬA**: `camoufox-js` mặc định sinh fingerprint + canvas/audio/font seed MỚI ở mỗi lần launch, kể cả cùng `user_data_dir`. Điều này làm X thấy account đổi thiết bị liên tục. Aviary giờ sinh identity Camoufox đúng 1 lần, lưu envelope versioned trong `accounts.fingerprint`, rồi tái dùng nguyên fingerprint và seed ở mọi lần mở sau.
+
+**CÒN LẠI**: restart main process để test launcher mới trên profile thật; regression action X có kiểm soát (text, ảnh, nhiều ảnh, video, thread, đọc view, bình luận, xoá). Không tự chạy các action tạo/xoá dữ liệu thật khi chưa có account test/nội dung test được user cho phép.
+
+### 13c. Kết quả tối ưu + regression thực tế (2026-07-22)
+
+**Giao diện/runtime đã PASS trên account Camoufox thật:**
+- Vòng tròn đỏ biến mất; dùng `humanize:0.25` để giữ quỹ đạo chuột nhẹ nhưng `showcursor:false`.
+- Nút Back Firefox hoạt động lại nhờ luôn bật cache/session history.
+- Video feed bị chặn thành công khi bật chặn media.
+- Aviary không còn Not Responding trong lúc mở profile: Camoufox launch được tuần tự; IP proxy đã check được lấy từ DB thay vì gọi lại dịch vụ ngoài mỗi lần.
+- Full-screen/dải đen đã sửa đúng gốc: Windows scale 125%, Playwright khóa viewport mặc định `1280x720` dù native window `1920x1020`. Thêm `viewport:null`, fingerprint screen/window theo physical pixel và native maximize. Số đo sau sửa: `inner 1536x760, outer 1920x1020, screen 1920x1080, DPR 1.25`; dải đen hết.
+
+**Bảo vệ khi chạy nhiều profile:**
+- Một Camoufox quan sát được khoảng 10 process và ~1,07GB working set trong lần đo trước tối ưu.
+- Launcher chỉ khởi tạo 1 Camoufox tại một thời điểm để tránh burst CPU/RAM.
+- Tối đa 3 Camoufox mở đồng thời và từ chối mở thêm nếu RAM trống <1,25GB. Thông báo nêu rõ số profile + RAM trống thay vì để Windows pagefile làm treo app.
+- Máy test 15,9GB RAM nhưng có lúc chỉ còn 1,6–3,4GB trống khi chưa mở Camoufox: thực tế chỉ nên chạy 1–2 Camoufox đồng thời trên máy này. 3 cần đóng app khác; 5 không khuyến nghị.
+
+**Fingerprint ổn định:** envelope nâng lên version 3, lưu fingerprint BrowserForge + canvas/audio/font seed + physical screen/window trong `accounts.fingerprint`. Cùng account tái dùng nguyên identity; chỉ sinh lại khi schema đổi hoặc màn hình vật lý đổi.
+
+**Regression action X:**
+- Pipeline đăng đi qua mở profile, composer/upload/submit bình thường tới bước X xử lý request.
+- X từ chối submit với cảnh báo `This request looks like it might be automated...`; đây là anti-spam server-side, có thể liên quan trust account/proxy/hành vi, không phải selector lỗi. Đã dừng thử lại để tránh tăng rủi ro lock.
+- Vì không tạo được bài test, chưa chạy tiếp comment/xóa bài test. Không đánh dấu text/ảnh/video/thread/comment/delete là PASS cho tới khi test bằng account/proxy có trust phù hợp.
+
 ---
 
 ## 10. Lệnh & lưu ý build

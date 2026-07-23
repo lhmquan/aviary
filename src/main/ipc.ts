@@ -176,6 +176,18 @@ export function registerIpc(): void {
     open: browserManager.isOpen(accountId)
   }))
 
+  ipcMain.handle(IpcChannels.browserFingerprint, async (_e, accountId: string, refresh = false) => {
+    const account = getAccount(accountId)
+    if (!account) throw new Error(`Account không tồn tại: ${accountId}`)
+    return browserManager.getFingerprint(account, refresh)
+  })
+
+  ipcMain.handle(IpcChannels.browserMigrateSession, async (_e, accountId: string) => {
+    const account = getAccount(accountId)
+    if (!account) throw new Error(`Account không tồn tại: ${accountId}`)
+    return browserManager.migrateXSessionToCamoufox(account)
+  })
+
   ipcMain.handle(IpcChannels.settingsGet, () => getAllSettings())
 
   ipcMain.handle(IpcChannels.settingsSave, (_e, patch: Partial<AppSettings>) => saveSettings(patch))

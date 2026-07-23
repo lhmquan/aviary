@@ -24,9 +24,18 @@ import {
   FileText,
   Search,
   AlertTriangle,
-  AlertCircle
+  AlertCircle,
+  Fingerprint,
+  ShieldCheck,
+  ShieldAlert,
+  Cpu,
+  Monitor,
+  Network,
+  RefreshCw,
+  LayoutGrid,
+  Rows3
 } from 'lucide-react'
-import type { Account, AccountInput, AccountActivity, AccountHealth, Proxy, Schedule, WebhookTestResult, XProfileInfo } from '@shared/types'
+import type { Account, AccountInput, AccountActivity, AccountHealth, BrowserEngine, BrowserFingerprintReport, Proxy, Schedule, WebhookTestResult, XProfileInfo } from '@shared/types'
 import { PROXY_LOCAL, PROXY_RANDOM } from '@shared/types'
 
 const STATUS_LABEL: Record<Account['status'], string> = {
@@ -44,6 +53,9 @@ const KIND_LABEL: Record<string, string> = {
   comment: 'Bình luận',
   interact: 'Tương tác'
 }
+
+type AccountViewMode = 'cards' | 'rows'
+const ACCOUNT_VIEW_MODE_KEY = 'aviary-account-view-mode'
 
 // Thời gian đã trôi kể từ mốc ts tới hiện tại, dạng ngắn gọn (s/m/h/d).
 function timeSince(ts: number, now: number): string {
@@ -91,6 +103,12 @@ export default function AccountsView(props: {
   const [tagFilters, setTagFilters] = useState<Set<'scheduled' | 'headless'>>(new Set())
   // Lọc theo sức khoẻ tài khoản (từ activityMap): 'all' | 'ok' | 'error' | 'abnormal'.
   const [healthFilter, setHealthFilter] = useState<string>('all')
+  const [viewMode, setViewMode] = useState<AccountViewMode>(() => {
+    const saved = localStorage.getItem(ACCOUNT_VIEW_MODE_KEY)
+    return saved === 'rows' ? 'rows' : 'cards'
+  })
+  const [fingerprintAccount, setFingerprintAccount] = useState<Account | null>(null)
+  const [migratingSession, setMigratingSession] = useState<string | null>(null)
 
   const refresh = useCallback(async () => {
     const [list, proxList, schedList, activity] = await Promise.all([
@@ -253,6 +271,25 @@ export default function AccountsView(props: {
     }
   }
 
+  async function handleMigrateSession(a: Account): Promise<void> {
+    const ok = confirm(
+      `Chuyển phiên X của "${a.label}" từ Chromium sang Camoufox?\n\n` +
+        `Aviary sẽ đọc ct0 + auth_token trong memory, đóng Chromium, import vào Camoufox rồi mở X. ` +
+        `Token không được lưu hoặc hiển thị. Thiết lập engine vẫn giữ Chromium cho tới khi bạn xác nhận Camoufox đã vào đúng tài khoản.`
+    )
+    if (!ok) return
+    setMigratingSession(a.id)
+    try {
+      const result = await window.aviary.browser.migrateSession(a.id)
+      alert(result.message)
+      await refresh()
+    } catch (e) {
+      alert(formatFingerprintUiError((e as Error).message))
+    } finally {
+      setMigratingSession(null)
+    }
+  }
+
   // ---- Bulk actions ----
   function toggleSelect(id: string): void {
     setSelectedIds((prev) => {
@@ -344,6 +381,11 @@ export default function AccountsView(props: {
     setHealthFilter('all')
   }
 
+  function changeViewMode(mode: AccountViewMode): void {
+    setViewMode(mode)
+    localStorage.setItem(ACCOUNT_VIEW_MODE_KEY, mode)
+  }
+
   // Số lượng tài khoản theo từng mức sức khoẻ (cho badge trên chip lọc).
   const healthCounts = useMemo(() => {
     const c = { ok: 0, error: 0, abnormal: 0 }
@@ -395,6 +437,27 @@ export default function AccountsView(props: {
         <span className="badge count-badge">
           {isFiltering ? `${filteredAccounts.length}/${accounts.length}` : accounts.length} tài khoản
         </span>
+
+        <div className="account-view-switch" role="group" aria-label="Kiểu hiển thị tài khoản">
+          <button
+            className={viewMode === 'cards' ? 'active' : ''}
+            title="Xem dạng thẻ"
+            aria-pressed={viewMode === 'cards'}
+            onClick={() => changeViewMode('cards')}
+          >
+            <LayoutGrid size={14} />
+            <span>Thẻ</span>
+          </button>
+          <button
+            className={viewMode === 'rows' ? 'active' : ''}
+            title="Xem dạng hàng ngang"
+            aria-pressed={viewMode === 'rows'}
+            onClick={() => changeViewMode('rows')}
+          >
+            <Rows3 size={14} />
+            <span>Hàng ngang</span>
+          </button>
+        </div>
 
         {filteredAccounts.length > 0 && (
           <label className="select-all-check">
@@ -526,7 +589,7 @@ export default function AccountsView(props: {
           </button>
         </div>
       ) : (
-        <div className="account-grid">
+        <div className={`account-grid ${viewMode}`}>
           {filteredAccounts.map((a) => {
             const isOpen = openMap[a.id]
             const proxyMissing =
@@ -545,7 +608,7 @@ export default function AccountsView(props: {
             return (
               <div
                 key={a.id}
-                className={`account-card health-${health}${isSelected ? ' row-selected' : ''}`}
+                className={`account-card${viewMode === 'rows' ? ' account-row' : ''} health-${health}${isSelected ? ' row-selected' : ''}`}
               >
                 {/* ---- Header: checkbox + avatar + tên + menu ---- */}
                 <div className="account-card-header">
@@ -564,10 +627,18 @@ export default function AccountsView(props: {
                       <span className="avatar-fallback">{initial}</span>
                     )}
                   </span>
+                  <BrowserEngineLogo engine={a.engine} />
                   <span className="account-name" title={a.label}>{a.label}</span>
                   <HealthBadge health={act?.health ?? 'ok'} reason={act?.reason ?? null} />
                   {/* Nút nhanh ngoài card: chạy ngầm + test webhook (icon + tooltip) */}
                   <div className="card-quick-actions">
+                    <button
+                      className="btn icon-only ghost fingerprint-trigger"
+                      title="Kiểm tra fingerprint và IP thực tế"
+                      onClick={() => setFingerprintAccount(a)}
+                    >
+                      <Fingerprint size={16} />
+                    </button>
                     <button
                       className={`btn icon-only ghost${a.headless ? ' active' : ''}`}
                       title={
@@ -591,6 +662,17 @@ export default function AccountsView(props: {
                   </div>
                   <ActionMenu
                     items={[
+                      ...(a.engine === 'chromium'
+                        ? [{
+                            icon: migratingSession === a.id
+                              ? <Loader2 size={15} className="spin" />
+                              : <Fingerprint size={15} />,
+                            label: 'Chuyển phiên sang Camoufox',
+                            title: 'Import ct0 + auth_token trong memory rồi xác nhận trước khi đổi engine',
+                            disabled: migratingSession === a.id,
+                            onClick: () => handleMigrateSession(a)
+                          }]
+                        : []),
                       {
                         icon: <Pencil size={15} />,
                         label: 'Sửa',
@@ -806,8 +888,241 @@ export default function AccountsView(props: {
           onConfirm={() => handleClose(confirmClose)}
         />
       )}
+
+      {fingerprintAccount && (
+        <FingerprintModal
+          account={fingerprintAccount}
+          onClose={() => setFingerprintAccount(null)}
+        />
+      )}
     </div>
   )
+}
+
+function BrowserEngineLogo(props: { engine: BrowserEngine }): JSX.Element {
+  if (props.engine === 'camoufox') {
+    return (
+      <span className="browser-engine-logo camoufox" title="Camoufox (Firefox anti-detect)">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path fill="#ff8a3d" d="M19.7 5.1c-1.2.2-2.4.8-3.2 1.7A7.6 7.6 0 0 0 7.3 6L4.2 3.7c-.4 2.1-.1 4.1.8 5.5a7.8 7.8 0 1 0 14.7-4.1Z" />
+          <path fill="#7c5cff" d="M18.4 8.1c-1.5-.1-2.8.4-3.8 1.2-1.4-.7-3-.8-4.5-.2-2.5 1-3.8 3.9-2.8 6.4 1 2.6 3.9 3.9 6.5 2.9 2.2-.9 3.5-3.2 3.1-5.5 1.3-1.1 1.9-2.8 1.5-4.8Z" />
+          <path fill="#fff" d="M14.4 12.1a3.4 3.4 0 1 1-5.6 3.7 3.8 3.8 0 0 0 5.6-3.7Z" opacity=".92" />
+        </svg>
+      </span>
+    )
+  }
+
+  return (
+    <span className="browser-engine-logo chromium" title="Chromium">
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <path fill="#ea4335" d="M12 2a10 10 0 0 1 8.7 5H12a5 5 0 0 0-4.3 2.5L4.8 4.6A10 10 0 0 1 12 2Z" />
+        <path fill="#fbbc04" d="M4.8 4.6 9.2 12a5 5 0 0 0 4.3 4.8l-2.9 5.1A10 10 0 0 1 4.8 4.6Z" />
+        <path fill="#34a853" d="M20.7 7A10 10 0 0 1 10.6 21.9L15 14.5A5 5 0 0 0 17 7h3.7Z" />
+        <circle cx="12" cy="12" r="4" fill="#4285f4" />
+        <circle cx="12" cy="12" r="2.8" fill="#8ab4f8" />
+      </svg>
+    </span>
+  )
+}
+
+function FingerprintModal(props: { account: Account; onClose: () => void }): JSX.Element {
+  const { account, onClose } = props
+  const [report, setReport] = useState<BrowserFingerprintReport | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const initialCheckStarted = useRef(false)
+
+  const inspect = useCallback(async (refresh = false) => {
+    setLoading(true)
+    setError(null)
+    try {
+      setReport(await window.aviary.browser.fingerprint(account.id, refresh))
+    } catch (e) {
+      setError(formatFingerprintUiError((e as Error).message))
+    } finally {
+      setLoading(false)
+    }
+  }, [account.id])
+
+  useEffect(() => {
+    if (initialCheckStarted.current) return
+    initialCheckStarted.current = true
+    void inspect(false)
+  }, [inspect])
+
+  const healthy = report
+    ? report.identity.stability !== 'changed' && report.expectedMismatches.length === 0
+    : false
+  const stabilityText = !report
+    ? ''
+    : report.identity.stability === 'match'
+      ? 'Khớp lần kiểm tra trước'
+      : report.identity.stability === 'changed'
+        ? 'Có thông số đã thay đổi'
+        : 'Đã tạo mốc kiểm tra đầu tiên'
+  const gradeText = !report
+    ? ''
+    : report.quality.grade === 'excellent'
+      ? 'Rất tốt'
+      : report.quality.grade === 'good'
+        ? 'Tốt'
+        : report.quality.grade === 'fair'
+          ? 'Cần chú ý'
+          : 'Rủi ro'
+
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal fingerprint-modal" onClick={(e) => e.stopPropagation()}>
+        <div className="fingerprint-modal-head">
+          <span className="fingerprint-hero-icon"><Fingerprint size={25} /></span>
+          <div>
+            <h2>Danh tính trình duyệt</h2>
+            <p>{account.label} · {account.engine === 'camoufox' ? 'Camoufox' : 'Chromium'}</p>
+          </div>
+          <button className="btn icon-only ghost" title="Đóng" onClick={onClose}><X size={18} /></button>
+        </div>
+
+        {loading && !report ? (
+          <div className="fingerprint-loading">
+            <Loader2 size={26} className="spin" />
+            <b>Đang đọc trực tiếp từ trình duyệt…</b>
+            <span>Nếu profile đang đóng, Aviary sẽ mở ngầm để kiểm tra rồi tự đóng.</span>
+          </div>
+        ) : error && !report ? (
+          <div className="fingerprint-error">
+            <AlertCircle size={19} />
+            <div><b>Không kiểm tra được</b><span>{error}</span></div>
+          </div>
+        ) : report ? (
+          <>
+            {error && (
+              <div className="fingerprint-error">
+                <AlertCircle size={19} />
+                <div>
+                  <b>Không cập nhật được dữ liệu mới</b>
+                  <span>{error} Snapshot gần nhất vẫn được giữ bên dưới.</span>
+                </div>
+              </div>
+            )}
+            <div className={`fingerprint-verdict ${healthy ? 'ok' : report.identity.stability === 'changed' ? 'warn' : 'info'}`}>
+              {healthy ? <ShieldCheck size={22} /> : <ShieldAlert size={22} />}
+              <div>
+                <b>{stabilityText}</b>
+                <span>
+                  {report.identity.managed
+                    ? `Identity Camoufox được Aviary quản lý${report.identity.storedVersion ? ` · schema v${report.identity.storedVersion}` : ''}`
+                    : 'Chromium dùng fingerprint native; Aviary theo dõi thay đổi qua snapshot runtime.'}
+                </span>
+              </div>
+              <code>{report.identity.id}</code>
+            </div>
+
+            <div className="fingerprint-highlights">
+              <div className={`fingerprint-score grade-${report.quality.grade}`}>
+                <div className="fingerprint-score-ring" style={{ '--score': report.quality.score } as React.CSSProperties}>
+                  <b>{report.quality.score}</b><small>/100</small>
+                </div>
+                <div><small>Điểm Aviary</small><b>{gradeText}</b></div>
+              </div>
+              <FingerprintHighlight icon={<Network size={17} />} label="IP thực tế" value={report.network.ip ?? 'Không đọc được'} accent />
+              <FingerprintHighlight icon={<Globe size={17} />} label="Múi giờ" value={report.network.timezone} />
+              <FingerprintHighlight icon={<Monitor size={17} />} label="Màn hình" value={`${report.screen.width} × ${report.screen.height} · ${report.screen.pixelRatio}x`} />
+            </div>
+
+            <div className="fingerprint-quality-checks">
+              {report.quality.checks.map((check) => (
+                <div key={check.label} className={`quality-check ${check.status}`} title={check.detail}>
+                  {check.status === 'pass' ? <CheckCircle2 size={14} /> : <AlertTriangle size={14} />}
+                  <span><b>{check.label}</b><small>{check.detail}</small></span>
+                  <strong>+{check.points}/{check.maxPoints}</strong>
+                </div>
+              ))}
+            </div>
+
+            {(report.identity.changedFields.length > 0 || report.expectedMismatches.length > 0) && (
+              <div className="fingerprint-diff">
+                <AlertTriangle size={17} />
+                <div>
+                  <b>Cần kiểm tra</b>
+                  {report.identity.changedFields.map((field) => <span key={field}>Đã đổi: {field}</span>)}
+                  {report.expectedMismatches.map((item) => <span key={item}>{item}</span>)}
+                </div>
+              </div>
+            )}
+
+            <div className="fingerprint-sections">
+              <FingerprintSection icon={<Cpu size={16} />} title="Trình duyệt & thiết bị">
+                <FingerprintRow label="User-Agent" value={report.navigator.userAgent} wide />
+                <FingerprintRow label="Nền tảng" value={report.navigator.platform} />
+                <FingerprintRow label="Ngôn ngữ" value={`${report.navigator.language} · ${report.navigator.languages.join(', ')}`} />
+                <FingerprintRow label="CPU / RAM" value={`${report.navigator.hardwareConcurrency} luồng · ${report.navigator.deviceMemory === null ? 'không công khai RAM' : `${report.navigator.deviceMemory} GB RAM`}`} />
+                <FingerprintRow label="WebDriver" value={report.navigator.webdriver ? 'Có' : 'Không'} good={!report.navigator.webdriver} />
+              </FingerprintSection>
+
+              <FingerprintSection icon={<Monitor size={16} />} title="Đồ họa & bề mặt">
+                <FingerprintRow label="WebGL vendor" value={report.graphics.vendor} />
+                <FingerprintRow label="WebGL renderer" value={report.graphics.renderer} wide />
+                <FingerprintRow label="Canvas hash" value={report.graphics.canvasHash} mono />
+                <FingerprintRow label="Audio hash" value={report.graphics.audioHash ?? 'Không khả dụng'} mono />
+                <FingerprintRow label="Viewport" value={`${report.screen.viewportWidth} × ${report.screen.viewportHeight} · ${report.screen.colorDepth}-bit`} />
+              </FingerprintSection>
+
+              <FingerprintSection icon={<Network size={16} />} title="Mạng & identity đã lưu">
+                <FingerprintRow label="Kết nối" value={report.network.proxyMode === 'fixed' ? 'Proxy cố định' : report.network.proxyMode === 'random' ? 'Proxy ngẫu nhiên' : 'IP máy'} />
+                <FingerprintRow
+                  label="Múi giờ theo Camoufox GeoLite2"
+                  value={report.network.ipTimezone ?? 'Chưa xác định'}
+                  good={report.network.timezoneMatch === true}
+                />
+                <FingerprintRow
+                  label="Nguồn geo-IP tham khảo"
+                  value={report.network.externalIpTimezone ?? 'Chưa xác định'}
+                />
+                <FingerprintRow label="WebRTC API" value={report.network.webrtc === 'disabled' ? 'Đã tắt' : report.network.webrtc === 'available' ? 'Có sẵn' : 'Không xác định'} good={report.network.webrtc === 'disabled'} />
+                <FingerprintRow label="Stored ID" value={report.stored.fingerprintId ?? 'Không có (native)'} mono />
+                <FingerprintRow label="Canvas seed" value={report.stored.canvasSeed?.toString() ?? '—'} mono />
+                <FingerprintRow label="Audio / Font seed" value={`${report.stored.audioSeed ?? '—'} / ${report.stored.fontSeed ?? '—'}`} mono />
+              </FingerprintSection>
+            </div>
+
+            <p className="fingerprint-note">
+              Điểm Aviary đánh giá uniqueness và khả năng anti-detect trong tập account đã kiểm tra trên máy này, không cộng điểm cho việc ổn định qua lần mở và không phải điểm của Pixelscan/CreepJS. Snapshot được đọc trong chính browser context và đi qua proxy hiện tại. IP không nằm trong mã identity vì proxy có thể đổi mà fingerprint thiết bị vẫn phải giữ nguyên.
+            </p>
+          </>
+        ) : null}
+
+        <div className="modal-actions fingerprint-actions">
+          <span>{report ? `Kiểm tra lúc ${new Date(report.capturedAt).toLocaleString('vi-VN')}` : ''}</span>
+          <button className="btn" disabled={loading} onClick={() => void inspect(true)}>
+            {loading ? <Loader2 size={15} className="spin" /> : <RefreshCw size={15} />}
+            Kiểm tra lại
+          </button>
+          <button className="btn primary" onClick={onClose}>Đóng</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function formatFingerprintUiError(message: string): string {
+  const cleaned = message
+    .replace(/^Error invoking remote method ['"]browser:fingerprint['"]:\s*/i, '')
+    .replace(/^Error:\s*/i, '')
+    .split(/\r?\n|Browser logs:|Call log:/)[0]
+    .trim()
+  return cleaned || 'Không đọc được fingerprint từ trình duyệt.'
+}
+
+function FingerprintHighlight(props: { icon: JSX.Element; label: string; value: string; accent?: boolean }): JSX.Element {
+  return <div className={`fingerprint-highlight${props.accent ? ' accent' : ''}`}><span>{props.icon}</span><div><small>{props.label}</small><b>{props.value}</b></div></div>
+}
+
+function FingerprintSection(props: { icon: JSX.Element; title: string; children: React.ReactNode }): JSX.Element {
+  return <section className="fingerprint-section"><h3>{props.icon}{props.title}</h3><div className="fingerprint-rows">{props.children}</div></section>
+}
+
+function FingerprintRow(props: { label: string; value: string; wide?: boolean; mono?: boolean; good?: boolean }): JSX.Element {
+  return <div className={`fingerprint-row${props.wide ? ' wide' : ''}`}><span>{props.label}</span><strong className={`${props.mono ? 'mono ' : ''}${props.good ? 'good' : ''}`}>{props.value}</strong></div>
 }
 
 // Modal xác nhận đóng profile khi tài khoản ĐANG CHẠY tác vụ (đăng/lịch/tương tác). Đóng giữa
@@ -854,6 +1169,7 @@ function AccountForm(props: {
   const [label, setLabel] = useState(account?.label ?? '')
   const [handle, setHandle] = useState(account?.handle ?? '')
   const [proxyId, setProxyId] = useState(account?.proxyId ?? PROXY_LOCAL)
+  const [engine, setEngine] = useState<BrowserEngine>(account?.engine ?? 'chromium')
   const [proxies, setProxies] = useState<Proxy[]>([])
   const [assetUrl, setAssetUrl] = useState(account?.assetUrl ?? '')
   const [hashtag, setHashtag] = useState(account?.hashtag ?? '')
@@ -906,11 +1222,25 @@ function AccountForm(props: {
       alert('Nhãn không được để trống')
       return
     }
+    // Đổi engine của account ĐÃ CÓ -> profile mỗi engine RIÊNG (Chromium ở thư mục gốc, Camoufox
+    // ở thư mục con). Session không chuyển được -> phải đăng nhập X lại trên engine mới. Cảnh báo
+    // rõ trước khi lưu để user không mất phiên ngoài ý muốn.
+    if (account && engine !== account.engine) {
+      const to = engine === 'camoufox' ? 'Camoufox' : 'Chromium'
+      const ok = confirm(
+        `Bạn đang đổi trình duyệt sang ${to}.\n\n` +
+          `Mỗi trình duyệt có profile riêng — phiên đăng nhập X hiện tại KHÔNG chuyển sang được. ` +
+          `Bạn sẽ phải ĐĂNG NHẬP X LẠI trên ${to} (phiên cũ vẫn được giữ nếu đổi ngược lại sau này).\n\n` +
+          `Tiếp tục?`
+      )
+      if (!ok) return
+    }
     setSaving(true)
     const input: AccountInput = {
       label: label.trim(),
       handle: handle.trim() || null,
       proxyId,
+      engine,
       assetUrl: assetUrl.trim() || null,
       hashtag: hashtag.trim() || null,
       captionPrefix: captionPrefix || null,
@@ -989,6 +1319,21 @@ function AccountForm(props: {
             <p className="hint">
               Chưa có proxy nào trong tab Proxy — Random sẽ giống Local (IP máy). Hãy thêm
               proxy ở tab Proxy trước.
+            </p>
+          )}
+        </label>
+        <label className="field">
+          <span>Trình duyệt (engine)</span>
+          <select value={engine} onChange={(e) => setEngine(e.target.value as BrowserEngine)}>
+            <option value="chromium">Chromium (mặc định — ổn định)</option>
+            <option value="camoufox">Camoufox (Firefox anti-detect — canvas native, WebRTC tắt)</option>
+          </select>
+          {engine === 'camoufox' && (
+            <p className="hint">
+              Camoufox chống nhận diện tốt hơn (canvas native, WebRTC tắt, geo tự khớp proxy).
+              Lần đầu dùng, máy sẽ tải trình duyệt ~470MB bằng mạng máy (KHÔNG tốn băng thông
+              proxy), chỉ tải 1 lần dùng chung cho mọi tài khoản. Profile Camoufox tách riêng
+              khỏi Chromium — đổi engine sẽ phải đăng nhập X lại. Nên dùng kèm proxy để geo khớp.
             </p>
           )}
         </label>
