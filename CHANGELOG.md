@@ -5,6 +5,16 @@ Mọi thay đổi đáng chú ý của Aviary được ghi tại đây.
 Định dạng theo [Keep a Changelog](https://keepachangelog.com/vi/1.0.0/),
 phiên bản theo [Semantic Versioning](https://semver.org/lang/vi/).
 
+## [0.22.2] - 2026-07-23
+
+### Changed
+- **Tách cửa sổ Camoufox trên Windows taskbar theo từng tài khoản**: mỗi profile có AppUserModelID riêng, không còn gom mọi cửa sổ Camoufox vào chung một icon.
+- Thêm script `postinstall` idempotent để vá đường dẫn WebGL DB của `camoufox-js` sau khi cài dependency.
+
+### Fixed
+- **Camoufox không mở được trong bản đóng gói** với lỗi `SqliteError: unable to open database file`: unpack `webgl_data.db` khỏi ASAR và chuyển sampler sang đường dẫn filesystem thật `app.asar.unpacked`.
+- **Phiên đăng nhập bằng auth token bị mất sau khi đóng browser**: cookie nhập tay được lưu dạng persistent trong profile thay vì session cookie.
+
 ## [0.22.1] - 2026-07-23
 
 ### Added

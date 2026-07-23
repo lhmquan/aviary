@@ -173,6 +173,7 @@ const proxyIpCache = new Map<string, string>()
 // Cấu hình mở 1 profile Camoufox.
 export interface CamoufoxLaunchOpts {
   userDataDir: string
+  accountId: string
   headless: boolean
   // Chuỗi proxy raw (host:port:user:pass...) hoặc null (dùng IP máy — geoip sẽ TẮT vì cần proxy).
   proxyString: string | null
@@ -258,6 +259,9 @@ export async function launchCamoufox(opts: CamoufoxLaunchOpts): Promise<BrowserC
       'browser.link.open_newwindow': 3,
       'browser.link.open_newwindow.restriction': 0,
       'browser.link.open_newwindow.override.external': 3,
+      // Mỗi account có profile riêng: yêu cầu Windows tạo taskbar group riêng thay vì gom
+      // tất cả cửa sổ Camoufox vào một icon.
+      'taskbar.grouping.useprofile': true,
       'browser.toolbars.bookmarks.visibility': 'always',
       'browser.sessionhistory.max_entries': 10,
       'browser.sessionhistory.max_total_viewers': 1,
@@ -282,7 +286,11 @@ export async function launchCamoufox(opts: CamoufoxLaunchOpts): Promise<BrowserC
   if (opts.blockMedia) {
     await browser.route('**/*', blockXVideo)
   }
-  await setCamoufoxWindowMode(opts.userDataDir, opts.headless ? 'hidden' : 'maximized')
+  await configureCamoufoxWindow(
+    opts.userDataDir,
+    opts.accountId,
+    opts.headless ? 'hidden' : 'maximized'
+  )
   if (!opts.headless) {
     const page = browser.pages()[0]
     const dimensions = await page
@@ -469,22 +477,87 @@ async function ensureAviaryCheckBookmarks(): Promise<void> {
 // Firefox xử lý --width/--height theo DIP trong khi Camoufox surface dùng pixel vật lý,
 // gây dải đen ở scale 125%. Maximize cửa sổ native sau launch để Windows tự tính DPI đúng,
 // trước khi BrowserManager điều hướng tới X.
-async function setCamoufoxWindowMode(
+const CAMOUFOX_WINDOW_NATIVE_CODE = `
+using System;
+using System.Runtime.InteropServices;
+
+namespace Aviary {
+  [StructLayout(LayoutKind.Sequential, Pack = 4)]
+  public struct PropertyKey {
+    public Guid formatId;
+    public uint propertyId;
+  }
+
+  [StructLayout(LayoutKind.Explicit)]
+  public struct PropVariant {
+    [FieldOffset(0)] public ushort type;
+    [FieldOffset(8)] public IntPtr value;
+  }
+
+  [ComImport]
+  [Guid("886D8EEB-8CF2-4446-8D02-CDBA1D8FCF99")]
+  [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+  interface IPropertyStore {
+    [PreserveSig] int GetCount(out uint count);
+    [PreserveSig] int GetAt(uint index, out PropertyKey key);
+    [PreserveSig] int GetValue(ref PropertyKey key, out PropVariant value);
+    [PreserveSig] int SetValue(ref PropertyKey key, ref PropVariant value);
+    [PreserveSig] int Commit();
+  }
+
+  public static class Window {
+    [DllImport("user32.dll")]
+    public static extern bool ShowWindowAsync(IntPtr handle, int command);
+
+    [DllImport("shell32.dll")]
+    static extern int SHGetPropertyStoreForWindow(
+      IntPtr handle,
+      ref Guid interfaceId,
+      [MarshalAs(UnmanagedType.Interface)] out IPropertyStore store
+    );
+
+    public static void SetAppUserModelId(IntPtr handle, string id) {
+      var interfaceId = new Guid("886D8EEB-8CF2-4446-8D02-CDBA1D8FCF99");
+      IPropertyStore store;
+      if (SHGetPropertyStoreForWindow(handle, ref interfaceId, out store) != 0) return;
+      var key = new PropertyKey {
+        formatId = new Guid("9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3"),
+        propertyId = 5
+      };
+      var value = new PropVariant {
+        type = 31,
+        value = Marshal.StringToCoTaskMemUni(id)
+      };
+      try {
+        store.SetValue(ref key, ref value);
+        store.Commit();
+      } finally {
+        Marshal.FreeCoTaskMem(value.value);
+        Marshal.ReleaseComObject(store);
+      }
+    }
+  }
+}`
+
+// Tìm đúng native window theo profile directory, sau đó đặt taskbar identity riêng cho account.
+async function configureCamoufoxWindow(
   profileDir: string,
+  accountId: string,
   mode: 'hidden' | 'maximized'
 ): Promise<void> {
   const encodedProfile = Buffer.from(profileDir, 'utf16le').toString('base64')
+  const encodedNativeCode = Buffer.from(CAMOUFOX_WINDOW_NATIVE_CODE, 'utf16le').toString('base64')
+  const appId = `com.aviary.camoufox.${accountId.replace(/[^a-z0-9.-]/gi, '-')}`
   const showCommand = mode === 'hidden' ? 0 : 3
   const script = [
-    'Add-Type -Namespace Aviary -Name Win32 -MemberDefinition',
-    `'[DllImport("user32.dll")] public static extern bool ShowWindowAsync(IntPtr hWnd, int nCmdShow);'`,
-    ';',
+    `$native=[Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('${encodedNativeCode}'));`,
+    'Add-Type -TypeDefinition $native;',
     `$profile=[Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('${encodedProfile}'));`,
     '$deadline=(Get-Date).AddSeconds(5);',
     'do {',
     '  $ids=Get-CimInstance Win32_Process -Filter "Name = \'camoufox.exe\'" -ErrorAction SilentlyContinue | Where-Object {$_.CommandLine -and $_.CommandLine.Contains($profile)} | ForEach-Object {$_.ProcessId};',
     '  $wins=$ids | ForEach-Object {Get-Process -Id $_ -ErrorAction SilentlyContinue} | Where-Object {$_.MainWindowHandle -ne 0};',
-    `  if ($wins) { $wins | ForEach-Object {[Aviary.Win32]::ShowWindowAsync($_.MainWindowHandle,${showCommand}) | Out-Null}; break }`,
+    `  if ($wins) { $wins | ForEach-Object {[Aviary.Window]::SetAppUserModelId($_.MainWindowHandle,'${appId}'); [Aviary.Window]::ShowWindowAsync($_.MainWindowHandle,${showCommand}) | Out-Null}; break }`,
     '  Start-Sleep -Milliseconds 100',
     '} while ((Get-Date) -lt $deadline)'
   ].join(' ')

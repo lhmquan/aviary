@@ -1,12 +1,13 @@
 {
   "name": "aviary",
-  "version": "0.22.1",
+  "version": "0.22.2",
   "description": "Quản lý nhiều tài khoản X qua profile chromium anti-detect, hẹn giờ đăng bài, tích hợp n8n",
   "private": true,
   "author": "",
   "license": "UNLICENSED",
   "main": "out/main/index.js",
   "scripts": {
+    "postinstall": "node scripts/patch-camoufox-asar.mjs",
     "dev": "electron-vite dev",
     "build": "electron-vite build",
     "start": "electron-vite preview",
@@ -59,7 +60,8 @@
       }
     ],
     "asarUnpack": [
-      "**/node_modules/ffmpeg-static/**"
+      "**/node_modules/ffmpeg-static/**",
+      "**/node_modules/camoufox-js/dist/data-files/**"
     ],
     "win": {
       "target": "nsis",
