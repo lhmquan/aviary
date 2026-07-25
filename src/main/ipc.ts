@@ -1,4 +1,4 @@
-import { ipcMain, BrowserWindow } from 'electron'
+import { ipcMain, BrowserWindow, clipboard } from 'electron'
 import http from 'http'
 import https from 'https'
 import { URL } from 'url'
@@ -11,7 +11,8 @@ import {
   type ScheduleInput,
   type ProxyCheckResult,
   type LogListParams,
-  type XProfileInfo
+  type XProfileInfo,
+  type BrowserAuthTokenExportResult
 } from '../shared/types'
 import {
   listAccounts,
@@ -196,6 +197,23 @@ export function registerIpc(): void {
       const result = await browserManager.loginXWithAuthToken(account, authToken)
       setAccountStatus(accountId, 'logged_in')
       return result
+    }
+  )
+
+  ipcMain.handle(
+    IpcChannels.browserCopyAuthToken,
+    async (_e, accountId: string): Promise<BrowserAuthTokenExportResult> => {
+      const account = getAccount(accountId)
+      if (!account) throw new Error(`Account không tồn tại: ${accountId}`)
+
+      // Token không rời main process: đọc từ cookie jar và ghi thẳng vào clipboard hệ điều hành.
+      const authToken = await browserManager.readXAuthToken(account)
+      clipboard.writeText(authToken)
+      return {
+        ok: true,
+        copied: true,
+        message: `Đã sao chép auth token của “${account.label}” vào clipboard.`
+      }
     }
   )
 

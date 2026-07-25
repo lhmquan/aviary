@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback } from 'react'
 import { Plus, Pencil, Trash2, RefreshCw, Loader2, Globe, ShieldCheck, X } from 'lucide-react'
 import type { Proxy, ProxyInput, ProxyCheckResult } from '@shared/types'
+import { useUiFeedback } from '../components/UiFeedback'
 
 // Định dạng hiển thị proxy: che phần user:pass để không lộ trên màn hình khi chia sẻ.
 function maskProxy(raw: string): string {
@@ -31,6 +32,7 @@ function statusBadge(status: Proxy['status'], latencyMs: number | null): JSX.Ele
 }
 
 export default function ProxiesView(): JSX.Element {
+  const { confirm } = useUiFeedback()
   const [proxies, setProxies] = useState<Proxy[]>([])
   const [loading, setLoading] = useState(false)
   const [showBulk, setShowBulk] = useState(false)
@@ -65,16 +67,11 @@ export default function ProxiesView(): JSX.Element {
   }, [proxies])
 
   async function handleDelete(p: Proxy): Promise<void> {
-    if (!confirm(`Xóa proxy "${p.label}"?\nCác tài khoản đang gán proxy này sẽ tự về Local.`)) return
-    await window.aviary.proxies.remove(p.id)
-    await refresh()
+    await confirm({ title: `Xóa proxy “${p.label}”?`, description: 'Các tài khoản đang dùng proxy này sẽ tự chuyển về Local.', confirmLabel: 'Xóa proxy', tone: 'danger', action: async () => { await window.aviary.proxies.remove(p.id); await refresh() } })
   }
 
   async function handleClearAll(): Promise<void> {
-    if (!confirm('Xóa TOÀN BỘ proxy? Các tài khoản đang gán proxy sẽ tự về Local.')) return
-    await window.aviary.proxies.clear()
-    setSelectedIds(new Set())
-    await refresh()
+    await confirm({ title: 'Xóa toàn bộ proxy?', description: `Toàn bộ ${proxies.length} proxy sẽ bị xóa. Các tài khoản liên quan sẽ tự chuyển về Local.`, confirmLabel: 'Xóa tất cả', tone: 'danger', action: async () => { await window.aviary.proxies.clear(); setSelectedIds(new Set()); await refresh() } })
   }
 
   function toggleSelect(id: string): void {
@@ -96,12 +93,7 @@ export default function ProxiesView(): JSX.Element {
 
   async function handleBulkDelete(): Promise<void> {
     const count = selectedIds.size
-    if (!confirm(`Xóa ${count} proxy đã chọn?`)) return
-    for (const id of selectedIds) {
-      await window.aviary.proxies.remove(id).catch(() => {})
-    }
-    setSelectedIds(new Set())
-    await refresh()
+    await confirm({ title: `Xóa ${count} proxy đã chọn?`, description: 'Các tài khoản đang dùng những proxy này sẽ tự chuyển về Local.', confirmLabel: `Xóa ${count} proxy`, tone: 'danger', action: async () => { for (const id of selectedIds) await window.aviary.proxies.remove(id); setSelectedIds(new Set()); await refresh() } })
   }
 
   async function handleCheckSelected(): Promise<void> {

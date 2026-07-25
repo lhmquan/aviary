@@ -34,10 +34,12 @@ import {
   RefreshCw,
   LayoutGrid,
   Rows3,
-  KeyRound
+  KeyRound,
+  Copy
 } from 'lucide-react'
 import type { Account, AccountInput, AccountActivity, AccountHealth, BrowserEngine, BrowserFingerprintReport, Proxy, Schedule, WebhookTestResult, XProfileInfo } from '@shared/types'
 import { PROXY_LOCAL, PROXY_RANDOM } from '@shared/types'
+import { useUiFeedback } from '../components/UiFeedback'
 
 const STATUS_LABEL: Record<Account['status'], string> = {
   new: 'Mới',
@@ -73,6 +75,7 @@ export default function AccountsView(props: {
   onNavigateToLogs?: (accountId: string, accountLabel: string) => void
 }): JSX.Element {
   const { onNavigateToLogs } = props
+  const { confirm, toast } = useUiFeedback()
   const [accounts, setAccounts] = useState<Account[]>([])
   const [proxies, setProxies] = useState<Proxy[]>([])
   const [schedules, setSchedules] = useState<Schedule[]>([])
@@ -185,7 +188,7 @@ export default function AccountsView(props: {
       await window.aviary.browser.open(a.id)
       await refresh()
     } catch (e) {
-      alert('Không mở được profile: ' + (e as Error).message)
+      toast({ title: 'Không mở được profile', description: (e as Error).message, tone: 'danger' })
     } finally {
       setBusy(null)
     }
@@ -212,20 +215,22 @@ export default function AccountsView(props: {
   }
 
   async function handleDelete(a: Account): Promise<void> {
-    if (!confirm(`Xóa tài khoản "${a.label}"? Profile, session, lịch và nhật ký sẽ bị xoá hết.`)) return
-    await window.aviary.accounts.remove(a.id)
-    await refresh()
+    await confirm({
+      title: `Xóa tài khoản “${a.label}”?`,
+      description: 'Profile, phiên đăng nhập, lịch và nhật ký liên quan sẽ bị xóa vĩnh viễn.',
+      confirmLabel: 'Xóa tài khoản', tone: 'danger', busyLabel: 'Đang xóa…',
+      action: async () => { await window.aviary.accounts.remove(a.id); await refresh() }
+    })
   }
 
   async function handlePostNow(a: Account): Promise<void> {
-    if (!confirm(`Đăng bài cho "${a.label}"? Nếu profile chưa mở sẽ tự mở (chạy ngầm nếu đã bật).`))
-      return
+    if (!(await confirm({ title: `Đăng bài cho “${a.label}”?`, description: 'Nếu profile chưa mở, Aviary sẽ tự mở theo chế độ đã cấu hình. Tác vụ có thể phải chờ slot.', confirmLabel: 'Đăng bài' }))) return
     setPosting(a.id)
     try {
       await window.aviary.post.runNow(a.id)
       // Kết quả hiển thị trong Nhật ký + thanh trạng thái, không còn popup.
     } catch (e) {
-      alert('Đăng bài lỗi: ' + (e as Error).message)
+      toast({ title: 'Đăng bài không thành công', description: (e as Error).message, tone: 'danger' })
     } finally {
       setPosting(null)
     }
@@ -253,7 +258,7 @@ export default function AccountsView(props: {
       await window.aviary.accounts.update(a.id, { proxyId: nextProxyId })
       await refresh()
     } catch (e) {
-      alert('Đổi proxy lỗi: ' + (e as Error).message)
+      toast({ title: 'Không đổi được proxy', description: (e as Error).message, tone: 'danger' })
     } finally {
       setProxyBusy(null)
     }
@@ -267,29 +272,48 @@ export default function AccountsView(props: {
       await window.aviary.accounts.update(a.id, { headless: !a.headless })
       await refresh()
     } catch (e) {
-      alert('Đổi chế độ chạy ngầm lỗi: ' + (e as Error).message)
+      toast({ title: 'Không đổi được chế độ chạy', description: (e as Error).message, tone: 'danger' })
     } finally {
       setBusy(null)
     }
   }
 
   async function handleMigrateSession(a: Account): Promise<void> {
-    const ok = confirm(
-      `Chuyển phiên X của "${a.label}" từ Chromium sang Camoufox?\n\n` +
-        `Aviary sẽ đọc ct0 + auth_token trong memory, đóng Chromium, import vào Camoufox rồi mở X. ` +
-        `Token không được lưu hoặc hiển thị. Thiết lập engine vẫn giữ Chromium cho tới khi bạn xác nhận Camoufox đã vào đúng tài khoản.`
-    )
+    const ok = await confirm({
+      title: 'Chuyển phiên sang Camoufox?',
+      description: `Aviary sẽ chuyển phiên X của “${a.label}”, đóng Chromium, nhập cookie vào Camoufox rồi mở X. Token không được lưu hoặc hiển thị. Engine vẫn giữ Chromium cho tới khi bạn xác nhận phiên mới hoạt động đúng.`,
+      confirmLabel: 'Chuyển phiên', tone: 'warning'
+    })
     if (!ok) return
     setMigratingSession(a.id)
     try {
       const result = await window.aviary.browser.migrateSession(a.id)
-      alert(result.message)
+      toast({ title: 'Đã chuyển phiên', description: result.message, tone: 'success', duration: 7000 })
       await refresh()
     } catch (e) {
-      alert(formatFingerprintUiError((e as Error).message))
+      toast({ title: 'Không chuyển được phiên', description: formatFingerprintUiError((e as Error).message), tone: 'danger', duration: 7000 })
     } finally {
       setMigratingSession(null)
     }
+  }
+
+  async function handleCopyAuthToken(a: Account): Promise<void> {
+    await confirm({
+      title: `Sao chép auth token của “${a.label}”?`,
+      description: `${openMap[a.id] ? 'Profile đang mở sẽ được sử dụng.' : `Aviary sẽ tự mở ${a.engine === 'camoufox' ? 'Camoufox' : 'Chromium'}${a.headless ? ' ở chế độ chạy ngầm' : ''}.`} Auth token là thông tin đăng nhập nhạy cảm và sẽ được đưa vào clipboard hệ điều hành.`,
+      confirmLabel: 'Mở và sao chép',
+      busyLabel: 'Đang lấy token…',
+      tone: 'warning',
+      action: async () => {
+        const result = await window.aviary.browser.copyAuthToken(a.id)
+        toast({
+          title: 'Đã sao chép auth token',
+          description: `${result.message} Đây là thông tin đăng nhập nhạy cảm, không chia sẻ cho người khác.`,
+          tone: 'success',
+          duration: 7000
+        })
+      }
+    })
   }
 
   // ---- Bulk actions ----
@@ -318,19 +342,23 @@ export default function AccountsView(props: {
     const errors = results.filter((r) => r.status === 'rejected').length
     await refresh()
     setBulkBusy(false)
-    if (errors > 0) alert(`Đã mở ${ids.length - errors}/${ids.length} profile. ${errors} lỗi.`)
+    if (errors > 0) toast({ title: 'Mở profile chưa hoàn tất', description: `Đã mở ${ids.length - errors}/${ids.length} profile, ${errors} profile gặp lỗi.`, tone: 'warning' })
   }
 
   async function handleBulkDelete(): Promise<void> {
     const count = selectedIds.size
-    if (!confirm(`Xóa ${count} tài khoản đã chọn? Profile, session, lịch và nhật ký sẽ bị xoá hết.`)) return
-    setBulkBusy(true)
-    for (const id of selectedIds) {
-      await window.aviary.accounts.remove(id).catch(() => {})
-    }
-    setSelectedIds(new Set())
-    await refresh()
-    setBulkBusy(false)
+    await confirm({
+      title: `Xóa ${count} tài khoản đã chọn?`,
+      description: 'Toàn bộ profile, phiên đăng nhập, lịch và nhật ký liên quan sẽ bị xóa vĩnh viễn.',
+      confirmLabel: `Xóa ${count} tài khoản`, tone: 'danger', busyLabel: 'Đang xóa…',
+      action: async () => {
+        setBulkBusy(true)
+        try {
+          for (const id of selectedIds) await window.aviary.accounts.remove(id)
+          setSelectedIds(new Set()); await refresh()
+        } finally { setBulkBusy(false) }
+      }
+    })
   }
 
   // ---- Tìm kiếm + lọc đa chức năng ----
@@ -670,6 +698,12 @@ export default function AccountsView(props: {
                         title: `Nhập auth token và mở X bằng ${a.engine === 'camoufox' ? 'Camoufox' : 'Chromium'}`,
                         onClick: () => setAuthTokenAccount(a)
                       },
+                      {
+                        icon: <Copy size={15} />,
+                        label: 'Sao chép auth token',
+                        title: 'Xác nhận, tự mở đúng profile và sao chép auth token vào clipboard',
+                        onClick: () => handleCopyAuthToken(a)
+                      },
                       ...(a.engine === 'chromium'
                         ? [{
                             icon: migratingSession === a.id
@@ -882,7 +916,7 @@ export default function AccountsView(props: {
             setBulkBusy(false)
             setShowBulkProxy(false)
             if (ok < selectedIds.size) {
-              alert(`Đã cập nhật ${ok}/${selectedIds.size} tài khoản.`)
+              toast({ title: 'Một số tài khoản chưa được cập nhật', description: `Đã cập nhật ${ok}/${selectedIds.size} tài khoản.`, tone: 'warning' })
             }
           }}
           onClose={() => setShowBulkProxy(false)}
@@ -924,6 +958,7 @@ function AuthTokenLoginModal(props: {
   onLoggedIn: () => void
 }): JSX.Element {
   const { account, onClose, onLoggedIn } = props
+  const { toast } = useUiFeedback()
   const [authToken, setAuthToken] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -937,7 +972,7 @@ function AuthTokenLoginModal(props: {
     try {
       const result = await window.aviary.browser.loginWithAuthToken(account.id, token)
       setAuthToken('')
-      alert(result.message)
+      toast({ title: 'Đăng nhập thành công', description: result.message, tone: 'success' })
       onLoggedIn()
     } catch (e) {
       setAuthToken('')
@@ -1252,6 +1287,7 @@ function AccountForm(props: {
   onSaved: () => void
 }): JSX.Element {
   const { account, onClose, onSaved } = props
+  const { confirm } = useUiFeedback()
   const [label, setLabel] = useState(account?.label ?? '')
   const [handle, setHandle] = useState(account?.handle ?? '')
   const [proxyId, setProxyId] = useState(account?.proxyId ?? PROXY_LOCAL)
@@ -1265,6 +1301,7 @@ function AccountForm(props: {
   const [aiCommentFormat, setAiCommentFormat] = useState(account?.aiCommentFormat ?? 'random')
   const [headless, setHeadless] = useState(account?.headless ?? false)
   const [saving, setSaving] = useState(false)
+  const [labelError, setLabelError] = useState<string | null>(null)
   // Thông tin X tự fetch từ username.
   const [xInfo, setXInfo] = useState<XProfileInfo | null>(null)
   const [xFetching, setXFetching] = useState(false)
@@ -1305,20 +1342,20 @@ function AccountForm(props: {
 
   async function save(): Promise<void> {
     if (!label.trim()) {
-      alert('Nhãn không được để trống')
+      setLabelError('Nhãn không được để trống')
       return
     }
+    setLabelError(null)
     // Đổi engine của account ĐÃ CÓ -> profile mỗi engine RIÊNG (Chromium ở thư mục gốc, Camoufox
     // ở thư mục con). Session không chuyển được -> phải đăng nhập X lại trên engine mới. Cảnh báo
     // rõ trước khi lưu để user không mất phiên ngoài ý muốn.
     if (account && engine !== account.engine) {
       const to = engine === 'camoufox' ? 'Camoufox' : 'Chromium'
-      const ok = confirm(
-        `Bạn đang đổi trình duyệt sang ${to}.\n\n` +
-          `Mỗi trình duyệt có profile riêng — phiên đăng nhập X hiện tại KHÔNG chuyển sang được. ` +
-          `Bạn sẽ phải ĐĂNG NHẬP X LẠI trên ${to} (phiên cũ vẫn được giữ nếu đổi ngược lại sau này).\n\n` +
-          `Tiếp tục?`
-      )
+      const ok = await confirm({
+        title: `Đổi trình duyệt sang ${to}?`,
+        description: `Mỗi engine có profile riêng nên phiên X hiện tại không được chuyển sang ${to}. Bạn sẽ phải đăng nhập lại; profile cũ vẫn được giữ nếu đổi ngược lại sau này.`,
+        confirmLabel: 'Đổi trình duyệt', tone: 'warning'
+      })
       if (!ok) return
     }
     setSaving(true)
@@ -1345,9 +1382,10 @@ function AccountForm(props: {
   }
 
   return (
-    <div className="modal-backdrop" onClick={onClose}>
-      <div className="modal" onClick={(e) => e.stopPropagation()}>
-        <h2>{account ? 'Sửa tài khoản' : 'Thêm tài khoản'}</h2>
+    <div className="modal-backdrop drawer-backdrop" onClick={saving ? undefined : onClose}>
+      <div className="modal drawer" role="dialog" aria-modal="true" aria-labelledby="account-form-title" onClick={(e) => e.stopPropagation()}>
+        <div className="drawer-head"><div><span className="dialog-eyebrow">Hồ sơ trình duyệt</span><h2 id="account-form-title">{account ? 'Sửa tài khoản' : 'Thêm tài khoản'}</h2></div><button className="btn icon-only ghost" disabled={saving} onClick={onClose} aria-label="Đóng"><X size={18} /></button></div>
+        <div className="drawer-body">
         <label className="field">
           <span>Nhãn *</span>
           <input
@@ -1356,6 +1394,7 @@ function AccountForm(props: {
             placeholder="VD: Acc chính"
             autoFocus
           />
+          {labelError && <span className="field-error">{labelError}</span>}
         </label>
         <label className="field">
           <span>Username (X)</span>
@@ -1491,8 +1530,9 @@ function AccountForm(props: {
           />
           <span>Chạy ngầm (ẩn cửa sổ browser, khó bị phát hiện)</span>
         </label>
-        <div className="modal-actions">
-          <button className="btn" onClick={onClose}>
+        </div>
+        <div className="modal-actions drawer-actions">
+          <button className="btn" disabled={saving} onClick={onClose}>
             Hủy
           </button>
           <button className="btn primary" disabled={saving} onClick={save}>

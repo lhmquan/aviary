@@ -63,6 +63,8 @@ const api: AviaryApi = {
       ipcRenderer.invoke(IpcChannels.browserMigrateSession, accountId),
     loginWithAuthToken: (accountId: string, authToken: string) =>
       ipcRenderer.invoke(IpcChannels.browserLoginWithAuthToken, accountId, authToken),
+    copyAuthToken: (accountId: string) =>
+      ipcRenderer.invoke(IpcChannels.browserCopyAuthToken, accountId),
     onStatusChanged: (cb) => {
       const listener = (_e: unknown, data: { accountId: string; open: boolean }): void =>
         cb(data.accountId, data.open)

@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback } from 'react'
 import { RefreshCw, Trash2, ExternalLink, CheckCircle2, XCircle, ScrollText, Clock, Settings2, Send, SkipForward, ChevronLeft, ChevronRight, ChevronDown, ChevronUp, Filter, Trash, MessageCircle, Activity, Search, X } from 'lucide-react'
 import type { LogEntry } from '@shared/types'
+import { useUiFeedback } from '../components/UiFeedback'
 
 const PAGE_SIZE = 50
 
@@ -146,6 +147,7 @@ export default function LogsView(props: {
   accountFilter?: { id: string; label: string } | null
   onClearAccountFilter?: () => void
 }): JSX.Element {
+  const { confirm } = useUiFeedback()
   const { accountFilter, onClearAccountFilter } = props
   const [logs, setLogs] = useState<LogEntry[]>([])
   const [loading, setLoading] = useState(false)
@@ -235,10 +237,7 @@ export default function LogsView(props: {
   }
 
   async function clearAll(): Promise<void> {
-    if (!confirm('Xóa toàn bộ nhật ký (kèm ảnh lỗi)?')) return
-    await window.aviary.logs.clear()
-    setPage(1)
-    await refresh(1)
+    await confirm({ title: 'Xóa toàn bộ nhật ký?', description: 'Tất cả sự kiện và ảnh chụp lỗi liên quan sẽ bị xóa vĩnh viễn.', confirmLabel: 'Xóa nhật ký', tone: 'danger', action: async () => { await window.aviary.logs.clear(); setPage(1); await refresh(1) } })
   }
 
   function goToPage(p: number): void {

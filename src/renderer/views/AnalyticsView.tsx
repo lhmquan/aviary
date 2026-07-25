@@ -27,6 +27,7 @@ import type {
 } from '@shared/types'
 import Sparkline from '../components/Sparkline'
 import GrowthChart from '../components/GrowthChart'
+import { useUiFeedback } from '../components/UiFeedback'
 
 function fmtNum(n: number | null): string {
   if (n === null) return '—'
@@ -80,6 +81,7 @@ function DeltaBadge({
 }
 
 export default function AnalyticsView(): JSX.Element {
+  const { confirm } = useUiFeedback()
   const [data, setData] = useState<AnalyticsData | null>(null)
   const [storage, setStorage] = useState<AnalyticsStorageStats | null>(null)
   const [fetching, setFetching] = useState(false)
@@ -138,16 +140,12 @@ export default function AnalyticsView(): JSX.Element {
   }
 
   async function handleDeleteAll(): Promise<void> {
-    if (!confirm('Xoá toàn bộ dữ liệu Analytics? Hành động này không thể hoàn tác.')) return
-    await window.aviary.analytics.remove()
     setShowDeleteMenu(false)
-    await refresh()
+    await confirm({ title: 'Xóa toàn bộ dữ liệu Analytics?', description: `Toàn bộ ${storage?.rowCount ?? 0} mẫu theo dõi sẽ bị xóa vĩnh viễn.`, confirmLabel: 'Xóa dữ liệu', tone: 'danger', action: async () => { await window.aviary.analytics.remove(); await refresh() } })
   }
 
   async function handleDeleteAccount(accountId: string, label: string): Promise<void> {
-    if (!confirm(`Xoá dữ liệu Analytics của "${label}"?`)) return
-    await window.aviary.analytics.remove(accountId)
-    await refresh()
+    await confirm({ title: `Xóa Analytics của “${label}”?`, description: 'Toàn bộ lịch sử và biểu đồ tăng trưởng của tài khoản này sẽ bị xóa.', confirmLabel: 'Xóa dữ liệu', tone: 'danger', action: async () => { await window.aviary.analytics.remove(accountId); await refresh() } })
   }
 
   async function handleToggleAutoFetch(): Promise<void> {

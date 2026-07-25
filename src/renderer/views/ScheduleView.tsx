@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback, useMemo } from 'react'
 import { Plus, Pencil, Trash2, RefreshCw, Loader2, Clock, CalendarClock, Trash, MessageSquare, Activity, Send, MessageCircle, BarChart3, ListOrdered, Copy, X, Check, Search, Eye, Bot, Globe, Link2 } from 'lucide-react'
 import type { Account, Schedule, ScheduleInput, ScheduleKind, ScheduleAction, DeleteMode, CommentContentSource } from '@shared/types'
+import { useUiFeedback } from '../components/UiFeedback'
 
 const REFRESH_MS = 15_000
 
@@ -205,6 +206,7 @@ function AccountPicker(props: {
 }
 
 export default function ScheduleView(): JSX.Element {
+  const { confirm, toast } = useUiFeedback()
   const [schedules, setSchedules] = useState<Schedule[]>([])
   const [accounts, setAccounts] = useState<Account[]>([])
   const [loading, setLoading] = useState(false)
@@ -271,9 +273,7 @@ export default function ScheduleView(): JSX.Element {
 
   async function handleDelete(s: Schedule): Promise<void> {
     const actionLabel = s.action === 'delete' ? 'xoá bài' : s.action === 'comment' ? 'bình luận' : s.action === 'interact' ? 'tương tác' : 'đăng bài'
-    if (!confirm(`Xóa lịch ${actionLabel} "${describe(s)}" cho ${accountLabel(s.accountId)}?`)) return
-    await window.aviary.schedules.remove(s.id)
-    await refresh()
+    await confirm({ title: `Xóa lịch ${actionLabel}?`, description: `${describe(s)} · ${accountLabel(s.accountId)}. Thao tác này không thể hoàn tác.`, confirmLabel: 'Xóa lịch', tone: 'danger', action: async () => { await window.aviary.schedules.remove(s.id); await refresh() } })
   }
 
   async function handleToggle(s: Schedule): Promise<void> {
@@ -282,7 +282,7 @@ export default function ScheduleView(): JSX.Element {
       await window.aviary.schedules.update(s.id, { enabled: !s.enabled })
       await refresh()
     } catch (e) {
-      alert('Đổi trạng thái lỗi: ' + (e as Error).message)
+      toast({ title: 'Không đổi được trạng thái lịch', description: (e as Error).message, tone: 'danger' })
     } finally {
       setToggling(null)
     }
@@ -374,14 +374,10 @@ export default function ScheduleView(): JSX.Element {
   async function handleBulkDelete(): Promise<void> {
     const count = selectedIds.size
     if (count === 0) return
-    if (!confirm(`Xoá ${count} lịch đã chọn?`)) return
-    setBulkBusy(true)
-    for (const id of selectedIds) {
-      await window.aviary.schedules.remove(id).catch(() => {})
-    }
-    setSelectedIds(new Set())
-    await refresh()
-    setBulkBusy(false)
+    await confirm({
+      title: `Xóa ${count} lịch đã chọn?`, description: 'Các lịch đã chọn sẽ bị xóa vĩnh viễn.', confirmLabel: `Xóa ${count} lịch`, tone: 'danger',
+      action: async () => { setBulkBusy(true); try { for (const id of selectedIds) await window.aviary.schedules.remove(id); setSelectedIds(new Set()); await refresh() } finally { setBulkBusy(false) } }
+    })
   }
 
   return (
@@ -1008,9 +1004,10 @@ function ScheduleForm(props: {
   }
 
   return (
-    <div className="modal-backdrop" onClick={onClose}>
-      <div className="modal" onClick={(e) => e.stopPropagation()}>
-        <h2>{schedule ? 'Sửa lịch' : 'Thêm lịch'}</h2>
+    <div className="modal-backdrop drawer-backdrop" onClick={saving ? undefined : onClose}>
+      <div className="modal drawer schedule-drawer" role="dialog" aria-modal="true" aria-labelledby="schedule-form-title" onClick={(e) => e.stopPropagation()}>
+        <div className="drawer-head"><div><span className="dialog-eyebrow">Tự động hóa</span><h2 id="schedule-form-title">{schedule ? 'Sửa lịch' : 'Thêm lịch'}</h2></div><button className="btn icon-only ghost" disabled={saving} onClick={onClose} aria-label="Đóng"><X size={18} /></button></div>
+        <div className="drawer-body">
         <label className="field">
           <span>Phạm vi tài khoản *</span>
           <select
@@ -1318,7 +1315,8 @@ function ScheduleForm(props: {
           <span>Bật lịch ngay sau khi lưu</span>
         </label>
         {error && <p className="test-result fail">{error}</p>}
-        <div className="modal-actions">
+        </div>
+        <div className="modal-actions drawer-actions">
           <button className="btn" onClick={onClose} disabled={saving}>
             Hủy
           </button>

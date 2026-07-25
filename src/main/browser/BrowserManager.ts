@@ -281,6 +281,30 @@ class BrowserManager {
     return this.open.get(accountId)
   }
 
+  // auth_token là bearer credential: chỉ trả về main process để IPC ghi thẳng vào clipboard.
+  // Không log, lưu DB/file hoặc chuyển giá trị token sang renderer.
+  async readXAuthToken(account: Account): Promise<string> {
+    // Không override headless: tài khoản bật chạy ngầm sẽ mở ngầm, còn lại hiện cửa sổ như cấu hình.
+    if (!this.isOpen(account.id)) await this.openProfile(account)
+    const context = this.getContext(account.id)
+    if (!context) throw new Error('Không mở được profile để đọc auth token.')
+
+    const cookies = await context.cookies(['https://x.com', 'https://twitter.com'])
+    const candidates = cookies.filter(
+      (cookie) =>
+        cookie.name === 'auth_token' &&
+        /(^|\.)((x)|(twitter))\.com$/i.test(cookie.domain) &&
+        Boolean(cookie.value)
+    )
+    const authCookie =
+      candidates.find((cookie) => /(^|\.)x\.com$/i.test(cookie.domain)) ?? candidates[0]
+
+    if (!authCookie) {
+      throw new Error('Profile chưa có auth token của X. Hãy đăng nhập X trong đúng profile rồi thử lại.')
+    }
+    return authCookie.value
+  }
+
   async getFingerprint(account: Account, refresh: boolean): Promise<BrowserFingerprintReport> {
     if (!refresh) {
       const cached = getCachedFingerprintReport(account.id)

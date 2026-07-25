@@ -95,6 +95,12 @@ export interface BrowserAuthTokenLoginResult {
   message: string
 }
 
+export interface BrowserAuthTokenExportResult {
+  ok: true
+  copied: true
+  message: string
+}
+
 export interface Account {
   id: string
   label: string
@@ -532,6 +538,7 @@ export const IpcChannels = {
   browserFingerprint: 'browser:fingerprint',
   browserMigrateSession: 'browser:migrateSession',
   browserLoginWithAuthToken: 'browser:loginWithAuthToken',
+  browserCopyAuthToken: 'browser:copyAuthToken',
   navBack: 'app:navBack',
   settingsGet: 'settings:get',
   settingsSave: 'settings:save',
@@ -605,6 +612,7 @@ export interface AviaryApi {
     fingerprint: (accountId: string, refresh?: boolean) => Promise<BrowserFingerprintReport>
     migrateSession: (accountId: string) => Promise<BrowserSessionMigrationResult>
     loginWithAuthToken: (accountId: string, authToken: string) => Promise<BrowserAuthTokenLoginResult>
+    copyAuthToken: (accountId: string) => Promise<BrowserAuthTokenExportResult>
     onStatusChanged: (cb: (accountId: string, open: boolean) => void) => () => void
   }
   settings: {

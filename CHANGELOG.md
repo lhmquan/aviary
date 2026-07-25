@@ -5,6 +5,21 @@ Mọi thay đổi đáng chú ý của Aviary được ghi tại đây.
 Định dạng theo [Keep a Changelog](https://keepachangelog.com/vi/1.0.0/),
 phiên bản theo [Semantic Versioning](https://semver.org/lang/vi/).
 
+## [0.23.0] - 2026-07-25
+
+### Added
+- **Sao chép auth token theo từng tài khoản**: action mới tự mở đúng Chromium/Camoufox, tôn trọng chế độ chạy ngầm của tài khoản, đọc cookie X và ghi thẳng vào clipboard hệ điều hành.
+- **Dialog và toast dùng chung**: xác nhận destructive, trạng thái xử lý async và thông báo kết quả được chuẩn hoá bằng HTML `<dialog>` top-layer cùng toast không chặn giao diện.
+
+### Changed
+- **Loại bỏ toàn bộ popup Windows cũ** trong renderer: thay `alert()`/`confirm()` bằng dialog hiện đại có scrim, Escape, quản lý focus, trạng thái busy và nút hành động theo mức độ cảnh báo.
+- **Form Tài khoản và Lên lịch chuyển sang drawer bên phải**: full-height, nội dung cuộn độc lập, header/footer cố định và giữ ngữ cảnh danh sách phía sau.
+- Validation nhãn tài khoản chuyển sang lỗi inline; các lỗi và kết quả ngắn chuyển sang toast thay vì chặn renderer.
+
+### Security
+- Auth token export không trả credential qua IPC về renderer, không đưa vào React state, DB, file, console hoặc nhật ký; token chỉ đi từ cookie jar trong main process tới clipboard sau khi user xác nhận.
+- Dialog sao chép token hiển thị rõ engine/chế độ mở profile, khóa đóng dialog trong lúc lấy token và nhắc người dùng không chia sẻ credential.
+
 ## [0.22.2] - 2026-07-23
 
 ### Changed
