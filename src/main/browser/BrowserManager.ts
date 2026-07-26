@@ -1,29 +1,22 @@
-import { BrowserWindow } from 'electron'
 import { mkdirSync } from 'fs'
-import { join } from 'path'
 import { execSync } from 'child_process'
 import { createHash } from 'crypto'
 import { chromium, type BrowserContext, type Page } from 'patchright'
 import {
-  IpcChannels,
   PROXY_LOCAL,
   PROXY_RANDOM,
   type Account,
   type BrowserAuthTokenLoginResult,
-  type BrowserFingerprintReport,
-  type BrowserSessionMigrationResult
+  type BrowserFingerprintReport
 } from '../../shared/types'
-import { getProxy, resolveProxyString } from '../db/proxies'
+import { resolveProxyString } from '../db/proxies'
 import {
   getAccount,
   getAccountFingerprintObservation,
   listAccountFingerprintObservations,
-  updateAccount,
-  updateAccountFingerprint,
   updateAccountFingerprintObservation
 } from '../db/accounts'
 import { getAllSettings } from '../db/settings'
-import { launchCamoufox, resolveCamoufoxIpTimezone } from './CamoufoxLauncher'
 import { openTaskPage } from './BrowserPages'
 
 // Parse chuỗi proxy sang cấu hình Playwright. Chấp nhận nhiều định dạng phổ biến:
@@ -80,7 +73,6 @@ export function parseProxy(raw: string | null): { server: string; username?: str
 class BrowserManager {
   private open = new Map<string, BrowserContext>()
   private statusListeners = new Set<(accountId: string, open: boolean) => void>()
-  private camoufoxLaunchTail: Promise<void> = Promise.resolve()
   private fingerprintChecks = new Map<string, Promise<BrowserFingerprintReport>>()
 
   isOpen(accountId: string): boolean {
@@ -111,15 +103,7 @@ class BrowserManager {
   ): Promise<void> {
     if (this.open.has(account.id)) return
 
-    // TÁCH PROFILE THEO ENGINE: profile Chromium và Camoufox có ĐỊNH DẠNG KHÁC NHAU (Chromium
-    // dùng Default/Network/Cookies SQLite mã hoá DPAPI; Firefox/Camoufox dùng cookies.sqlite +
-    // sessionstore). KHÔNG lẫn được. Để đổi engine qua lại không phá session bên kia:
-    //   - Chromium  -> account.profileDir gốc (giữ nguyên profile cũ đã login).
-    //   - Camoufox  -> <profileDir>/camoufox (thư mục con RIÊNG, login X riêng 1 lần).
-    // Hệ quả (đã thống nhất với user): chuyển 1 account từ Chromium sang Camoufox = profile
-    // Camoufox rỗng -> phải ĐĂNG NHẬP X LẠI. Session Chromium cũ vẫn còn nguyên ở thư mục gốc.
-    const profileDir =
-      account.engine === 'camoufox' ? join(account.profileDir, 'camoufox') : account.profileDir
+    const profileDir = account.profileDir
     mkdirSync(profileDir, { recursive: true })
 
     // "Chạy ngầm": headless thuần -> ẩn 100% (không cửa sổ, không taskbar icon).
@@ -130,7 +114,6 @@ class BrowserManager {
     // Proxy: resolve từ account.proxyId ('__local' | '__random' | id). Với __random,
     // mỗi lần mở sẽ pick 1 proxy khác nhau trong kho. Trả về raw string -> parseProxy.
     const proxyString = resolveProxyString(account.proxyId)
-    const proxyIp = getProxy(account.proxyId)?.checkIp ?? null
     // Không log chuỗi proxy vì có thể chứa username/password.
     console.log(
       `[browser] profile ${account.label}: proxy=${proxyString ? 'configured' : 'local'}`
@@ -155,101 +138,47 @@ class BrowserManager {
     // khớp host/đuôi bị chặn; upload endpoint là upload.twitter.com cũng không khớp).
     const blockMedia = getAllSettings().blockMedia
 
-    // ---- RẼ ENGINE theo account.engine ----
-    // 'camoufox' -> Camoufox (Firefox anti-detect native). Camoufox tự lo geo/timezone/WebRTC
-    //   qua geoip + chặn media qua block_images native (KHÔNG dùng CDP như Chromium).
-    // 'chromium' (mặc định / account cũ) -> giữ NGUYÊN luồng patchright cũ.
+    const launch = (): Promise<BrowserContext> =>
+      chromium.launchPersistentContext(profileDir, {
+        channel: 'chrome',
+        headless,
+        viewport: null,
+        proxy: parseProxy(proxyString),
+        args: [
+          '--no-first-run',
+          '--no-default-browser-check',
+          '--disable-infobars',
+          '--test-type'
+        ]
+      })
+
+    // Profile có thể bị khóa bởi tiến trình Chrome cũ/zombie ("Opening in existing
+    // browser session"). Thử mở; nếu lỗi session -> kill tiến trình đang giữ profile
+    // rồi retry đúng 1 lần.
     let context: BrowserContext
-    if (account.engine === 'camoufox') {
-      console.log(`[browser] profile ${account.label}: engine=CAMOUFOX dir=${profileDir}`)
-      // Lần đầu mở account camoufox có thể tải binary ~470MB (camoufox-js tự tải vào cache) — chậm.
-      const launch = (): Promise<BrowserContext> =>
-        this.enqueueCamoufoxLaunch(account.label, () =>
-          launchCamoufox({
-            userDataDir: profileDir,
-            accountId: account.id,
-            headless,
-            proxyString,
-            proxyIp,
-            blockMedia,
-            storedFingerprint: account.fingerprint,
-            onFingerprintCreated: (fingerprint) => updateAccountFingerprint(account.id, fingerprint),
-            onDownloadProgress: (message) =>
-              emitBrowserProgress(account.id, account.label, message, true)
-          }).then((launched) => {
-            // Đăng ký trước khi nhả hàng đợi để UI thấy đúng trạng thái khi bulk-open.
-            this.open.set(account.id, launched)
-            return launched
-          })
-        )
-      try {
-        try {
-          context = await launch()
-        } catch (error) {
-          const message = (error as Error).message ?? ''
-          if (/already running|not responding|profile.*(?:use|lock)|target page, context or browser has been closed/i.test(message)) {
-            killStaleBrowserHolding(profileDir, 'camoufox.exe')
-            context = await launch()
-          } else {
-            throw error
-          }
-        }
-        emitBrowserProgress(account.id, account.label, 'Đã mở profile Camoufox', false)
-      } catch (error) {
-        emitBrowserProgress(
-          account.id,
-          account.label,
-          `Không mở được Camoufox: ${(error as Error).message}`,
-          false
-        )
-        throw error
-      }
-      context.on('close', () => {
-        if (this.open.delete(account.id)) this.emitStatus(account.id, false)
-      })
-    } else {
-      const launch = (): Promise<BrowserContext> =>
-        chromium.launchPersistentContext(profileDir, {
-          channel: 'chrome',
-          headless,
-          viewport: null,
-          proxy: parseProxy(proxyString),
-          args: [
-            '--no-first-run',
-            '--no-default-browser-check',
-            '--disable-infobars',
-            '--test-type'
-          ]
-        })
-
-      // Profile có thể bị khóa bởi tiến trình Chrome cũ/zombie ("Opening in existing
-      // browser session"). Thử mở; nếu lỗi session -> kill tiến trình đang giữ profile
-      // rồi retry đúng 1 lần.
-      try {
+    try {
+      context = await launch()
+    } catch (e) {
+      const msg = (e as Error).message ?? ''
+      if (/existing browser session|already in use|profile|target page, context or browser has been closed/i.test(msg)) {
+        killStaleBrowserHolding(profileDir)
         context = await launch()
-      } catch (e) {
-        const msg = (e as Error).message ?? ''
-        if (/existing browser session|already in use|profile|target page, context or browser has been closed/i.test(msg)) {
-          killStaleBrowserHolding(profileDir, 'chrome.exe')
-          context = await launch()
-        } else {
-          throw e
-        }
+      } else {
+        throw e
       }
+    }
 
-      // Người dùng đóng cửa sổ => gỡ khỏi map + báo UI cập nhật trạng thái.
-      context.on('close', () => {
-        if (this.open.delete(account.id)) this.emitStatus(account.id, false)
-      })
+    // Người dùng đóng cửa sổ => gỡ khỏi map + báo UI cập nhật trạng thái.
+    context.on('close', () => {
+      if (this.open.delete(account.id)) this.emitStatus(account.id, false)
+    })
 
-      // Chặn ẢNH + VIDEO (nếu bật): gắn CDP Network.setBlockedURLs cho MỌI page. CDP session gắn
-      // theo từng page, nên phải áp cho page hiện có + mọi page mở sau (đọc reply / comment mở
-      // page riêng). Lỗi CDP không được làm sập việc mở profile -> bọc try/catch, nuốt lỗi.
-      // (Chỉ Chromium — Camoufox chặn media qua block_images native ở trên.)
-      if (blockMedia) {
-        for (const p of context.pages()) void applyMediaBlock(context, p)
-        context.on('page', (p) => void applyMediaBlock(context, p))
-      }
+    // Chặn ẢNH + VIDEO (nếu bật): gắn CDP Network.setBlockedURLs cho MỌI page. CDP session gắn
+    // theo từng page, nên phải áp cho page hiện có + mọi page mở sau (đọc reply / comment mở
+    // page riêng). Lỗi CDP không được làm sập việc mở profile -> bọc try/catch, nuốt lỗi.
+    if (blockMedia) {
+      for (const p of context.pages()) void applyMediaBlock(context, p)
+      context.on('page', (p) => void applyMediaBlock(context, p))
     }
 
     this.open.set(account.id, context)
@@ -316,7 +245,7 @@ class BrowserManager {
     if (running) return running
 
     const check = this.inspectFingerprint(account).catch((error) => {
-      throw new Error(formatFingerprintError(error, account.engine))
+      throw new Error(formatFingerprintError(error))
     })
     this.fingerprintChecks.set(account.id, check)
     try {
@@ -325,92 +254,6 @@ class BrowserManager {
       if (this.fingerprintChecks.get(account.id) === check) {
         this.fingerprintChecks.delete(account.id)
       }
-    }
-  }
-
-  async migrateXSessionToCamoufox(account: Account): Promise<BrowserSessionMigrationResult> {
-    if (account.engine !== 'chromium') {
-      throw new Error('Chỉ có thể thử chuyển phiên từ profile Chromium.')
-    }
-    const source = this.getContext(account.id)
-    if (!source) {
-      throw new Error('Hãy mở Chromium profile này và đăng nhập X trước khi chuyển phiên.')
-    }
-
-    // Cookie là bearer credential. Chỉ giữ trong closure này, không log/DB/file/IPC value.
-    const allCookies = await source.cookies(['https://x.com', 'https://twitter.com'])
-    const authCookies = allCookies.filter(
-      (cookie) =>
-        (cookie.name === 'ct0' || cookie.name === 'auth_token') &&
-        /(^|\.)((x)|(twitter))\.com$/i.test(cookie.domain) &&
-        Boolean(cookie.value)
-    )
-    const names = new Set(authCookies.map((cookie) => cookie.name))
-    if (!names.has('ct0') || !names.has('auth_token')) {
-      throw new Error('Chromium profile chưa có đủ cookie ct0 và auth_token của X.')
-    }
-
-    // Đóng nguồn trước để X không nhận request đồng thời từ hai engine trong lúc chuyển.
-    await this.closeProfile(account.id)
-    const targetAccount: Account = { ...account, engine: 'camoufox' }
-    try {
-      await this.openProfile(targetAccount, {
-        headlessOverride: false,
-        skipInitialNavigation: true
-      })
-      const target = this.getContext(account.id)
-      if (!target) throw new Error('Không mở được Camoufox để nhận phiên đăng nhập.')
-
-      const oldCookies = await target.cookies(['https://x.com', 'https://twitter.com'])
-      for (const cookie of oldCookies) {
-        if (cookie.name === 'ct0' || cookie.name === 'auth_token') {
-          await target.clearCookies({ name: cookie.name, domain: cookie.domain, path: cookie.path })
-        }
-      }
-      await target.addCookies(
-        authCookies.map((cookie) => ({
-          name: cookie.name,
-          value: cookie.value,
-          domain: cookie.domain,
-          path: cookie.path,
-          ...(cookie.expires > 0 ? { expires: cookie.expires } : {}),
-          httpOnly: cookie.httpOnly,
-          secure: cookie.secure,
-          sameSite: cookie.sameSite
-        }))
-      )
-
-      const page = target.pages()[0] ?? (await openTaskPage(target))
-      await page.goto('https://x.com/home', {
-        waitUntil: 'domcontentloaded',
-        timeout: 30_000
-      })
-      const loggedIn = await page
-        .locator('[data-testid="SideNav_AccountSwitcher_Button"]')
-        .waitFor({ state: 'visible', timeout: 20_000 })
-        .then(() => true)
-        .catch(() => false)
-      if (!loggedIn) {
-        const url = page.url()
-        throw new Error(
-          /\/i\/flow\/login|\/account\/access/i.test(url)
-            ? 'X chưa chấp nhận phiên hoặc đang yêu cầu xác minh; engine vẫn giữ Chromium.'
-            : 'Không xác nhận được trạng thái đăng nhập X trong Camoufox; engine vẫn giữ Chromium.'
-        )
-      }
-
-      // Chỉ đổi engine sau khi X Home xác nhận session đăng nhập thật sự hoạt động.
-      updateAccount(account.id, { engine: 'camoufox' })
-      return {
-        ok: true,
-        engineUpdated: true,
-        importedCookieNames: [...names].sort(),
-        destinationUrl: page.url(),
-        message: 'Đã chuyển phiên thành công và tự cập nhật trình duyệt tài khoản sang Camoufox.'
-      }
-    } catch (error) {
-      await this.closeProfile(account.id).catch(() => {})
-      throw new Error(formatSessionMigrationError(error))
     }
   }
 
@@ -477,7 +320,7 @@ class BrowserManager {
       return {
         ok: true,
         destinationUrl: page.url(),
-        message: `Đã đăng nhập X bằng auth token trên ${account.engine === 'camoufox' ? 'Camoufox' : 'Chromium'}.`
+        message: 'Đã đăng nhập X bằng auth token.'
       }
     } catch (error) {
       throw new Error(formatAuthTokenLoginError(error, authToken))
@@ -487,10 +330,9 @@ class BrowserManager {
   async inspectFingerprint(account: Account): Promise<BrowserFingerprintReport> {
     const openedForCheck = !this.isOpen(account.id)
     if (openedForCheck) {
-      // Camoufox Windows hiện tự thoát code 0 với persistent profile ở chế độ headless.
       // Dùng headful cho lần check đầu rồi tự đóng; profile đang mở sẵn vẫn dùng context hiện tại.
       await this.openProfile(account, {
-        headlessOverride: account.engine === 'camoufox' ? false : true,
+        headlessOverride: true,
         skipInitialNavigation: true
       })
     }
@@ -627,15 +469,13 @@ class BrowserManager {
       if (!runtime?.navigator || !runtime.screen || !runtime.graphics) {
         throw new Error('Trình duyệt không trả về dữ liệu fingerprint hợp lệ')
       }
-      const ipTimezones = runtime.ip ? await resolveIpTimezones(runtime.ip) : null
+      const ipTimezone = runtime.ip ? await resolveIpTimezone(runtime.ip) : null
 
-      // `resolveFingerprint` có thể vừa nâng cấp identity cũ để cố định thêm WebGL/AA.
-      // Đọc lại DB để report phản ánh đúng identity vừa được áp dụng, không dùng object IPC cũ.
       return buildFingerprintReport(
         getAccount(account.id) ?? account,
         runtime,
         openedForCheck,
-        ipTimezones
+        ipTimezone
       )
     } finally {
       await page.close().catch(() => {})
@@ -643,20 +483,6 @@ class BrowserManager {
     }
   }
 
-  private async enqueueCamoufoxLaunch<T>(label: string, launch: () => Promise<T>): Promise<T> {
-    const previous = this.camoufoxLaunchTail
-    let release!: () => void
-    this.camoufoxLaunchTail = new Promise<void>((resolve) => {
-      release = resolve
-    })
-    await previous
-    console.log(`[browser] bắt đầu khởi tạo Camoufox: ${label}`)
-    try {
-      return await launch()
-    } finally {
-      release()
-    }
-  }
 }
 
 export const browserManager = new BrowserManager()
@@ -670,36 +496,16 @@ interface RuntimeFingerprint {
   graphics: BrowserFingerprintReport['graphics']
 }
 
-interface IpTimezones {
-  engine: string | null
-  external: string | null
-}
+const ipTimezoneCache = new Map<string, string | null>()
 
-const ipTimezoneCache = new Map<string, IpTimezones>()
-
-interface StoredCamoufoxIdentity {
-  version?: number
-  fingerprint?: {
-    navigator?: Record<string, unknown>
-    screen?: Record<string, unknown>
-    videoCard?: { vendor?: string; renderer?: string }
-  }
-  config?: {
-    'canvas:seed'?: number
-    'audio:seed'?: number
-    'fonts:spacing_seed'?: number
-    'canvas:aaOffset'?: number
-  }
-  webglConfig?: [string, string]
-}
-
-const FINGERPRINT_OBSERVATION_VERSION = 2
+// v3: report cache mới không còn các field identity riêng của engine cũ.
+const FINGERPRINT_OBSERVATION_VERSION = 3
 
 function buildFingerprintReport(
   account: Account,
   runtime: RuntimeFingerprint,
   openedForCheck: boolean,
-  ipTimezones: IpTimezones | null
+  ipTimezone: string | null
 ): BrowserFingerprintReport {
   const stableSnapshot = {
     navigator: runtime.navigator,
@@ -721,34 +527,22 @@ function buildFingerprintReport(
     : null
   const changedFields = previous ? findChangedFields(previous, stableSnapshot) : []
   const identityId = shortHash(stableStringify(stableSnapshot))
-  const stored = parseStoredCamoufoxIdentity(account.fingerprint)
-  const expectedMismatches = stored
-    ? compareManagedFingerprint(stored, runtime)
-    : account.engine === 'camoufox'
-      ? ['Chưa có identity Camoufox đã lưu']
-      : []
 
   const report = withFingerprintQuality({
     accountId: account.id,
     accountLabel: account.label,
-    engine: account.engine,
     capturedAt: Date.now(),
     openedForCheck,
     identity: {
       id: identityId,
-      managed: account.engine === 'camoufox',
-      storedVersion: stored?.version ?? null,
       stability: previous ? (changedFields.length === 0 ? 'match' : 'changed') : 'first_check',
       changedFields
     },
     network: {
       ip: runtime.ip,
       timezone: runtime.timezone,
-      ipTimezone: ipTimezones?.engine ?? null,
-      externalIpTimezone: ipTimezones?.external ?? null,
-      timezoneMatch: ipTimezones?.engine
-        ? timezonesMatch(runtime.timezone, ipTimezones.engine)
-        : null,
+      ipTimezone,
+      timezoneMatch: ipTimezone ? timezonesMatch(runtime.timezone, ipTimezone) : null,
       proxyMode:
         account.proxyId === PROXY_LOCAL
           ? 'local'
@@ -759,14 +553,7 @@ function buildFingerprintReport(
     },
     navigator: runtime.navigator,
     screen: runtime.screen,
-    graphics: runtime.graphics,
-    stored: {
-      fingerprintId: stored ? shortHash(stableStringify(stored.fingerprint ?? {})) : null,
-      canvasSeed: stored?.config?.['canvas:seed'] ?? null,
-      audioSeed: stored?.config?.['audio:seed'] ?? null,
-      fontSeed: stored?.config?.['fonts:spacing_seed'] ?? null
-    },
-    expectedMismatches
+    graphics: runtime.graphics
   } as Omit<BrowserFingerprintReport, 'quality'>, account.id)
   updateAccountFingerprintObservation(
     account.id,
@@ -795,18 +582,15 @@ async function enrichCachedNetwork(
   accountId: string,
   report: BrowserFingerprintReport
 ): Promise<BrowserFingerprintReport> {
-  if (!report.network.ip || report.network.externalIpTimezone !== undefined) return report
-  const ipTimezones = await resolveIpTimezones(report.network.ip)
+  if (!report.network.ip || report.network.ipTimezone !== undefined) return report
+  const ipTimezone = await resolveIpTimezone(report.network.ip)
   const enriched = withFingerprintQuality(
     {
       ...report,
       network: {
         ...report.network,
-        ipTimezone: ipTimezones.engine,
-        externalIpTimezone: ipTimezones.external,
-        timezoneMatch: ipTimezones.engine
-          ? timezonesMatch(report.network.timezone, ipTimezones.engine)
-          : null
+        ipTimezone,
+        timezoneMatch: ipTimezone ? timezonesMatch(report.network.timezone, ipTimezone) : null
       }
     },
     accountId
@@ -846,29 +630,26 @@ function withFingerprintQuality(
     collisions.length === 0
       ? 'Chưa trùng mã runtime với account đã kiểm tra khác'
       : `Trùng mã runtime với ${collisions.length} account khác`,
-    25
+    30
   )
   add(
     'Che dấu automation',
     !report.navigator.webdriver,
     report.navigator.webdriver ? 'navigator.webdriver đang bật' : 'navigator.webdriver = false',
-    20
+    25
   )
-  const isolatedIdentity = report.identity.managed &&
-    Boolean(report.stored.fingerprintId) &&
-    report.stored.canvasSeed !== null &&
-    report.stored.audioSeed !== null &&
-    report.stored.fontSeed !== null
+  // Fingerprint ổn định giữa các lần mở: X coi thiết bị đổi liên tục là tín hiệu đáng ngờ.
+  const stableIdentity = report.identity.stability !== 'changed'
   add(
-    'Identity riêng biệt',
-    isolatedIdentity,
-    isolatedIdentity
-      ? 'Fingerprint và canvas/audio/font seed riêng theo account'
-      : report.identity.managed
-        ? 'Identity anti-detect chưa đủ seed riêng'
-        : 'Fingerprint native dùng chung đặc tính thiết bị thật',
-    20,
-    report.identity.managed ? 10 : 5
+    'Fingerprint ổn định',
+    stableIdentity,
+    report.identity.stability === 'match'
+      ? 'Fingerprint không đổi so với lần kiểm tra trước'
+      : report.identity.stability === 'first_check'
+        ? 'Lần kiểm tra đầu, đã lưu mốc so sánh cho lần sau'
+        : `Đã đổi ${report.identity.changedFields.length} đặc tính so với lần trước`,
+    15,
+    report.identity.stability === 'first_check' ? 10 : 0
   )
   const webrtcSafe = report.network.webrtc === 'disabled'
   add(
@@ -910,14 +691,14 @@ function withFingerprintQuality(
   )
   const timezoneMatch = report.network.timezoneMatch
   add(
-    'Múi giờ khớp GeoLite2',
+    'Múi giờ khớp IP',
     timezoneMatch === true,
     timezoneMatch === true
-      ? `${report.network.timezone} khớp Camoufox GeoLite2`
+      ? `${report.network.timezone} khớp múi giờ của IP`
       : timezoneMatch === false
-        ? `Browser: ${report.network.timezone} · GeoLite2: ${report.network.ipTimezone}`
-        : 'Chưa có dữ liệu Camoufox GeoLite2',
-    10,
+        ? `Browser: ${report.network.timezone} · IP: ${report.network.ipTimezone}`
+        : 'Chưa tra được múi giờ theo IP',
+    5,
     timezoneMatch === null && report.network.ip ? 3 : 0
   )
 
@@ -941,11 +722,12 @@ function findFingerprintCollisions(accountId: string, identityId: string): strin
   return collisions
 }
 
-async function resolveIpTimezones(ip: string): Promise<IpTimezones> {
+// Tra múi giờ theo IP để so với múi giờ trình duyệt. Nguồn ngoài có thể lệch cấp bang/thành phố
+// nên chỉ dùng để cảnh báo lệch rõ ràng, không dùng để chấm điểm nặng.
+async function resolveIpTimezone(ip: string): Promise<string | null> {
   const cached = ipTimezoneCache.get(ip)
-  if (cached) return cached
-  const engine = await resolveCamoufoxIpTimezone(ip)
-  let external: string | null = null
+  if (cached !== undefined) return cached
+  let timezone: string | null = null
   try {
     const response = await fetch(`https://ipwho.is/${encodeURIComponent(ip)}?fields=success,timezone`, {
       signal: AbortSignal.timeout(8_000)
@@ -955,18 +737,17 @@ async function resolveIpTimezones(ip: string): Promise<IpTimezones> {
       success?: boolean
       timezone?: { id?: unknown } | string
     }
-    external = typeof data.timezone === 'string'
+    timezone = typeof data.timezone === 'string'
       ? data.timezone
       : typeof data.timezone?.id === 'string'
         ? data.timezone.id
         : null
-    if (data.success === false) external = null
+    if (data.success === false) timezone = null
   } catch {
-    external = null
+    timezone = null
   }
-  const result = { engine, external }
-  ipTimezoneCache.set(ip, result)
-  return result
+  ipTimezoneCache.set(ip, timezone)
+  return timezone
 }
 
 function timezonesMatch(browserTimezone: string, ipTimezone: string): boolean {
@@ -981,12 +762,10 @@ function canonicalTimezone(timezone: string): string {
   }
 }
 
-function formatFingerprintError(error: unknown, engine: Account['engine']): string {
+function formatFingerprintError(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error)
   if (/already running|not responding|profile.*(?:use|lock)|target page, context or browser has been closed/i.test(message)) {
-    return engine === 'camoufox'
-      ? 'Profile Camoufox đang được một tiến trình khác giữ. Hãy đóng cửa sổ Camoufox của tài khoản này, chờ vài giây rồi bấm Kiểm tra lại.'
-      : 'Profile Chromium đang được một tiến trình khác giữ. Hãy đóng cửa sổ Chromium của tài khoản này, chờ vài giây rồi bấm Kiểm tra lại.'
+    return 'Profile Chromium đang được một tiến trình khác giữ. Hãy đóng cửa sổ Chromium của tài khoản này, chờ vài giây rồi bấm Kiểm tra lại.'
   }
   if (/timeout|timed out/i.test(message)) {
     return 'Kiểm tra quá thời gian chờ. Hãy kiểm tra lại proxy hoặc mở profile trước rồi thử lại.'
@@ -994,12 +773,6 @@ function formatFingerprintError(error: unknown, engine: Account['engine']): stri
   // Không đưa browser logs/command line dài (có thể chứa IP hoặc dữ liệu nhạy cảm) ra UI.
   const firstLine = message.split(/\r?\n|Browser logs:|Call log:/)[0].trim()
   return firstLine || 'Không đọc được fingerprint từ trình duyệt.'
-}
-
-function formatSessionMigrationError(error: unknown): string {
-  const message = error instanceof Error ? error.message : String(error)
-  const firstLine = message.split(/\r?\n|Browser logs:|Call log:/)[0].trim()
-  return firstLine || 'Không chuyển được phiên đăng nhập sang Camoufox.'
 }
 
 function formatAuthTokenLoginError(error: unknown, authToken: string): string {
@@ -1031,16 +804,6 @@ function extractAuthToken(raw: unknown): string | null {
   return token && !/[\s;,}]/.test(token) ? token : null
 }
 
-function parseStoredCamoufoxIdentity(raw: string | null): StoredCamoufoxIdentity | null {
-  if (!raw) return null
-  try {
-    const parsed = JSON.parse(raw) as StoredCamoufoxIdentity
-    return parsed.fingerprint && parsed.config ? parsed : null
-  } catch {
-    return null
-  }
-}
-
 function parseJsonRecord(raw: string | null): Record<string, unknown> | null {
   if (!raw) return null
   try {
@@ -1048,24 +811,6 @@ function parseJsonRecord(raw: string | null): Record<string, unknown> | null {
   } catch {
     return null
   }
-}
-
-function compareManagedFingerprint(
-  stored: StoredCamoufoxIdentity,
-  runtime: RuntimeFingerprint
-): string[] {
-  const expectedNavigator = stored.fingerprint?.navigator
-  const expectedScreen = stored.fingerprint?.screen
-  const checks: Array<[string, unknown, unknown]> = [
-    ['Nền tảng', expectedNavigator?.platform, runtime.navigator.platform],
-    ['Số luồng CPU', expectedNavigator?.hardwareConcurrency, runtime.navigator.hardwareConcurrency],
-    ['Độ sâu màu', expectedScreen?.colorDepth, runtime.screen.colorDepth],
-    ['WebGL vendor', stored.webglConfig?.[0], runtime.graphics.vendor],
-    ['WebGL renderer', stored.webglConfig?.[1], runtime.graphics.renderer]
-  ]
-  return checks
-    .filter(([, expected, actual]) => expected !== undefined && expected !== actual)
-    .map(([label, expected, actual]) => `${label}: lưu ${String(expected)}, runtime ${String(actual)}`)
 }
 
 function findChangedFields(
@@ -1109,23 +854,6 @@ function shortHash(value: string): string {
   return `${hash.slice(0, 4)}-${hash.slice(4, 8)}-${hash.slice(8, 12)}-${hash.slice(12)}`
 }
 
-function emitBrowserProgress(
-  accountId: string,
-  accountLabel: string,
-  message: string,
-  busy: boolean
-): void {
-  for (const win of BrowserWindow.getAllWindows()) {
-    win.webContents.send(IpcChannels.taskProgress, {
-      accountId,
-      accountLabel,
-      stage: 'open',
-      message,
-      busy
-    })
-  }
-}
-
 // Danh sách pattern URL media của X để chặn qua CDP Network.setBlockedURLs.
 //   - ẢNH: host pbs.twimg.com (ảnh feed, avatar, card…) + đuôi ảnh phổ biến.
 //   - VIDEO: host video.twimg.com + đuôi stream HLS/DASH (.m3u8/.ts/.m4s/.mpd) + .mp4.
@@ -1158,9 +886,9 @@ async function applyMediaBlock(context: BrowserContext, page: Page): Promise<voi
 // Dọn process browser mồ côi đang giữ đúng profileDir sau khi Aviary restart/crash.
 // Chỉ nhắm command line có đường dẫn profile của account này, không động browser cá nhân
 // hoặc profile tài khoản khác.
-function killStaleBrowserHolding(profileDir: string, processName: 'chrome.exe' | 'camoufox.exe'): void {
+function killStaleBrowserHolding(profileDir: string): void {
   try {
-    const encodedName = Buffer.from(processName, 'utf16le').toString('base64')
+    const encodedName = Buffer.from('chrome.exe', 'utf16le').toString('base64')
     const encodedProfile = Buffer.from(profileDir, 'utf16le').toString('base64')
     // Truyền dữ liệu qua base64 để đường dẫn/ký tự đặc biệt không thể phá câu lệnh PowerShell.
     const script = [

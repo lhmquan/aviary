@@ -71,11 +71,9 @@ function migrate(d: Database.Database): void {
   addColumnIfMissing(d, 'accounts', 'statuses', 'INTEGER')
   // Avatar X (URL pbs.twimg.com). null = chưa fetch hoặc không có handle.
   addColumnIfMissing(d, 'accounts', 'avatar_url', 'TEXT')
-  // Engine trình duyệt: 'chromium' (mặc định, patchright) | 'camoufox' (Firefox anti-detect).
-  // DB cũ / account cũ tự nhận 'chromium' -> không đổi hành vi.
+  // Legacy column kept for compatibility with databases created by older Aviary versions.
   addColumnIfMissing(d, 'accounts', 'engine', "TEXT NOT NULL DEFAULT 'chromium'")
   // Snapshot runtime gần nhất để xác nhận fingerprint không đổi giữa các lần mở.
-  // Tách khỏi `fingerprint` vì cột đó là identity cấu hình đầu vào của Camoufox.
   addColumnIfMissing(d, 'accounts', 'fingerprint_observation', 'TEXT')
 
   // Bảng kho proxy chung (tab Proxy).

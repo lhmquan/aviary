@@ -31,7 +31,7 @@ import {
 import { runInteractSession } from '../actions/InteractSession'
 import { generateScheduledComment } from '../ai/AiClient'
 import { isStopRequested, clearStop } from './cancel'
-import { insertLog, pruneLogs, listSuccessfulPostUrls } from '../db/logs'
+import { insertLog, pruneLogs } from '../db/logs'
 import {
   insertCommentedLink,
   updateLinkStatus,
@@ -700,35 +700,33 @@ export async function runCommentForAccount(
 
   try {
     // 5. Dựng danh sách N bài MỚI NHẤT của chính tài khoản.
-    //    (a) ƯU TIÊN URL đăng thành công từ nhật ký (không cần cuộn).
-    //    (b) Nếu < N -> cuộn profile bổ sung, gộp (khử trùng canonical, giữ mới->cũ).
-    const fromLogs = listSuccessfulPostUrls(accountId, newestCount)
-    const candidateSet = new Set<string>()
+    //    Profile hiện tại là nguồn sự thật duy nhất. Nhật ký chỉ là lịch sử bài Aviary từng
+    //    đăng, không phải snapshot timeline; trộn URL từ log có thể đưa bài cũ/đã xoá vào quota
+    //    và làm bỏ sót bài mới.
     const candidates: string[] = []
-    for (const u of fromLogs) {
-      if (candidates.length >= newestCount) break
-      if (candidateSet.has(u)) continue
-      candidateSet.add(u)
-      candidates.push(u)
+    emitProgress({
+      accountId,
+      accountLabel: label,
+      stage: 'collect',
+      message: `Đang quét profile để lấy ${newestCount} bài gốc mới nhất…`,
+      busy: true
+    })
+    const crawled = await crawlNewestOwnPostUrls(
+      context,
+      handle,
+      newestCount,
+      accountId,
+      (message) => emitProgress({ accountId, accountLabel: label, stage: 'collect', message, busy: true })
+    )
+    const crawledPosts = new Map(
+      crawled.posts.map((post) => [canonicalizeTweetUrl(post.url) ?? post.url, post])
+    )
+    for (const u of crawled.urls) {
+      const canon = canonicalizeTweetUrl(u)
+      if (canon) candidates.push(canon)
     }
 
-    if (candidates.length < newestCount) {
-      emitProgress({
-        accountId,
-        accountLabel: label,
-        stage: 'collect',
-        message: `Nhật ký có ${candidates.length}/${newestCount} bài — cuộn profile lấy thêm…`,
-        busy: true
-      })
-      const crawled = await crawlNewestOwnPostUrls(
-        context,
-        handle,
-        newestCount,
-        accountId,
-        (message) => emitProgress({ accountId, accountLabel: label, stage: 'collect', message, busy: true })
-      )
-      if (crawled.error && candidates.length === 0) {
-        // Chỉ fail cứng khi KHÔNG có ứng viên nào từ log (không thể tiếp tục).
+    if (crawled.error) {
         insertLog({
           accountId,
           accountLabel: label,
@@ -743,22 +741,6 @@ export async function runCommentForAccount(
         })
         emitProgress({ accountId, accountLabel: label, stage: 'error', message: `Lỗi: ${crawled.error}`, busy: false })
         return { ok: false, commentedCount: 0, urls: [], error: crawled.error, step: 'collect', screenshot: crawled.screenshot }
-      }
-      for (const u of crawled.urls) {
-        if (candidates.length >= newestCount) break
-        const canon = canonicalizeTweetUrl(u) ?? u
-        if (candidateSet.has(canon)) continue
-        candidateSet.add(canon)
-        candidates.push(canon)
-      }
-    } else {
-      emitProgress({
-        accountId,
-        accountLabel: label,
-        stage: 'collect',
-        message: `Đủ ${candidates.length} bài mới nhất từ nhật ký — bỏ qua cuộn profile.`,
-        busy: true
-      })
     }
 
     if (candidates.length === 0) {
@@ -796,15 +778,18 @@ export async function runCommentForAccount(
       busy: true
     })
 
-    // 7. Pha 1 — Đọc views song song theo maxConcurrentTabs.
-    //    Mỗi batch mở nhiều tab cùng lúc để check view; sau đó đóng tất cả.
+    // 7. Pha 1 — Dùng views đã đọc ngay trên profile trước. Chỉ mở detail khi profile
+    //    không có số đầy đủ (bài mới render thiếu analytics hoặc layout X khác).
     //    Bài dưới ngưỡng / không đọc được views -> KHÔNG cache (thử lại lần sau).
     const maxConcurrentTabs = Math.max(1, getAllSettings().maxConcurrentTabs)
+    const needsDetail = pending.filter((url) => crawledPosts.get(url)?.views == null)
     emitProgress({
       accountId,
       accountLabel: label,
       stage: 'comment',
-      message: `Đọc lượt xem ${pending.length} bài (tối đa ${maxConcurrentTabs} tab đồng thời)…`,
+      message: needsDetail.length
+        ? `Đã đọc view trực tiếp trên profile; mở detail bổ sung cho ${needsDetail.length}/${pending.length} bài…`
+        : `Đã đọc view trực tiếp trên profile cho ${pending.length} bài; không cần mở detail để lấy view.`,
       busy: true
     })
 
@@ -822,6 +807,14 @@ export async function runCommentForAccount(
       const batchResults = await Promise.all(
         batch.map((url, i) => {
           const idx = batchStart + i + 1
+          const inline = crawledPosts.get(url)
+          if (inline?.views != null) {
+            return Promise.resolve({
+              url,
+              vr: { views: inline.views, caption: inline.caption },
+              idx
+            })
+          }
           return readTweetViews(context, url, accountId, (msg) =>
             emitProgress({
               accountId,

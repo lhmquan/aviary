@@ -7,22 +7,13 @@ export interface AppInfo {
 
 export type AccountStatus = 'new' | 'logged_in' | 'checkpoint' | 'banned' | 'disabled'
 
-// Engine trình duyệt cho account:
-//   'chromium' = Chromium/patchright (mặc định, tương thích mọi tính năng cũ).
-//   'camoufox' = Camoufox (Firefox anti-detect native): canvas native không "masking",
-//                WebRTC disabled, geo/timezone tự khớp proxy qua geoip. Tuỳ chọn per-account.
-export type BrowserEngine = 'chromium' | 'camoufox'
-
 export interface BrowserFingerprintReport {
   accountId: string
   accountLabel: string
-  engine: BrowserEngine
   capturedAt: number
   openedForCheck: boolean
   identity: {
     id: string
-    managed: boolean
-    storedVersion: number | null
     stability: 'first_check' | 'match' | 'changed'
     changedFields: string[]
   }
@@ -30,7 +21,6 @@ export interface BrowserFingerprintReport {
     ip: string | null
     timezone: string
     ipTimezone: string | null
-    externalIpTimezone: string | null
     timezoneMatch: boolean | null
     proxyMode: 'local' | 'random' | 'fixed'
     webrtc: 'disabled' | 'available' | 'unknown'
@@ -61,13 +51,6 @@ export interface BrowserFingerprintReport {
     canvasHash: string
     audioHash: string | null
   }
-  stored: {
-    fingerprintId: string | null
-    canvasSeed: number | null
-    audioSeed: number | null
-    fontSeed: number | null
-  }
-  expectedMismatches: string[]
   quality: {
     score: number
     grade: 'excellent' | 'good' | 'fair' | 'risk'
@@ -79,14 +62,6 @@ export interface BrowserFingerprintReport {
       maxPoints: number
     }>
   }
-}
-
-export interface BrowserSessionMigrationResult {
-  ok: boolean
-  engineUpdated: boolean
-  importedCookieNames: string[]
-  destinationUrl: string | null
-  message: string
 }
 
 export interface BrowserAuthTokenLoginResult {
@@ -106,10 +81,7 @@ export interface Account {
   label: string
   handle: string | null
   profileDir: string
-  fingerprint: string | null
   status: AccountStatus
-  // Engine trình duyệt. DB cũ / account cũ = 'chromium' (không đổi hành vi).
-  engine: BrowserEngine
   assetUrl: string | null
   headless: boolean
   hashtag: string | null
@@ -138,7 +110,6 @@ export interface AccountInput {
   label: string
   handle?: string | null
   proxyId?: string
-  engine?: BrowserEngine
   assetUrl?: string | null
   headless?: boolean
   hashtag?: string | null
@@ -536,7 +507,6 @@ export const IpcChannels = {
   browserClose: 'browser:close',
   browserStatus: 'browser:status',
   browserFingerprint: 'browser:fingerprint',
-  browserMigrateSession: 'browser:migrateSession',
   browserLoginWithAuthToken: 'browser:loginWithAuthToken',
   browserCopyAuthToken: 'browser:copyAuthToken',
   navBack: 'app:navBack',
@@ -610,7 +580,6 @@ export interface AviaryApi {
     // refresh=false: trả cache nếu có; chỉ tự kiểm tra browser khi account chưa có cache.
     // refresh=true: user chủ động bấm "Kiểm tra lại".
     fingerprint: (accountId: string, refresh?: boolean) => Promise<BrowserFingerprintReport>
-    migrateSession: (accountId: string) => Promise<BrowserSessionMigrationResult>
     loginWithAuthToken: (accountId: string, authToken: string) => Promise<BrowserAuthTokenLoginResult>
     copyAuthToken: (accountId: string) => Promise<BrowserAuthTokenExportResult>
     onStatusChanged: (cb: (accountId: string, open: boolean) => void) => () => void

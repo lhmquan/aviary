@@ -2918,35 +2918,6 @@ nav {
   min-width: 0;
 }
 
-/* Logo engine hiện tại của account, đặt cạnh avatar để nhận biết nhanh. */
-.browser-engine-logo {
-  width: 25px;
-  height: 25px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex: 0 0 25px;
-  border-radius: 8px;
-  border: 1px solid var(--border);
-  background: var(--panel-2);
-  box-shadow: var(--shadow-sm);
-  cursor: help;
-}
-.browser-engine-logo svg {
-  width: 19px;
-  height: 19px;
-  display: block;
-}
-.browser-engine-logo.chromium {
-  background: color-mix(in srgb, #4285f4 8%, var(--panel));
-  border-color: color-mix(in srgb, #4285f4 24%, var(--border));
-}
-.browser-engine-logo.camoufox {
-  background: linear-gradient(135deg,
-    color-mix(in srgb, #7c5cff 14%, var(--panel)),
-    color-mix(in srgb, #ff8a3d 10%, var(--panel)));
-  border-color: color-mix(in srgb, #7c5cff 28%, var(--border));
-}
 .fingerprint-modal-head h2 {
   margin: 0;
   font-size: 18px;

@@ -183,12 +183,6 @@ export function registerIpc(): void {
     return browserManager.getFingerprint(account, refresh)
   })
 
-  ipcMain.handle(IpcChannels.browserMigrateSession, async (_e, accountId: string) => {
-    const account = getAccount(accountId)
-    if (!account) throw new Error(`Account không tồn tại: ${accountId}`)
-    return browserManager.migrateXSessionToCamoufox(account)
-  })
-
   ipcMain.handle(
     IpcChannels.browserLoginWithAuthToken,
     async (_e, accountId: string, authToken: string) => {

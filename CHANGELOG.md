@@ -5,6 +5,23 @@ Mọi thay đổi đáng chú ý của Aviary được ghi tại đây.
 Định dạng theo [Keep a Changelog](https://keepachangelog.com/vi/1.0.0/),
 phiên bản theo [Semantic Versioning](https://semver.org/lang/vi/).
 
+## Unreleased
+
+## [0.24.0] - 2026-07-26
+
+### Changed
+- **Lịch bình luận quét đúng timeline hiện tại**: không còn dùng URL lịch sử trong nhật ký để thay thế danh sách bài mới nhất trên profile, tránh bài cũ/đã xoá chiếm quota và làm bỏ sót bài mới.
+- **Lọc reply ngay khi thu thập**: reply của chính tài khoản không còn chiếm một slot trong số N bài gốc cần xét.
+- **Đọc views trực tiếp khi cuộn profile**: dùng số views đầy đủ từ `role="group"`/anchor analytics trên article; chỉ mở detail cho bài không có số views inline.
+
+### Removed
+- **Gỡ hoàn toàn Camoufox/Firefox khỏi runtime** sau khi X trả lỗi API trên nhiều account và proxy; Aviary hiện chỉ dùng Chromium + Patchright.
+- Gỡ engine selector, session migration, proxy bridge Firefox, Camoufox launcher, dependency và các script PoC liên quan.
+
+### Fixed
+- **Bỏ sót bài đủ ngưỡng views trong lịch bình luận** khi nhật ký đã có đủ N URL nhưng không phản ánh timeline profile hiện tại.
+- Giảm số lần mở permalink và tab detail khi quét views, đặc biệt với các bài mới có `aria-label` views đầy đủ trên profile.
+
 ## [0.23.0] - 2026-07-25
 
 ### Added

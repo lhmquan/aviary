@@ -4,6 +4,10 @@
 > Mục đích: sau này quay lại làm tiếp thì đọc để biết **đã làm gì, kết quả ra sao, còn vướng gì, hướng nào**.
 > Cập nhật gần nhất: **2026-07-21**.
 
+> **Quyết định 2026-07-26:** Camoufox đã được gỡ khỏi Aviary. X trả lỗi API trên Camoufox
+> với nhiều account và proxy trong khi Chromium/Patchright hoạt động bình thường. Các phần
+> Camoufox bên dưới được giữ như nhật ký nghiên cứu lịch sử, không còn là tính năng runtime.
+
 ---
 
 ## 1. Bối cảnh & mục tiêu

@@ -1527,9 +1527,8 @@ export async function readTweetViews(
 
 /**
  * Cuộn trang profile thu thập URL các bài MỚI NHẤT của CHÍNH tài khoản (canonical), mới->cũ.
- * LỌC: chỉ giữ bài GỐC của tài khoản; BỎ QUA bài ghim, repost/retweet, quảng cáo/Promoted, và
- * "Discover more"/gợi ý của X. KHÔNG lọc reply ở đây (trang profile mọi article đều tabindex=0)
- * — reply thật sẽ được commentOnTweet phát hiện và bỏ qua vĩnh viễn khi mở từng bài.
+ * LỌC: chỉ giữ bài GỐC của tài khoản; BỎ QUA bài ghim, reply, repost/retweet, quảng cáo/Promoted,
+ * và "Discover more"/gợi ý của X. Reply phải được loại ngay lúc thu thập để không chiếm quota N.
  * Dừng khi đủ `count` bài hoặc chạm đáy timeline.
  *
  * @param context  Browser context đã mở (có session X)
@@ -1543,11 +1542,17 @@ export async function crawlNewestOwnPostUrls(
   count: number,
   accountId?: string,
   report: StepReporter = noop
-): Promise<{ urls: string[]; error?: string; screenshot?: string }> {
+): Promise<{
+  urls: string[]
+  posts: Array<{ url: string; views: number | null; caption: string }>
+  error?: string
+  screenshot?: string
+}> {
   const acc = accountId ?? 'unknown'
   const cleanHandle = normalizeHandle(handle)
   let page: Page | null = null
   const urls: string[] = []
+  const posts: Array<{ url: string; views: number | null; caption: string }> = []
   const seenCanon = new Set<string>()
 
   try {
@@ -1564,6 +1569,7 @@ export async function crawlNewestOwnPostUrls(
       await page.screenshot({ path: shot }).catch(() => {})
       return {
         urls: [],
+        posts: [],
         error: 'Session hết hạn — bị chuyển về trang đăng nhập. Hãy mở profile và đăng nhập lại.',
         screenshot: existsSync(shot) ? shot : undefined
       }
@@ -1574,12 +1580,14 @@ export async function crawlNewestOwnPostUrls(
     const statusHref = `a[href*="/${cleanHandle}/status/" i]`
     const tweetSelector = `article[data-testid="tweet"]:visible:has(${statusHref})`
 
-    // Đọc socialContext 1 lần: bắt repost/retweet, bài ghim (pinned) VÀ gợi ý ("Discover more"/
-    // "You might like"…). Text theo ngôn ngữ giao diện nên khớp cả EN lẫn VI.
-    async function contextKind(a: Locator): Promise<'repost' | 'pinned' | 'suggest' | null> {
+    // Đọc socialContext 1 lần: bắt reply, repost/retweet, bài ghim (pinned) VÀ gợi ý
+    // ("Discover more"/"You might like"). Reply của chính account vẫn có permalink cùng
+    // handle, nên phải loại ngay tại đây để không chiếm chỗ trong quota N bài gốc.
+    async function contextKind(a: Locator): Promise<'reply' | 'repost' | 'pinned' | 'suggest' | null> {
       const sc = a.locator('[data-testid="socialContext"]').first()
       if (!(await sc.isVisible().catch(() => false))) return null
       const ctx = (await sc.textContent({ timeout: 300 }).catch(() => null)) ?? ''
+      if (/reply|repl(?:ying|ied)|trả lời|đang trả lời/i.test(ctx)) return 'reply'
       if (/repost|reposted|đăng lại|retweet/i.test(ctx)) return 'repost'
       if (/pinned|đã ghim|ghim/i.test(ctx)) return 'pinned'
       if (/discover more|you might like|suggested|gợi ý|có thể bạn thích|khám phá thêm/i.test(ctx))
@@ -1611,15 +1619,45 @@ export async function crawlNewestOwnPostUrls(
           .catch(() => null)
         const canon = canonicalizeTweetUrl(href)
         if (!canon || seenCanon.has(canon)) continue
-        seenCanon.add(canon)
 
         const kind = await contextKind(a)
         if (kind) continue // repost / pinned / suggest -> bỏ qua
         if (await isPromoted(a)) continue // quảng cáo -> bỏ qua
 
+        // Chỉ đánh dấu sau khi bài đã qua bộ lọc. X có thể render lại cùng permalink trong
+        // một card khác; nếu lần đầu là suggested/reply rồi sau đó là bài gốc, không được để
+        // lần xuất hiện bị lọc làm mất bài hợp lệ.
+        seenCanon.add(canon)
         urls.push(canon)
+        const inline = await a
+          .evaluate((root) => {
+            const texts: string[] = []
+            const group = root.querySelector('[role="group"]')
+            const groupLabel = group?.getAttribute('aria-label')
+            if (groupLabel) texts.push(groupLabel)
+            const analytics = root.querySelector('a[href$="/analytics"]')
+            if (analytics) {
+              const label = analytics.getAttribute('aria-label')
+              if (label) texts.push(label)
+              const text = (analytics as { innerText?: string }).innerText
+              if (text) texts.push(text)
+            }
+            const caption = (root.querySelector('[data-testid="tweetText"]') as { innerText?: string } | null)?.innerText ?? ''
+            return { texts, caption }
+          })
+          .catch(() => ({ texts: [], caption: '' }))
+        let views: number | null = null
+        for (const text of inline.texts) {
+          views = parseViewsFromText(text)
+          if (views != null) break
+        }
+        posts.push({ url: canon, views, caption: inline.caption.trim() })
         foundNew = true
-        report(`Đã thu thập ${urls.length}/${count} bài mới nhất…`)
+        report(
+          views == null
+            ? `Đã thu thập ${urls.length}/${count} bài mới nhất (chưa đọc được view trong profile)…`
+            : `Đã thu thập ${urls.length}/${count} bài mới nhất (${views.toLocaleString('en-US')} views)…`
+        )
       }
 
       if (urls.length >= count) break
@@ -1647,11 +1685,11 @@ export async function crawlNewestOwnPostUrls(
       }
     }
 
-    return { urls }
+    return { urls, posts }
   } catch (e) {
     const shot = screenshotPath(acc, 'comment_collect')
     await page?.screenshot({ path: shot }).catch(() => {})
-    return { urls, error: (e as Error).message, screenshot: existsSync(shot) ? shot : undefined }
+    return { urls, posts, error: (e as Error).message, screenshot: existsSync(shot) ? shot : undefined }
   } finally {
     if (page && !page.isClosed()) {
       await page.close().catch(() => {})

@@ -37,7 +37,7 @@ import {
   KeyRound,
   Copy
 } from 'lucide-react'
-import type { Account, AccountInput, AccountActivity, AccountHealth, BrowserEngine, BrowserFingerprintReport, Proxy, Schedule, WebhookTestResult, XProfileInfo } from '@shared/types'
+import type { Account, AccountInput, AccountActivity, AccountHealth, BrowserFingerprintReport, Proxy, Schedule, WebhookTestResult, XProfileInfo } from '@shared/types'
 import { PROXY_LOCAL, PROXY_RANDOM } from '@shared/types'
 import { useUiFeedback } from '../components/UiFeedback'
 
@@ -112,7 +112,6 @@ export default function AccountsView(props: {
     return saved === 'rows' ? 'rows' : 'cards'
   })
   const [fingerprintAccount, setFingerprintAccount] = useState<Account | null>(null)
-  const [migratingSession, setMigratingSession] = useState<string | null>(null)
   const [authTokenAccount, setAuthTokenAccount] = useState<Account | null>(null)
 
   const refresh = useCallback(async () => {
@@ -278,29 +277,10 @@ export default function AccountsView(props: {
     }
   }
 
-  async function handleMigrateSession(a: Account): Promise<void> {
-    const ok = await confirm({
-      title: 'Chuyển phiên sang Camoufox?',
-      description: `Aviary sẽ chuyển phiên X của “${a.label}”, đóng Chromium, nhập cookie vào Camoufox rồi mở X. Token không được lưu hoặc hiển thị. Engine vẫn giữ Chromium cho tới khi bạn xác nhận phiên mới hoạt động đúng.`,
-      confirmLabel: 'Chuyển phiên', tone: 'warning'
-    })
-    if (!ok) return
-    setMigratingSession(a.id)
-    try {
-      const result = await window.aviary.browser.migrateSession(a.id)
-      toast({ title: 'Đã chuyển phiên', description: result.message, tone: 'success', duration: 7000 })
-      await refresh()
-    } catch (e) {
-      toast({ title: 'Không chuyển được phiên', description: formatFingerprintUiError((e as Error).message), tone: 'danger', duration: 7000 })
-    } finally {
-      setMigratingSession(null)
-    }
-  }
-
   async function handleCopyAuthToken(a: Account): Promise<void> {
     await confirm({
       title: `Sao chép auth token của “${a.label}”?`,
-      description: `${openMap[a.id] ? 'Profile đang mở sẽ được sử dụng.' : `Aviary sẽ tự mở ${a.engine === 'camoufox' ? 'Camoufox' : 'Chromium'}${a.headless ? ' ở chế độ chạy ngầm' : ''}.`} Auth token là thông tin đăng nhập nhạy cảm và sẽ được đưa vào clipboard hệ điều hành.`,
+      description: `${openMap[a.id] ? 'Profile đang mở sẽ được sử dụng.' : `Aviary sẽ tự mở Chromium${a.headless ? ' ở chế độ chạy ngầm' : ''}.`} Auth token là thông tin đăng nhập nhạy cảm và sẽ được đưa vào clipboard hệ điều hành.`,
       confirmLabel: 'Mở và sao chép',
       busyLabel: 'Đang lấy token…',
       tone: 'warning',
@@ -657,7 +637,6 @@ export default function AccountsView(props: {
                       <span className="avatar-fallback">{initial}</span>
                     )}
                   </span>
-                  <BrowserEngineLogo engine={a.engine} />
                   <span className="account-name" title={a.label}>{a.label}</span>
                   <HealthBadge health={act?.health ?? 'ok'} reason={act?.reason ?? null} />
                   {/* Nút nhanh ngoài card: chạy ngầm + test webhook (icon + tooltip) */}
@@ -695,7 +674,7 @@ export default function AccountsView(props: {
                       {
                         icon: <KeyRound size={15} />,
                         label: 'Đăng nhập bằng auth token',
-                        title: `Nhập auth token và mở X bằng ${a.engine === 'camoufox' ? 'Camoufox' : 'Chromium'}`,
+                        title: 'Nhập auth token và mở X bằng Chromium',
                         onClick: () => setAuthTokenAccount(a)
                       },
                       {
@@ -704,17 +683,6 @@ export default function AccountsView(props: {
                         title: 'Xác nhận, tự mở đúng profile và sao chép auth token vào clipboard',
                         onClick: () => handleCopyAuthToken(a)
                       },
-                      ...(a.engine === 'chromium'
-                        ? [{
-                            icon: migratingSession === a.id
-                              ? <Loader2 size={15} className="spin" />
-                              : <Fingerprint size={15} />,
-                            label: 'Chuyển phiên sang Camoufox',
-                            title: 'Import ct0 + auth_token trong memory rồi xác nhận trước khi đổi engine',
-                            disabled: migratingSession === a.id,
-                            onClick: () => handleMigrateSession(a)
-                          }]
-                        : []),
                       {
                         icon: <Pencil size={15} />,
                         label: 'Sửa',
@@ -990,7 +958,7 @@ function AuthTokenLoginModal(props: {
           <h2>Đăng nhập bằng auth token</h2>
         </div>
         <p className="hint">
-          Aviary sẽ mở <b>{account.engine === 'camoufox' ? 'Camoufox' : 'Chromium'}</b> của tài khoản{' '}
+          Aviary sẽ mở <b>Chromium</b> của tài khoản{' '}
           <b>{account.label}</b>, nhập cookie trong memory rồi truy cập <b>x.com/home</b>.
           Aviary không lưu token vào DB, cấu hình hoặc log; trình duyệt sẽ lưu cookie phiên trong profile.
         </p>
@@ -1020,32 +988,6 @@ function AuthTokenLoginModal(props: {
   )
 }
 
-function BrowserEngineLogo(props: { engine: BrowserEngine }): JSX.Element {
-  if (props.engine === 'camoufox') {
-    return (
-      <span className="browser-engine-logo camoufox" title="Camoufox (Firefox anti-detect)">
-        <svg viewBox="0 0 24 24" aria-hidden="true">
-          <path fill="#ff8a3d" d="M19.7 5.1c-1.2.2-2.4.8-3.2 1.7A7.6 7.6 0 0 0 7.3 6L4.2 3.7c-.4 2.1-.1 4.1.8 5.5a7.8 7.8 0 1 0 14.7-4.1Z" />
-          <path fill="#7c5cff" d="M18.4 8.1c-1.5-.1-2.8.4-3.8 1.2-1.4-.7-3-.8-4.5-.2-2.5 1-3.8 3.9-2.8 6.4 1 2.6 3.9 3.9 6.5 2.9 2.2-.9 3.5-3.2 3.1-5.5 1.3-1.1 1.9-2.8 1.5-4.8Z" />
-          <path fill="#fff" d="M14.4 12.1a3.4 3.4 0 1 1-5.6 3.7 3.8 3.8 0 0 0 5.6-3.7Z" opacity=".92" />
-        </svg>
-      </span>
-    )
-  }
-
-  return (
-    <span className="browser-engine-logo chromium" title="Chromium">
-      <svg viewBox="0 0 24 24" aria-hidden="true">
-        <path fill="#ea4335" d="M12 2a10 10 0 0 1 8.7 5H12a5 5 0 0 0-4.3 2.5L4.8 4.6A10 10 0 0 1 12 2Z" />
-        <path fill="#fbbc04" d="M4.8 4.6 9.2 12a5 5 0 0 0 4.3 4.8l-2.9 5.1A10 10 0 0 1 4.8 4.6Z" />
-        <path fill="#34a853" d="M20.7 7A10 10 0 0 1 10.6 21.9L15 14.5A5 5 0 0 0 17 7h3.7Z" />
-        <circle cx="12" cy="12" r="4" fill="#4285f4" />
-        <circle cx="12" cy="12" r="2.8" fill="#8ab4f8" />
-      </svg>
-    </span>
-  )
-}
-
 function FingerprintModal(props: { account: Account; onClose: () => void }): JSX.Element {
   const { account, onClose } = props
   const [report, setReport] = useState<BrowserFingerprintReport | null>(null)
@@ -1072,7 +1014,7 @@ function FingerprintModal(props: { account: Account; onClose: () => void }): JSX
   }, [inspect])
 
   const healthy = report
-    ? report.identity.stability !== 'changed' && report.expectedMismatches.length === 0
+    ? report.identity.stability !== 'changed'
     : false
   const stabilityText = !report
     ? ''
@@ -1098,7 +1040,7 @@ function FingerprintModal(props: { account: Account; onClose: () => void }): JSX
           <span className="fingerprint-hero-icon"><Fingerprint size={25} /></span>
           <div>
             <h2>Danh tính trình duyệt</h2>
-            <p>{account.label} · {account.engine === 'camoufox' ? 'Camoufox' : 'Chromium'}</p>
+            <p>{account.label} · Chromium</p>
           </div>
           <button className="btn icon-only ghost" title="Đóng" onClick={onClose}><X size={18} /></button>
         </div>
@@ -1130,9 +1072,7 @@ function FingerprintModal(props: { account: Account; onClose: () => void }): JSX
               <div>
                 <b>{stabilityText}</b>
                 <span>
-                  {report.identity.managed
-                    ? `Identity Camoufox được Aviary quản lý${report.identity.storedVersion ? ` · schema v${report.identity.storedVersion}` : ''}`
-                    : 'Chromium dùng fingerprint native; Aviary theo dõi thay đổi qua snapshot runtime.'}
+                  {'Chromium dùng fingerprint native; Aviary theo dõi thay đổi qua snapshot runtime.'}
                 </span>
               </div>
               <code>{report.identity.id}</code>
@@ -1160,13 +1100,12 @@ function FingerprintModal(props: { account: Account; onClose: () => void }): JSX
               ))}
             </div>
 
-            {(report.identity.changedFields.length > 0 || report.expectedMismatches.length > 0) && (
+            {report.identity.changedFields.length > 0 && (
               <div className="fingerprint-diff">
                 <AlertTriangle size={17} />
                 <div>
                   <b>Cần kiểm tra</b>
                   {report.identity.changedFields.map((field) => <span key={field}>Đã đổi: {field}</span>)}
-                  {report.expectedMismatches.map((item) => <span key={item}>{item}</span>)}
                 </div>
               </div>
             )}
@@ -1188,21 +1127,14 @@ function FingerprintModal(props: { account: Account; onClose: () => void }): JSX
                 <FingerprintRow label="Viewport" value={`${report.screen.viewportWidth} × ${report.screen.viewportHeight} · ${report.screen.colorDepth}-bit`} />
               </FingerprintSection>
 
-              <FingerprintSection icon={<Network size={16} />} title="Mạng & identity đã lưu">
+              <FingerprintSection icon={<Network size={16} />} title="Mạng">
                 <FingerprintRow label="Kết nối" value={report.network.proxyMode === 'fixed' ? 'Proxy cố định' : report.network.proxyMode === 'random' ? 'Proxy ngẫu nhiên' : 'IP máy'} />
                 <FingerprintRow
-                  label="Múi giờ theo Camoufox GeoLite2"
+                  label="Múi giờ theo IP"
                   value={report.network.ipTimezone ?? 'Chưa xác định'}
                   good={report.network.timezoneMatch === true}
                 />
-                <FingerprintRow
-                  label="Nguồn geo-IP tham khảo"
-                  value={report.network.externalIpTimezone ?? 'Chưa xác định'}
-                />
                 <FingerprintRow label="WebRTC API" value={report.network.webrtc === 'disabled' ? 'Đã tắt' : report.network.webrtc === 'available' ? 'Có sẵn' : 'Không xác định'} good={report.network.webrtc === 'disabled'} />
-                <FingerprintRow label="Stored ID" value={report.stored.fingerprintId ?? 'Không có (native)'} mono />
-                <FingerprintRow label="Canvas seed" value={report.stored.canvasSeed?.toString() ?? '—'} mono />
-                <FingerprintRow label="Audio / Font seed" value={`${report.stored.audioSeed ?? '—'} / ${report.stored.fontSeed ?? '—'}`} mono />
               </FingerprintSection>
             </div>
 
@@ -1287,11 +1219,9 @@ function AccountForm(props: {
   onSaved: () => void
 }): JSX.Element {
   const { account, onClose, onSaved } = props
-  const { confirm } = useUiFeedback()
   const [label, setLabel] = useState(account?.label ?? '')
   const [handle, setHandle] = useState(account?.handle ?? '')
   const [proxyId, setProxyId] = useState(account?.proxyId ?? PROXY_LOCAL)
-  const [engine, setEngine] = useState<BrowserEngine>(account?.engine ?? 'chromium')
   const [proxies, setProxies] = useState<Proxy[]>([])
   const [assetUrl, setAssetUrl] = useState(account?.assetUrl ?? '')
   const [hashtag, setHashtag] = useState(account?.hashtag ?? '')
@@ -1346,24 +1276,11 @@ function AccountForm(props: {
       return
     }
     setLabelError(null)
-    // Đổi engine của account ĐÃ CÓ -> profile mỗi engine RIÊNG (Chromium ở thư mục gốc, Camoufox
-    // ở thư mục con). Session không chuyển được -> phải đăng nhập X lại trên engine mới. Cảnh báo
-    // rõ trước khi lưu để user không mất phiên ngoài ý muốn.
-    if (account && engine !== account.engine) {
-      const to = engine === 'camoufox' ? 'Camoufox' : 'Chromium'
-      const ok = await confirm({
-        title: `Đổi trình duyệt sang ${to}?`,
-        description: `Mỗi engine có profile riêng nên phiên X hiện tại không được chuyển sang ${to}. Bạn sẽ phải đăng nhập lại; profile cũ vẫn được giữ nếu đổi ngược lại sau này.`,
-        confirmLabel: 'Đổi trình duyệt', tone: 'warning'
-      })
-      if (!ok) return
-    }
     setSaving(true)
     const input: AccountInput = {
       label: label.trim(),
       handle: handle.trim() || null,
       proxyId,
-      engine,
       assetUrl: assetUrl.trim() || null,
       hashtag: hashtag.trim() || null,
       captionPrefix: captionPrefix || null,
@@ -1444,21 +1361,6 @@ function AccountForm(props: {
             <p className="hint">
               Chưa có proxy nào trong tab Proxy — Random sẽ giống Local (IP máy). Hãy thêm
               proxy ở tab Proxy trước.
-            </p>
-          )}
-        </label>
-        <label className="field">
-          <span>Trình duyệt (engine)</span>
-          <select value={engine} onChange={(e) => setEngine(e.target.value as BrowserEngine)}>
-            <option value="chromium">Chromium (mặc định — ổn định)</option>
-            <option value="camoufox">Camoufox (Firefox anti-detect — canvas native, WebRTC tắt)</option>
-          </select>
-          {engine === 'camoufox' && (
-            <p className="hint">
-              Camoufox chống nhận diện tốt hơn (canvas native, WebRTC tắt, geo tự khớp proxy).
-              Lần đầu dùng, máy sẽ tải trình duyệt ~470MB bằng mạng máy (KHÔNG tốn băng thông
-              proxy), chỉ tải 1 lần dùng chung cho mọi tài khoản. Profile Camoufox tách riêng
-              khỏi Chromium — đổi engine sẽ phải đăng nhập X lại. Nên dùng kèm proxy để geo khớp.
             </p>
           )}
         </label>
