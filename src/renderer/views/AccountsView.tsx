@@ -35,7 +35,8 @@ import {
   LayoutGrid,
   Rows3,
   KeyRound,
-  Copy
+  Copy,
+  CalendarDays
 } from 'lucide-react'
 import type { Account, AccountInput, AccountActivity, AccountHealth, BrowserFingerprintReport, Proxy, Schedule, WebhookTestResult, XProfileInfo } from '@shared/types'
 import { PROXY_LOCAL, PROXY_RANDOM } from '@shared/types'
@@ -69,6 +70,17 @@ function timeSince(ts: number, now: number): string {
   const hr = Math.floor(min / 60)
   if (hr < 24) return `${hr}h`
   return `${Math.floor(hr / 24)}d`
+}
+
+function formatCreatedAt(ts: number): string {
+  return new Date(ts).toLocaleString('vi-VN', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false
+  })
 }
 
 export default function AccountsView(props: {
@@ -705,22 +717,27 @@ export default function AccountsView(props: {
 
                 {/* ---- Thông tin phụ: handle + badges ---- */}
                 <div className="account-card-sub">
-                  {a.handle ? (
-                    <span className="username-cell">
-                      <span className="muted small">@{a.handle.replace(/^@/, '')}</span>
-                      <button
-                        className="btn icon-only ghost x-link"
-                        title={`Mở x.com/${a.handle.replace(/^@/, '')}`}
-                        onClick={() =>
-                          window.open(`https://x.com/${(a.handle ?? '').replace(/^@/, '')}`, '_blank')
-                        }
-                      >
-                        <ExternalLinkIcon size={13} />
-                      </button>
+                  <span className="account-profile-meta">
+                    {a.handle ? (
+                      <span className="username-cell">
+                        <span className="muted small">@{a.handle.replace(/^@/, '')}</span>
+                        <button
+                          className="btn icon-only ghost x-link"
+                          title={`Mở x.com/${a.handle.replace(/^@/, '')}`}
+                          onClick={() =>
+                            window.open(`https://x.com/${(a.handle ?? '').replace(/^@/, '')}`, '_blank')
+                          }
+                        >
+                          <ExternalLinkIcon size={13} />
+                        </button>
+                      </span>
+                    ) : (
+                      <span className="muted small">chưa có username</span>
+                    )}
+                    <span className="profile-created-at" title="Ngày giờ profile được tạo trong Aviary">
+                      <CalendarDays size={12} /> Tạo {formatCreatedAt(a.createdAt)}
                     </span>
-                  ) : (
-                    <span className="muted small">chưa có username</span>
-                  )}
+                  </span>
                   <span className={`badge badge-sm ${isOpen ? 'on' : `st-${a.status}`}`}>
                     <span className="dot" />
                     {isOpen ? 'Đang mở' : STATUS_LABEL[a.status]}

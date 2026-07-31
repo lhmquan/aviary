@@ -40,6 +40,7 @@ import {
   pruneCommentHistory
 } from '../db/comment_history'
 import { canonicalizeTweetUrl } from '../../shared/url'
+import { normalizePostCaption } from '../text/caption'
 
 // Broadcast tiến trình tới mọi renderer window (dùng chung cho manual + schedule).
 export function emitProgress(p: ProgressPayload): void {
@@ -264,7 +265,9 @@ export async function runPostForAccount(
     const prefix = decodeCaptionPrefix(account.captionPrefix)
     if (prefix) fullCaption = prefix + fullCaption
     if (account.hashtag) fullCaption = `${fullCaption}\n${account.hashtag}`.trim()
-    fullCaption = fullCaption.trim()
+    // Nguồn Reddit/n8n đôi khi trả HTML entity hoặc chuỗi UTF-8 bị decode nhầm
+    // (vd `AT&amp;T`, `â€™`, `Ã©`). Vẫn giữ payload gốc cho markDone khớp dữ liệu.
+    fullCaption = normalizePostCaption(fullCaption)
     emitProgress({ accountId, accountLabel: label, stage: 'post', message: 'Đang đăng bài lên X…', busy: true })
     try {
       result = await postTweet(

@@ -7,6 +7,15 @@ phiên bản theo [Semantic Versioning](https://semver.org/lang/vi/).
 
 ## Unreleased
 
+## [0.25.0] - 2026-07-31
+
+### Added
+- **Hiển thị ngày giờ tạo profile** trong cả chế độ card và hàng ngang của mục Tài khoản.
+
+### Fixed
+- **Chuẩn hóa caption trước khi đăng**: giải mã HTML entity thường gặp, kể cả entity dạng số và bị encode nhiều lớp.
+- Sửa các chuỗi UTF-8 bị lỗi mojibake như `â€™`, `Ã©` và emoji bị biến dạng; loại bỏ ký tự điều khiển/zero-width không mong muốn nhưng vẫn giữ tiếng Việt, emoji và xuống dòng hợp lệ.
+
 ## [0.24.0] - 2026-07-26
 
 ### Changed
