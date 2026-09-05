@@ -3722,8 +3722,62 @@ nav {
   flex-direction: column;
   gap: 12px;
 }
-.analytics-card-delete {
+
+/* Handle @username trong header card — co lại để nhường chỗ cho nhóm nút.
+   max-width chặn trường hợp handle dài đẩy tên tài khoản co về 0. */
+.analytics-card-handle {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  max-width: 38%;
+  flex: 0 1 auto;
+}
+
+/* Nhóm nút trong header card analytics: mở x.com, mở profile, fetch, xoá */
+.analytics-card-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
   margin-left: auto;
+  flex-shrink: 0;
+}
+.analytics-card-actions .btn.icon-only {
+  padding: 6px;
+  min-width: 28px;
+  width: 28px;
+  height: 28px;
+}
+/* Profile đang mở — xanh lá; đang chạy tác vụ ngầm — vàng cảnh báo */
+.analytics-card-actions .btn.icon-only.active {
+  color: var(--success);
+  background: var(--success-soft);
+}
+.analytics-card-actions .btn.icon-only.running {
+  color: var(--warn);
+  background: var(--warn-soft);
+}
+
+/* Ghi chú trạng thái profile (đang mở / đang chạy ngầm) trong card analytics */
+.analytics-profile-note {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-radius: var(--r-xs);
+  font-size: 12px;
+}
+.analytics-profile-note.open {
+  background: var(--success-soft);
+  color: var(--success);
+}
+.analytics-profile-note.running {
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+.analytics-profile-note.info {
+  background: var(--panel-2);
+  color: var(--muted);
 }
 
 /* Lỗi fetch riêng trong card — banner nhỏ đỏ */

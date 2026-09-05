@@ -16,7 +16,11 @@ import {
   Database,
   Clock,
   Zap,
-  ZapOff
+  ZapOff,
+  ExternalLink,
+  Power,
+  MonitorCheck,
+  Activity
 } from 'lucide-react'
 import type {
   AnalyticsData,
@@ -80,8 +84,89 @@ function DeltaBadge({
   return <span className="delta-badge neutral"><Minus size={11} /> 0</span>
 }
 
+// Tác vụ đang chạy của 1 tài khoản (lấy từ ProgressPayload realtime).
+type RunningTask = { stage: string; message: string }
+
+// Tác vụ có THỰC SỰ dùng profile browser hay không.
+// Fetch analytics chỉ gọi HTTP qua proxy (fetchXProfile) — không mở profile, nên
+// mở profile lúc đó vô hại. Các stage còn lại đều thuộc pipeline đăng/bình
+// luận/xoá/tương tác — pipeline này mở và điều khiển profile.
+function profileBusyTask(task: RunningTask | null): RunningTask | null {
+  return task && task.stage !== 'analytics' ? task : null
+}
+
+// Hai nút dùng chung cho cả card có dữ liệu và card chưa có dữ liệu:
+// mở x.com ở browser ngoài + mở profile Chromium của tài khoản.
+function ProfileActions(props: {
+  handle: string | null
+  profileOpen: boolean
+  task: RunningTask | null
+  opening: boolean
+  onOpenX: () => void
+  onOpenProfile: () => void
+}): JSX.Element {
+  const { handle, profileOpen, task, opening, onOpenX, onOpenProfile } = props
+  const clean = (handle ?? '').replace(/^@+/, '')
+  const busyTask = profileBusyTask(task)
+  const profileTitle = opening
+    ? 'Đang mở profile…'
+    : profileOpen && busyTask
+      ? `Profile đang được tác vụ ngầm dùng (${busyTask.message})`
+      : profileOpen
+        ? 'Profile đang mở sẵn — bấm để xem thông báo'
+        : busyTask
+          ? `Đang chạy tác vụ ngầm (${busyTask.message}) — bấm để mở profile, sẽ hỏi xác nhận`
+          : 'Mở profile Chromium của tài khoản này'
+  return (
+    <>
+      <button
+        className="btn icon-only ghost"
+        title={clean ? `Mở x.com/${clean} bằng browser mặc định` : 'Chưa có username X — không mở được trang x.com'}
+        disabled={!clean}
+        onClick={onOpenX}
+      >
+        <ExternalLink size={14} />
+      </button>
+      <button
+        className={`btn icon-only ghost ${busyTask ? 'running' : profileOpen ? 'active' : ''}`}
+        title={profileTitle}
+        disabled={opening}
+        onClick={onOpenProfile}
+      >
+        {opening ? (
+          <Loader2 size={14} className="spin" />
+        ) : busyTask ? (
+          <Activity size={14} />
+        ) : profileOpen ? (
+          <MonitorCheck size={14} />
+        ) : (
+          <Power size={14} />
+        )}
+      </button>
+    </>
+  )
+}
+
+// Ghi chú trạng thái profile ngay trên card — user thấy trước khi bấm nút.
+function ProfileStateNote(props: { profileOpen: boolean; task: RunningTask | null }): JSX.Element | null {
+  const { profileOpen, task } = props
+  if (!profileOpen && !task) return null
+  const busyTask = profileBusyTask(task)
+  const parts: string[] = []
+  if (profileOpen) parts.push('Profile đang mở sẵn')
+  if (busyTask) parts.push(`${profileOpen ? 'đ' : 'Đ'}ang chạy tác vụ ngầm: ${busyTask.message}`)
+  else if (task) parts.push(`${profileOpen ? 'đ' : 'Đ'}ang fetch analytics (không dùng profile)`)
+  const tone = busyTask ? 'running' : profileOpen ? 'open' : 'info'
+  return (
+    <div className={`analytics-profile-note ${tone}`}>
+      {busyTask ? <Activity size={13} /> : profileOpen ? <MonitorCheck size={13} /> : <RefreshCw size={13} />}
+      <span>{parts.join(' · ')}.</span>
+    </div>
+  )
+}
+
 export default function AnalyticsView(): JSX.Element {
-  const { confirm } = useUiFeedback()
+  const { confirm, toast } = useUiFeedback()
   const [data, setData] = useState<AnalyticsData | null>(null)
   const [storage, setStorage] = useState<AnalyticsStorageStats | null>(null)
   const [fetching, setFetching] = useState(false)
@@ -89,6 +174,11 @@ export default function AnalyticsView(): JSX.Element {
   const [expandedId, setExpandedId] = useState<string | null>(null)
   const [showDeleteMenu, setShowDeleteMenu] = useState(false)
   const [autoFetch, setAutoFetch] = useState(true)
+  // Trạng thái profile browser của từng tài khoản (đang mở hay không) + tác vụ
+  // đang chạy ngầm — dùng để cảnh báo trước khi mở profile từ tab này.
+  const [openMap, setOpenMap] = useState<Record<string, boolean>>({})
+  const [runningMap, setRunningMap] = useState<Record<string, RunningTask>>({})
+  const [openingId, setOpeningId] = useState<string | null>(null)
   const [, force] = useState(0)
 
   const refresh = useCallback(async () => {
@@ -102,18 +192,58 @@ export default function AnalyticsView(): JSX.Element {
     setStorage(s)
   }, [])
 
+  // Danh sách accountId (chuỗi ổn định) — chỉ đổi khi thêm/xoá tài khoản.
+  const accountIdsKey = (data?.accounts ?? []).map((a) => a.accountId).join(',')
+
+  // Nạp trạng thái profile 1 lần cho mỗi bộ tài khoản. KHÔNG gộp vào refresh():
+  // fetch analytics bắn progress cho từng tài khoản -> refresh() chạy nhiều lần,
+  // sẽ nhân số lời gọi IPC status lên bình phương số tài khoản.
+  useEffect(() => {
+    const ids = accountIdsKey ? accountIdsKey.split(',') : []
+    if (ids.length === 0) return
+    let cancelled = false
+    void (async () => {
+      const entries = await Promise.all(
+        ids.map(async (id) => [id, (await window.aviary.browser.status(id)).open] as const)
+      )
+      if (!cancelled) setOpenMap(Object.fromEntries(entries))
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [accountIdsKey])
+
   useEffect(() => {
     refresh()
     // Force render mỗi 30s để cập nhật "lần fetch cuối" relative time.
     const iv = setInterval(() => force((n) => n + 1), 30_000)
+    // Cập nhật realtime khi profile được mở/đóng (kể cả user tự tắt cửa sổ browser).
+    const offStatus = window.aviary.browser.onStatusChanged((accountId, open) => {
+      setOpenMap((m) => ({ ...m, [accountId]: open }))
+    })
     // Refresh khi analytics fetch xong (auto hoặc thủ công) → cập nhật delta + series.
+    // Đồng thời theo dõi tài khoản nào đang chạy tác vụ ngầm để cảnh báo khi mở profile.
     const off = window.aviary.post.onProgress((p) => {
       if (p.stage === 'analytics' && !p.busy) {
         void refresh()
       }
+      if (!p.accountId || p.accountId === '__system__') return
+      const id = p.accountId
+      setRunningMap((prev) => {
+        if (!p.busy) {
+          if (!(id in prev)) return prev // không đổi -> giữ nguyên reference
+          const next = { ...prev }
+          delete next[id]
+          return next
+        }
+        const cur = prev[id]
+        if (cur && cur.stage === p.stage && cur.message === p.message) return prev
+        return { ...prev, [id]: { stage: p.stage, message: p.message } }
+      })
     })
     return () => {
       clearInterval(iv)
+      offStatus()
       off()
     }
   }, [refresh])
@@ -152,6 +282,72 @@ export default function AnalyticsView(): JSX.Element {
     const next = !autoFetch
     setAutoFetch(next)
     await window.aviary.settings.save({ analyticsAutoFetch: next })
+  }
+
+  // Mở trang x.com của tài khoản bằng browser mặc định của hệ điều hành.
+  // Main process bắt window.open qua setWindowOpenHandler -> shell.openExternal.
+  function handleOpenX(g: AccountGrowth): void {
+    const handle = (g.handle ?? '').replace(/^@+/, '')
+    if (!handle) {
+      toast({
+        title: 'Chưa có username X',
+        description: `“${g.accountLabel}” chưa có username nên không mở được trang x.com.`,
+        tone: 'warning'
+      })
+      return
+    }
+    window.open(`https://x.com/${handle}`, '_blank')
+  }
+
+  // Mở profile Chromium của tài khoản ngay từ tab Analytics.
+  // - Profile đã mở sẵn: main process return sớm nên không mở lại -> chỉ thông báo.
+  //   Lưu ý: khi pipeline đang chạy ở chế độ ngầm, profile VẪN tính là "đang mở"
+  //   (context có thật) nhưng không có cửa sổ hiện ra -> phải nói rõ để user không
+  //   đi tìm cửa sổ trên taskbar.
+  // - Đang chạy tác vụ dùng profile nhưng chưa mở (chờ slot / gọi n8n): hỏi xác nhận,
+  //   vì pipeline sẽ tự mở rồi tự đóng profile (openedByUs) và có thể bị gián đoạn.
+  async function handleOpenProfile(g: AccountGrowth): Promise<void> {
+    const id = g.accountId
+    const busyTask = profileBusyTask(runningMap[id] ?? null)
+    if (openMap[id]) {
+      toast(
+        busyTask
+          ? {
+              title: 'Profile đang được tác vụ ngầm sử dụng',
+              description: `“${g.accountLabel}” đang chạy: ${busyTask.message}. Nếu tài khoản bật chế độ chạy ngầm thì không có cửa sổ nào hiện ra — chờ tác vụ xong rồi mở lại.`,
+              tone: 'warning'
+            }
+          : {
+              title: 'Profile đang mở sẵn',
+              description: `Cửa sổ browser của “${g.accountLabel}” đã mở — kiểm tra trên thanh taskbar.`,
+              tone: 'info'
+            }
+      )
+      return
+    }
+    if (busyTask) {
+      const ok = await confirm({
+        title: `“${g.accountLabel}” đang chạy tác vụ ngầm`,
+        description: `Tác vụ hiện tại: ${busyTask.message}. Tác vụ này dùng chính profile của tài khoản và sẽ tự đóng profile khi xong — mở profile lúc này có thể làm gián đoạn.`,
+        confirmLabel: 'Vẫn mở profile',
+        tone: 'warning'
+      })
+      if (!ok) return
+    }
+    setOpeningId(id)
+    try {
+      await window.aviary.browser.open(id)
+      setOpenMap((m) => ({ ...m, [id]: true }))
+      toast({
+        title: 'Đã mở profile',
+        description: `Cửa sổ browser của “${g.accountLabel}” đang được mở.`,
+        tone: 'success'
+      })
+    } catch (e) {
+      toast({ title: 'Không mở được profile', description: (e as Error).message, tone: 'danger' })
+    } finally {
+      setOpeningId(null)
+    }
   }
 
   // Overview — tổng hợp tất cả tài khoản.
@@ -383,9 +579,14 @@ export default function AnalyticsView(): JSX.Element {
                 key={a.accountId}
                 growth={a}
                 expanded={expandedId === a.accountId}
+                profileOpen={openMap[a.accountId] === true}
+                task={runningMap[a.accountId] ?? null}
+                opening={openingId === a.accountId}
                 onToggle={() => setExpandedId(expandedId === a.accountId ? null : a.accountId)}
                 onDelete={() => handleDeleteAccount(a.accountId, a.accountLabel)}
                 onFetched={refresh}
+                onOpenX={() => handleOpenX(a)}
+                onOpenProfile={() => handleOpenProfile(a)}
               />
             ))}
           </div>
@@ -401,7 +602,12 @@ export default function AnalyticsView(): JSX.Element {
                   <NoDataAccountCard
                     key={a.accountId}
                     growth={a}
+                    profileOpen={openMap[a.accountId] === true}
+                    task={runningMap[a.accountId] ?? null}
+                    opening={openingId === a.accountId}
                     onFetched={refresh}
+                    onOpenX={() => handleOpenX(a)}
+                    onOpenProfile={() => handleOpenProfile(a)}
                   />
                 ))}
               </div>
@@ -417,11 +623,16 @@ export default function AnalyticsView(): JSX.Element {
 function AccountAnalyticsCard(props: {
   growth: AccountGrowth
   expanded: boolean
+  profileOpen: boolean
+  task: RunningTask | null
+  opening: boolean
   onToggle: () => void
   onDelete: () => void
   onFetched: () => void | Promise<void>
+  onOpenX: () => void
+  onOpenProfile: () => void
 }): JSX.Element {
-  const { growth, expanded, onToggle, onDelete, onFetched } = props
+  const { growth, expanded, profileOpen, task, opening, onToggle, onDelete, onFetched, onOpenX, onOpenProfile } = props
   const g = growth
   const statusKey = 'logged_in'
   const initial = (g.accountLabel.charAt(0) || '?').toUpperCase()
@@ -509,23 +720,40 @@ function AccountAnalyticsCard(props: {
           )}
         </span>
         <span className="account-name" title={g.accountLabel}>{g.accountLabel}</span>
-        {g.handle && <span className="muted small">@{g.handle.replace(/^@/, '')}</span>}
-        <button
-          className="btn icon-only ghost analytics-card-fetch"
-          title="Fetch dữ liệu mới nhất cho tài khoản này"
-          disabled={fetchingOne || !g.handle}
-          onClick={handleFetchOne}
-        >
-          {fetchingOne ? <Loader2 size={14} className="spin" /> : <RefreshCw size={14} />}
-        </button>
-        <button
-          className="btn icon-only ghost analytics-card-delete"
-          title="Xoá dữ liệu Analytics của tài khoản này"
-          onClick={onDelete}
-        >
-          <Trash2 size={14} />
-        </button>
+        {g.handle && (
+          <span className="muted small analytics-card-handle" title={`@${g.handle.replace(/^@/, '')}`}>
+            @{g.handle.replace(/^@/, '')}
+          </span>
+        )}
+        <span className="analytics-card-actions">
+          <ProfileActions
+            handle={g.handle}
+            profileOpen={profileOpen}
+            task={task}
+            opening={opening}
+            onOpenX={onOpenX}
+            onOpenProfile={onOpenProfile}
+          />
+          <button
+            className="btn icon-only ghost analytics-card-fetch"
+            title="Fetch dữ liệu mới nhất cho tài khoản này"
+            disabled={fetchingOne || !g.handle}
+            onClick={handleFetchOne}
+          >
+            {fetchingOne ? <Loader2 size={14} className="spin" /> : <RefreshCw size={14} />}
+          </button>
+          <button
+            className="btn icon-only ghost analytics-card-delete"
+            title="Xoá dữ liệu Analytics của tài khoản này"
+            onClick={onDelete}
+          >
+            <Trash2 size={14} />
+          </button>
+        </span>
       </div>
+
+      {/* Cảnh báo trạng thái profile — hiển thị ngay trên card để user biết trước khi bấm */}
+      <ProfileStateNote profileOpen={profileOpen} task={task} />
 
       {/* Lỗi fetch riêng cho tài khoản này */}
       {fetchError && (
@@ -611,9 +839,14 @@ function AccountAnalyticsCard(props: {
 // ---- Card cho tài khoản chưa có dữ liệu (có nút fetch riêng) ----
 function NoDataAccountCard(props: {
   growth: AccountGrowth
+  profileOpen: boolean
+  task: RunningTask | null
+  opening: boolean
   onFetched: () => void | Promise<void>
+  onOpenX: () => void
+  onOpenProfile: () => void
 }): JSX.Element {
-  const { growth, onFetched } = props
+  const { growth, profileOpen, task, opening, onFetched, onOpenX, onOpenProfile } = props
   const [fetching, setFetching] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const initial = (growth.accountLabel.charAt(0) || '?').toUpperCase()
@@ -639,15 +872,26 @@ function NoDataAccountCard(props: {
           <span className="avatar-fallback">{initial}</span>
         </span>
         <span className="account-name" title={growth.accountLabel}>{growth.accountLabel}</span>
-        <button
-          className="btn icon-only ghost analytics-card-fetch"
-          title="Fetch dữ liệu cho tài khoản này"
-          disabled={fetching || !growth.handle}
-          onClick={handleFetch}
-        >
-          {fetching ? <Loader2 size={14} className="spin" /> : <RefreshCw size={14} />}
-        </button>
+        <span className="analytics-card-actions">
+          <ProfileActions
+            handle={growth.handle}
+            profileOpen={profileOpen}
+            task={task}
+            opening={opening}
+            onOpenX={onOpenX}
+            onOpenProfile={onOpenProfile}
+          />
+          <button
+            className="btn icon-only ghost analytics-card-fetch"
+            title="Fetch dữ liệu cho tài khoản này"
+            disabled={fetching || !growth.handle}
+            onClick={handleFetch}
+          >
+            {fetching ? <Loader2 size={14} className="spin" /> : <RefreshCw size={14} />}
+          </button>
+        </span>
       </div>
+      <ProfileStateNote profileOpen={profileOpen} task={task} />
       <div className="muted small">
         {growth.handle
           ? `@${growth.handle.replace(/^@/, '')} — bấm ↻ để fetch ngay`

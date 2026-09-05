@@ -7,6 +7,18 @@ phiên bản theo [Semantic Versioning](https://semver.org/lang/vi/).
 
 ## Unreleased
 
+## [0.26.0] - 2026-09-05
+
+### Added
+- **Mở trang x.com từ card Analytics**: mỗi card có nút mở `x.com/<username>` bằng browser mặc định của hệ điều hành; tài khoản chưa có username thì nút bị khoá và nêu rõ lý do.
+- **Mở profile trực tiếp từ card Analytics**: không cần quay lại mục Tài khoản, dùng cùng một pipeline mở profile (luôn hiện cửa sổ) như nút "Mở profile" hiện có.
+- **Cảnh báo trạng thái profile trên card Analytics**: icon và màu nút đổi theo trạng thái (chưa mở / đang mở / đang chạy tác vụ ngầm), kèm ghi chú trong card hiển thị đúng tên tác vụ đang chạy.
+- Bấm mở profile khi profile đã mở sẵn sẽ hiện thông báo thay vì mở lại; khi tài khoản đang chạy tác vụ dùng profile thì hỏi xác nhận trước, vì tác vụ sẽ tự đóng profile khi hoàn tất.
+- Cả hai nút áp dụng cho card đã có dữ liệu và card tài khoản chưa có dữ liệu Analytics.
+
+### Changed
+- Fetch analytics không còn bị coi là "tác vụ đang dùng profile" khi cảnh báo, vì bước này chỉ gọi HTTP qua proxy và không mở browser.
+
 ## [0.25.0] - 2026-07-31
 
 ### Added
