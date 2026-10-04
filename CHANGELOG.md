@@ -7,6 +7,12 @@ phiên bản theo [Semantic Versioning](https://semver.org/lang/vi/).
 
 ## Unreleased
 
+## [0.27.0] - 2026-10-04
+
+### Fixed
+- **Số liệu trên card Analytics không còn tràn viền**: ở hàng chỉ số (Followers / Following / Bài viết), nhóm badge delta giờ xuống dòng riêng khi card hẹp thay vì đẩy tràn ra ngoài viền.
+- Hàng "Bài viết" là hàng lộ lỗi rõ nhất vì badge delta 30 ngày của nó dài nhất (ví dụ `+344`, `+452`, `+387`); lỗi xuất hiện ở card hẹp hơn khoảng 410px, tức cả khi cửa sổ ở kích thước thường dùng.
+
 ## [0.26.0] - 2026-09-05
 
 ### Added

@@ -3798,10 +3798,16 @@ nav {
   flex-direction: column;
   gap: 8px;
 }
+/* Hàng metric. Trước đây row là nowrap và .metric-deltas (flex: 1) thiếu
+   min-width: 0 nên KHÔNG co được dưới min-content: ở card hẹp (<= ~410px),
+   badge 30D dài nhất — hàng "Bài viết" với +344/+452/+387 — đẩy tràn ra
+   ngoài viền card. Cho phép wrap: khi đủ chỗ vẫn nằm 1 dòng như cũ, khi hẹp
+   thì nhóm delta xuống dòng riêng (căn phải) thay vì tràn. */
 .analytics-metric-row {
   display: flex;
   align-items: center;
-  gap: 8px;
+  flex-wrap: wrap;
+  gap: 6px 8px;
   font-size: 13px;
 }
 .metric-icon {
@@ -3821,8 +3827,10 @@ nav {
 }
 .metric-deltas {
   display: flex;
-  gap: 8px;
-  flex: 1;
+  flex-wrap: wrap;
+  gap: 6px 8px;
+  flex: 1 1 auto;
+  min-width: 0;
   justify-content: flex-end;
 }
 .delta-group {
