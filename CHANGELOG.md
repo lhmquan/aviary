@@ -7,6 +7,11 @@ phiên bản theo [Semantic Versioning](https://semver.org/lang/vi/).
 
 ## Unreleased
 
+## [0.27.1] - 2026-10-04
+
+### Fixed
+- **Badge delta 1D/7D/30D thẳng hàng dọc giữa các hàng metric**: chuyển `.metric-deltas` từ flex sang grid 3 cột (`repeat(3, 1fr)` + `justify-items: end`), badge cùng cột giờ có cạnh phải thẳng hàng giữa Followers/Following/Bài viết thay vì lệch theo độ rộng badge.
+
 ## [0.27.0] - 2026-10-04
 
 ### Fixed

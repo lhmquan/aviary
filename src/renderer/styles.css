@@ -3798,11 +3798,11 @@ nav {
   flex-direction: column;
   gap: 8px;
 }
-/* Hàng metric. Trước đây row là nowrap và .metric-deltas (flex: 1) thiếu
-   min-width: 0 nên KHÔNG co được dưới min-content: ở card hẹp (<= ~410px),
-   badge 30D dài nhất — hàng "Bài viết" với +344/+452/+387 — đẩy tràn ra
-   ngoài viền card. Cho phép wrap: khi đủ chỗ vẫn nằm 1 dòng như cũ, khi hẹp
-   thì nhóm delta xuống dòng riêng (căn phải) thay vì tràn. */
+/* Hàng metric. Dùng grid 3 cột cho nhóm delta để badge 1D/7D/30D thẳng hàng
+   dọc giữa các hàng (Followers/Following/Bài viết). Trước đây dùng flex
+   justify-end nên cạnh phải thẳng nhưng cạnh trái lệch theo độ rộng badge.
+   Grid cũng giải quyết overflow: min-width: 0 cho phép co, và ở card rất hẹp
+   (< ~380px) hàng wrap xuống 2 dòng thay vì tràn viền. */
 .analytics-metric-row {
   display: flex;
   align-items: center;
@@ -3826,12 +3826,12 @@ nav {
   min-width: 60px;
 }
 .metric-deltas {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  justify-items: end;
   gap: 6px 8px;
   flex: 1 1 auto;
   min-width: 0;
-  justify-content: flex-end;
 }
 .delta-group {
   display: inline-flex;
